@@ -55,6 +55,9 @@ func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err erro
 	return turnID, uuid, nil
 }
 
+// testBeforeUplinkEnqueue 仅测试：frozen/Terminal 检查已通过、即将 enqueueData。
+var testBeforeUplinkEnqueue func()
+
 func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 	frames := BuildUplinkFrames(pcm, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault)
 
@@ -74,6 +77,7 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 			return
 		}
 		if d.turn != nil && d.turn.frozen {
+			// 已冻结则停止且不入队，避免本帧 out+1 悬空。
 			d.deviceMu.Unlock()
 			break
 		}
@@ -92,8 +96,10 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 		}
 		d.turn.out.Add(1)
 		tr := d.turn
-		d.deviceMu.Unlock()
-
+		if testBeforeUplinkEnqueue != nil {
+			testBeforeUplinkEnqueue()
+		}
+		// 持 deviceMu 入队，避免解锁窗口内 VAD / 失败 JSON / CancelTurn 把 Stage=1 排到 Stage=2/3 之后。
 		err := d.enqueueData(Frame{
 			Kind:          KindAudioData,
 			TurnID:        turnID,
@@ -105,7 +111,6 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 			turn:          tr,
 		})
 		if err != nil {
-			d.deviceMu.Lock()
 			if d.turn != nil {
 				d.turn.out.Add(-1)
 				if d.turn.out.Load() <= 0 {
@@ -118,6 +123,7 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 			}
 			return
 		}
+		d.deviceMu.Unlock()
 		if stage == protocol.StageUploading && pace > 0 {
 			select {
 			case <-time.After(pace):

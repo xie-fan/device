@@ -348,6 +348,72 @@ func TestFailedJSONDoesNotCloseSocket(t *testing.T) {
 	}
 }
 
+func TestFailedJSONDuringUplinkNoStage1AfterStage3(t *testing.T) {
+	// 多片 Stage=1 上行中打入失败 JSON；holdWrites 让出站队列可见。
+	cfg := testDeviceCfg(t)
+	cfg.Audio.SliceMs = 10
+	d, conn := newTestDevice(t, cfg, FaultSkipRegister, autoOpts{holdWrites: true})
+	if err := d.Start(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	pcm := uplinkPCM(cfg, 24)
+	_, uuid, err := d.Speak(pcm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitQueuedAudio(t, d, 6, time.Second)
+
+	failJSON := []byte(`{"RequestID":"r1","Code":1,"CodeMsg":"音频处理失败，请稍后重试","Data":null}`)
+	waitGap(t, d, uuid, protocol.StageBreak, func() { conn.Push(failJSON) })
+
+	releaseWriteGate(conn)
+	ev, err := d.WaitTurn(d.WaitBudgetFor(len(pcm)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.EndReason != EndError {
+		t.Fatalf("end=%s", ev.EndReason)
+	}
+
+	stages := waitUUIDStages(t, conn, uuid, 2*time.Second, func(s []uint32) bool {
+		return hasStage(s, protocol.StageBreak)
+	})
+	time.Sleep(30 * time.Millisecond)
+	stages = audioStagesByUUID(conn.Writes(), uuid)
+	assertNoStageAfterFirst(t, stages, protocol.StageBreak, protocol.StageUploading)
+	assertNoStageAfterFirst(t, stages, protocol.StageBreak, protocol.StageFinished)
+}
+
+func TestVADDuringUplinkNoStage1AfterStage2(t *testing.T) {
+	// 上行中 Push 匹配 UUID 的 Stage=4，补发 Stage=2 后不得再入队 Stage=1。
+	cfg := testDeviceCfg(t)
+	cfg.Audio.SliceMs = 10
+	d, conn := newTestDevice(t, cfg, FaultSkipRegister, autoOpts{holdWrites: true})
+	if err := d.Start(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	pcm := uplinkPCM(cfg, 24)
+	_, uuid, err := d.Speak(pcm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitQueuedAudio(t, d, 6, time.Second)
+
+	vad, err := protocol.EncodeAudioFrame(protocol.NewPCMHeader(protocol.StageVAD, 0, uuid, 0, uint32(cfg.Audio.SampleRate)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitGap(t, d, uuid, protocol.StageFinished, func() { conn.Push(vad) })
+
+	releaseWriteGate(conn)
+	stages := waitUUIDStages(t, conn, uuid, 2*time.Second, func(s []uint32) bool {
+		return hasStage(s, protocol.StageFinished)
+	})
+	time.Sleep(30 * time.Millisecond)
+	stages = audioStagesByUUID(conn.Writes(), uuid)
+	assertNoStageAfterFirst(t, stages, protocol.StageFinished, protocol.StageUploading)
+}
+
 func TestBeginCloseKeepsQueuedStage3(t *testing.T) {
 	cfg := testDeviceCfg(t)
 	d, conn := newTestDevice(t, cfg, FaultSkipRegister, autoOpts{holdWrites: true})
@@ -532,4 +598,135 @@ func contains(ss []string, w string) bool {
 		}
 	}
 	return false
+}
+
+func uplinkPCM(cfg config.Device, slices int) []byte {
+	n := cfg.Audio.SampleRate * cfg.Audio.Channels * 2 * cfg.Audio.SliceMs / 1000
+	if n <= 0 {
+		n = 320
+	}
+	return make([]byte, n*slices)
+}
+
+func releaseWriteGate(conn *FakeConn) {
+	if conn.writeGate != nil {
+		close(conn.writeGate)
+		conn.writeGate = nil
+	}
+}
+
+func waitQueuedAudio(t *testing.T, d *DeviceInstance, n int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		d.writePumpMu.Lock()
+		q := d.outbound.Len()
+		d.writePumpMu.Unlock()
+		if q >= n {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("等待上行入队超时")
+}
+
+func outboundUUIDStages(d *DeviceInstance, uuid uint32) []uint32 {
+	d.writePumpMu.Lock()
+	defer d.writePumpMu.Unlock()
+	var out []uint32
+	if inf := d.outbound.InFlight(); inf != nil && inf.UUID == uuid {
+		out = append(out, inf.Stage)
+	}
+	for _, f := range d.outbound.Queued() {
+		if f.UUID == uuid && (f.Kind == KindAudioData || f.Kind == KindStage3) {
+			out = append(out, f.Stage)
+		}
+	}
+	return out
+}
+
+// waitGap 把注入点卡在「检查已通过、即将 enqueueData」：
+// 若错误地先 Unlock，下行可先入队 Stage=2/3，随后的 Stage=1 就会排到后面；
+// 若仍持 deviceMu，下行会被挡住，超时后继续入队，顺序保持正确。
+func waitGap(t *testing.T, d *DeviceInstance, uuid, expectQueued uint32, inject func()) {
+	t.Helper()
+	var once sync.Once
+	done := make(chan struct{})
+	testBeforeUplinkEnqueue = func() {
+		once.Do(func() {
+			inject()
+			deadline := time.Now().Add(80 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				if hasStage(outboundUUIDStages(d, uuid), expectQueued) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			close(done)
+		})
+	}
+	t.Cleanup(func() { testBeforeUplinkEnqueue = nil })
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未打到 Stage=1/2 入队前窗口")
+	}
+}
+
+func audioStagesByUUID(writes [][]byte, uuid uint32) []uint32 {
+	var out []uint32
+	for _, w := range writes {
+		if len(w) <= protocol.HeaderBytes || w[0] != protocol.FirstAudio {
+			continue
+		}
+		h, err := protocol.DecodeHeader(w[1:])
+		if err != nil {
+			continue
+		}
+		if h.UUID == uuid {
+			out = append(out, h.Stage)
+		}
+	}
+	return out
+}
+
+func hasStage(stages []uint32, want uint32) bool {
+	for _, s := range stages {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func waitUUIDStages(t *testing.T, conn *FakeConn, uuid uint32, timeout time.Duration, pred func([]uint32) bool) []uint32 {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var stages []uint32
+	for time.Now().Before(deadline) {
+		stages = audioStagesByUUID(conn.Writes(), uuid)
+		if pred(stages) {
+			return stages
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("等待写出序列超时: %v", stages)
+	return stages
+}
+
+func assertNoStageAfterFirst(t *testing.T, stages []uint32, first, forbidden uint32) {
+	t.Helper()
+	seen := false
+	for _, s := range stages {
+		if s == first {
+			seen = true
+			continue
+		}
+		if seen && s == forbidden {
+			t.Fatalf("第一个 Stage=%d 之后不得再出现 Stage=%d：%v", first, forbidden, stages)
+		}
+	}
+	if !seen {
+		t.Fatalf("未见到 Stage=%d：%v", first, stages)
+	}
 }
