@@ -1,0 +1,7 @@
+recordings/
+testdata/audio/test_audio/
+testdata/audio/user_speech_16k.wav
+testdata/audio/test_audio_list.txt
+testdata/fixtures/fresh_ids.jsonl
+*.exe
+.DS_Store

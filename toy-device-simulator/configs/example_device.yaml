@@ -1,0 +1,40 @@
+device:
+  enterprise: "demo"
+  device_type: "A3"
+  device_id: "sim_001"
+  action: "chatbot"
+  firmware_version: "1.0.0"
+  nic_type: "wifi"
+  nic_iccid: "8986xxxxxxxxxx"
+  playing_mode: 1
+  audio:
+    format: "pcm"
+    sample_rate: 16000
+    channels: 1
+    sample_format: "s16le"
+    slice_ms: 100
+    max_payload_size: 51200
+  behavior:
+    auto_register: true
+    auto_report: true
+    keepalive_interval_sec: 60
+    keepalive_method: "report"
+    report_sequence_start: 1
+    report_echo_timeout_sec: 5
+    register_ack_timeout_sec: 5
+    first_reply_timeout_sec: 20
+    downlink_idle_timeout_sec: 20
+    non_audio_followup_sec: 5
+    post_final_asr_silence_sec: 5
+    wait_timeout_slack_sec: 5
+    write_queue_depth: 256
+    write_drain_timeout_sec: 2
+    expect_downlink_need_ack: false
+    downlink_ack: { mode: binary, sleep_ms: 0, code: 0 }
+  uuid: { min: 1, max: 2147483647 }
+  server: { url: "ws://127.0.0.1:8089/" }
+  recording:
+    enable_frame_log: true
+    save_uplink_audio: true
+    save_downlink_audio: true
+    output_dir: "./recordings"
