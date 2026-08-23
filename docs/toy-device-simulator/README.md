@@ -5,6 +5,7 @@
 本目录可单独阅读。同目录 `architecture.md` 与 `phase*.md` 可以互相参照；凡被参照的表，本目录内必须有全文。协议正文见 `docs/toy-device-websocket-protocol.md`。
 
 产品：忠实模拟 chatbot、批量并发、Agent API、调试 UI。  
+当前落地：Phase 1 CLI（speak / check / fixture）。  
 阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需（speak backlog ≠ outbound buffer）。
 
 实现前须对声明的基线提交做 PCM/TTS 冒烟（不要混入该仓库未提交改动），并从 `AudioHeader` 生成 golden。基线见 `architecture.md` §10。

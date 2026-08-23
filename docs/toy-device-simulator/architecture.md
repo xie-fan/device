@@ -1,5 +1,7 @@
 ﻿# 玩具设备模拟器 — 整体架构设计文档
 
+下文含 Phase 2+ 设计；当前 HEAD 未落地 REST / UI / manager.yaml。
+
 ## 1. 背景与目标
 
 玩具项目通过 WebSocket 为设备提供 ASR → LLM → TTS。本模拟器用于：
