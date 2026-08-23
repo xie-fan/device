@@ -41,6 +41,11 @@ func run(args []string, opts core.Options) int {
 	if *deviceID != "" {
 		cfg.DeviceID = *deviceID
 	}
+	// --device-id 覆盖后再校验，拒绝路径逃逸。
+	if err := config.Validate(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "配置拒绝:", err)
+		return 1
+	}
 	fault, err := core.ParseFault(*inject)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -271,7 +271,39 @@ func captureStdout(t *testing.T, fn func() int) (int, string) {
 	return code, string(b)
 }
 
+func TestSpeakRejectsEscapingDeviceID(t *testing.T) {
+	root := findRoot(t)
+	cfg, recDir := writeSpeakConfig(t)
+	audio := filepath.Join(root, "testdata", "hello.wav")
+	outside := filepath.Join(filepath.Dir(recDir), "etc")
+	for _, id := range []string{"../etc", `..\etc`} {
+		t.Run(id, func(t *testing.T) {
+			dialed := false
+			code := run([]string{"--config", cfg, "--audio", audio, "--device-id", id}, core.Options{
+				Dial: func(string, http.Header) (core.Conn, error) {
+					dialed = true
+					return nil, net.ErrClosed
+				},
+			})
+			if code == 0 {
+				t.Fatalf("%q 应拒绝", id)
+			}
+			if dialed {
+				t.Fatalf("%q 覆盖后应在 Dial 前被拒绝", id)
+			}
+			if _, err := os.Stat(outside); !os.IsNotExist(err) {
+				t.Fatalf("%q 不得在 output_dir 外 MkdirAll: %s (err=%v)", id, outside, err)
+			}
+		})
+	}
+}
+
 func writeSpeakYAML(t *testing.T) string {
+	p, _ := writeSpeakConfig(t)
+	return p
+}
+
+func writeSpeakConfig(t *testing.T) (cfgPath, recDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "device.yaml")
@@ -321,7 +353,7 @@ device:
 	if err := os.WriteFile(p, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return p
+	return p, filepath.Join(dir, "rec")
 }
 
 func findRoot(t *testing.T) string {

@@ -504,6 +504,34 @@ func TestSkipReportStaysRegistered(t *testing.T) {
 	}
 }
 
+func TestSpeakRejectsPathEscapeNoMkdirAll(t *testing.T) {
+	pcm, err := DecodeWAV(testdataWAV(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"../etc", `..\etc`} {
+		t.Run(id, func(t *testing.T) {
+			cfg := testDeviceCfg(t)
+			rec := cfg.Recording.OutputDir
+			cfg.DeviceID = id
+			d, _ := newTestDevice(t, cfg, FaultSkipRegister, autoOpts{})
+			startErr := d.Start(2 * time.Second)
+			if startErr == nil {
+				if _, _, err := d.Speak(pcm.Samples); err == nil {
+					t.Fatal("Speak 应因路径逃逸失败")
+				}
+				if d.SlotOccupied() {
+					t.Fatal("路径非法不得占槽")
+				}
+			}
+			outside := filepath.Join(filepath.Dir(rec), "etc")
+			if _, err := os.Stat(outside); !os.IsNotExist(err) {
+				t.Fatalf("不得在 output_dir 外 MkdirAll: %s (err=%v)", outside, err)
+			}
+		})
+	}
+}
+
 func TestWAVMismatchDoesNotOccupy(t *testing.T) {
 	cfg := testDeviceCfg(t)
 	d, _ := newTestDevice(t, cfg, FaultSkipRegister, autoOpts{})

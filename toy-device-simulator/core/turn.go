@@ -29,11 +29,15 @@ func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err erro
 
 	uuid = d.allocUUIDLocked()
 	turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
+	framesPath, upPath, downPath, turnPath, err := RecordingPaths(d.cfg.Recording.OutputDir, d.cfg.DeviceID, turnID)
+	if err != nil {
+		d.deviceMu.Unlock()
+		return "", 0, err
+	}
 	if err := d.slot.Occupy(turnID, uuid, copied); err != nil {
 		d.deviceMu.Unlock()
 		return "", 0, err
 	}
-	framesPath, upPath, downPath, turnPath := RecordingPaths(d.cfg.Recording.OutputDir, d.cfg.DeviceID, turnID)
 	tr := &turnRuntime{
 		id:         turnID,
 		uuid:       uuid,
@@ -59,7 +63,7 @@ func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err erro
 var testBeforeUplinkEnqueue func()
 
 func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
-	frames := BuildUplinkFrames(pcm, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault)
+	frames := BuildUplinkFrames(pcm, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault, d.cfg.Audio.MaxPayloadSize)
 
 	d.deviceMu.Lock()
 	if d.slot.ID() != turnID || d.finalizeStarted {

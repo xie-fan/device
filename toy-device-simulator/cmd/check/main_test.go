@@ -56,6 +56,27 @@ func TestCheckRejectsMHDeviceType(t *testing.T) {
 	}
 }
 
+func TestCheckRejectsAutoRegisterFalse(t *testing.T) {
+	p := writeYAMLWithBehavior(t, "    auto_register: false\n    auto_report: true\n")
+	if code := run([]string{"--config", p}); code == 0 {
+		t.Fatal("auto_register: false 应非 0 退出")
+	}
+}
+
+func TestCheckRejectsChannels2(t *testing.T) {
+	p := writeYAMLWithAudio(t, 2, "s16le")
+	if code := run([]string{"--config", p}); code == 0 {
+		t.Fatal("channels: 2 应非 0 退出")
+	}
+}
+
+func TestCheckRejectsSampleFormatF32(t *testing.T) {
+	p := writeYAMLWithAudio(t, 1, "f32")
+	if code := run([]string{"--config", p}); code == 0 {
+		t.Fatal("sample_format: f32 应非 0 退出")
+	}
+}
+
 func TestCheckRejectsNonLoopbackWithoutFlag(t *testing.T) {
 	p := writeDeviceYAML(t, "A3", "ws://example.com/")
 	if code := run([]string{"--config", p}); code == 0 {
@@ -64,6 +85,66 @@ func TestCheckRejectsNonLoopbackWithoutFlag(t *testing.T) {
 	if code := run([]string{"--config", p, "--allow-production"}); code != 0 {
 		t.Fatalf("非 loopback 加 --allow-production 应退出 0，得到 %d", code)
 	}
+}
+
+func writeYAMLWithAudio(t *testing.T, channels int, sampleFormat string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "dev.yaml")
+	raw := fmt.Sprintf(`
+device:
+  enterprise: "demo"
+  device_type: "A3"
+  device_id: "sim_001"
+  action: "chatbot"
+  playing_mode: 1
+  audio:
+    format: "pcm"
+    sample_rate: 16000
+    channels: %d
+    sample_format: %q
+    slice_ms: 100
+    max_payload_size: 51200
+  behavior:
+    write_queue_depth: 256
+    write_drain_timeout_sec: 2
+    downlink_ack: { mode: binary, sleep_ms: 0, code: 0 }
+  uuid: { min: 1, max: 2147483647 }
+  server: { url: "ws://127.0.0.1:8089/" }
+`, channels, sampleFormat)
+	if err := os.WriteFile(p, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func writeYAMLWithBehavior(t *testing.T, extra string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "dev.yaml")
+	raw := fmt.Sprintf(`
+device:
+  enterprise: "demo"
+  device_type: "A3"
+  device_id: "sim_001"
+  action: "chatbot"
+  playing_mode: 1
+  audio:
+    format: "pcm"
+    sample_rate: 16000
+    channels: 1
+    sample_format: "s16le"
+    slice_ms: 100
+    max_payload_size: 51200
+  behavior:
+%s    write_queue_depth: 256
+    write_drain_timeout_sec: 2
+    downlink_ack: { mode: binary, sleep_ms: 0, code: 0 }
+  uuid: { min: 1, max: 2147483647 }
+  server: { url: "ws://127.0.0.1:8089/" }
+`, extra)
+	if err := os.WriteFile(p, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func writeDeviceYAML(t *testing.T, deviceType, serverURL string) string {

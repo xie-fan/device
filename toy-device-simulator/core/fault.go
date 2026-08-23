@@ -29,7 +29,8 @@ func FaultExpectsDrop(f Fault) bool {
 }
 
 // BuildUplinkFrames 按 fault 生成实际上行帧（必须能进 frames.jsonl outbound）。
-func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, f Fault) [][]byte {
+// 切片按 Phase 1 的 1ch/16bit（Validate 已保证）。oversize 长度为 maxPayloadSize+1；≤0 回退 51200。
+func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, f Fault, maxPayloadSize int) [][]byte {
 	parts := SlicePCM(pcm, int(sampleRate), 1, 16, sliceMs)
 	if len(parts) == 0 {
 		parts = [][]byte{{}}
@@ -39,10 +40,14 @@ func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, 
 	if f == FaultBadSeq {
 		startSeq = 1
 	}
+	oversizeN := maxPayloadSize
+	if oversizeN <= 0 {
+		oversizeN = 51200
+	}
 	for i, p := range parts {
 		payload := p
 		if f == FaultOversize {
-			payload = make([]byte, 51200+1)
+			payload = make([]byte, oversizeN+1)
 		}
 		stage := protocol.StageUploading
 		seq := startSeq + uint32(i)
