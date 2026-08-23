@@ -1,19 +1,59 @@
 package core
 
 import (
+	"fmt"
 	"time"
 
 	"toy-device-simulator/protocol"
 )
 
-func (d *DeviceInstance) sendReport(kind string) {
+func (d *DeviceInstance) sendReport(kind string) int {
 	d.deviceMu.Lock()
+	if d.finalizeStarted || d.finalizeCommitted || d.deleted {
+		d.deviceMu.Unlock()
+		return 0
+	}
 	d.connMu.Lock()
 	if kind == "initial" {
 		d.connState = ConnReporting
 	}
 	d.connMu.Unlock()
+	playingMode := d.cfg.PlayingMode
+	seq := d.registerPendingLocked(kind)
+	var n EventNotify
+	if kind == "initial" {
+		_, n = d.appendEventLocked("reporting", "", "", "", "", "")
+	}
+	d.deviceMu.Unlock()
+	if kind == "initial" {
+		d.finishCritical([]EventNotify{n}, TerminalNotify{})
+	}
+
+	raw, err := d.encodeReport(seq, playingMode)
+	if err != nil {
+		d.requestFinalizeAsync("report_encode", false)
+		return seq
+	}
+	d.enqueueOrFinalize(Frame{Kind: KindReport, Raw: raw, Seq: uint32(seq)})
+	return seq
+}
+
+func (d *DeviceInstance) encodeReport(seq, playingMode int) ([]byte, error) {
+	return protocol.EncodeManage(
+		protocol.Topic(d.cfg.Enterprise, d.cfg.DeviceType, d.cfg.DeviceID, "report", "server"),
+		protocol.ReportData{
+			SequenceNumber: seq,
+			Code:           0,
+			SignalStrength: 0,
+			BatPowerLevel:  100,
+			PlayingMode:    playingMode,
+		},
+	)
+}
+
+func (d *DeviceInstance) registerPendingLocked(kind string) int {
 	d.reportMu.Lock()
+	defer d.reportMu.Unlock()
 	seq := d.reports.TakeLocked()
 	timeout := seconds(d.cfg.Behavior.ReportEchoTimeoutSec)
 	if timeout <= 0 {
@@ -22,27 +62,48 @@ func (d *DeviceInstance) sendReport(kind string) {
 	meta := &pendingMeta{kind: kind}
 	meta.timer = time.AfterFunc(timeout, func() { d.onReportTimeout(seq) })
 	d.pendingMeta[seq] = meta
-	d.reportMu.Unlock()
-	if kind == "initial" {
-		d.appendEventLocked("reporting", "", "", "", "", "")
+	return seq
+}
+
+func (d *DeviceInstance) stopPendingReportsLocked() {
+	d.reportMu.Lock()
+	defer d.reportMu.Unlock()
+	for seq, meta := range d.pendingMeta {
+		if meta != nil {
+			if meta.timer != nil {
+				meta.timer.Stop()
+			}
+			meta.once.TryConsume()
+		}
+		delete(d.pendingMeta, seq)
+		d.reports.Ack(seq)
 	}
+}
+
+// ManualReport 仅 Ready；可选热更 playingMode。更新 playing_mode 与登记 pending 同一临界区。
+func (d *DeviceInstance) ManualReport(playingMode *int) (int, error) {
+	d.deviceMu.Lock()
+	d.connMu.Lock()
+	st := d.connState
+	d.connMu.Unlock()
+	if st != ConnReady || d.finalizeStarted || d.finalizeCommitted || d.deleted {
+		d.deviceMu.Unlock()
+		return 0, fmt.Errorf("仅 Ready 可 POST /report")
+	}
+	if playingMode != nil {
+		d.cfg.PlayingMode = *playingMode
+	}
+	playing := d.cfg.PlayingMode
+	seq := d.registerPendingLocked("manual")
 	d.deviceMu.Unlock()
 
-	raw, err := protocol.EncodeManage(
-		protocol.Topic(d.cfg.Enterprise, d.cfg.DeviceType, d.cfg.DeviceID, "report", "server"),
-		protocol.ReportData{
-			SequenceNumber: seq,
-			Code:           0,
-			SignalStrength: 0,
-			BatPowerLevel:  100,
-			PlayingMode:    d.cfg.PlayingMode,
-		},
-	)
+	raw, err := d.encodeReport(seq, playing)
 	if err != nil {
 		d.requestFinalizeAsync("report_encode", false)
-		return
+		return seq, nil
 	}
 	d.enqueueOrFinalize(Frame{Kind: KindReport, Raw: raw, Seq: uint32(seq)})
+	return seq, nil
 }
 
 func (d *DeviceInstance) onReportTimeout(seq int) {
@@ -60,6 +121,10 @@ func (d *DeviceInstance) onReportTimeout(seq int) {
 	d.reports.Ack(seq)
 	kind := meta.kind
 	d.reportMu.Unlock()
+	if d.finalizeStarted || d.finalizeCommitted || d.deleted {
+		d.deviceMu.Unlock()
+		return
+	}
 	_, n := d.appendEventLocked("report_timeout", "", "", "", "", "")
 	acc = append(acc, n)
 	d.connMu.Lock()

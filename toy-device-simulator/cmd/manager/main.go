@@ -1,0 +1,42 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"toy-device-simulator/api"
+	"toy-device-simulator/manager"
+)
+
+func main() {
+	fs := flag.NewFlagSet("manager", flag.ExitOnError)
+	cfgPath := fs.String("config", "", "Manager YAML 路径")
+	addr := fs.String("listen", "127.0.0.1:8090", "HTTP 监听地址")
+	templates := fs.String("templates", filepath.Join("configs", "templates"), "模板目录")
+	recordings := fs.String("recordings", "recordings", "录音根目录")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(1)
+	}
+	if *cfgPath == "" {
+		fmt.Fprintln(os.Stderr, "必须指定 --config")
+		os.Exit(1)
+	}
+	cfg, err := manager.LoadFile(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "配置拒绝:", err)
+		os.Exit(1)
+	}
+	h := api.New(api.Options{
+		Config:        cfg,
+		TemplatesDir:  *templates,
+		RecordingsDir: *recordings,
+	})
+	fmt.Fprintf(os.Stderr, "manager listening on %s\n", *addr)
+	if err := http.ListenAndServe(*addr, h); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

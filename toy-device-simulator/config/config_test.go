@@ -131,6 +131,21 @@ func moduleRoot(t *testing.T) string {
 	return filepath.Join(filepath.Dir(file), "..")
 }
 
+func TestValidatePhase2AllowsJSONAckAndNonZeroSleepMs(t *testing.T) {
+	d, err := Load(exampleYAML(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Behavior.DownlinkAck.Mode = "json"
+	d.Behavior.DownlinkAck.SleepMs = 500
+	if err := Validate(d); err == nil {
+		t.Fatal("Phase 1 Validate 必须继续拒绝 json")
+	}
+	if err := ValidatePhase2(d); err != nil {
+		t.Fatalf("ValidatePhase2 应允许 json 与 sleep_ms=500: %v", err)
+	}
+}
+
 func TestPlayingMode123AreLegal(t *testing.T) {
 	d, err := Load(exampleYAML(t))
 	if err != nil {

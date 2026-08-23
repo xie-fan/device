@@ -82,14 +82,14 @@ func (d *DeviceInstance) handleAudioDownlink(raw []byte) {
 			d.recorder.SubmitPCM(d.turn.downPath, view.Payload, false)
 		}
 		if h.NeedAck == 1 {
-			d.enqueueAckLocked(h.SequenceNumber, protocol.DownlinkTTS)
+			d.enqueueAckLocked(h.SequenceNumber, protocol.DownlinkTTS, h.UUID, "")
 		}
 		d.routeRelatedLocked(raw, &acc, &tn)
 		return
 	}
 
 	if h.NeedAck == 1 {
-		d.enqueueAckLocked(h.SequenceNumber, protocol.DownlinkHintAudio)
+		d.enqueueAckLocked(h.SequenceNumber, protocol.DownlinkHintAudio, h.UUID, "")
 	}
 }
 
@@ -139,9 +139,13 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 	env, err := protocol.DecodeManage(raw)
 	var acc []EventNotify
 	var tn TerminalNotify
+	var speak []chan SpeakableResult
+	var speakCode int
+	var speakState ConnState
 	d.deviceMu.Lock()
 	defer func() {
 		d.deviceMu.Unlock()
+		notifySpeakable(speak, speakCode, speakState)
 		d.finishCritical(acc, tn)
 	}()
 	if err != nil {
@@ -160,6 +164,7 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 		}
 		n, fin := d.handleRegisterAckLocked(ack.Code)
 		acc = append(acc, n...)
+		speak, speakCode, speakState = d.maybeTakeSpeakableLocked()
 		if fin {
 			go d.requestFinalizeAsync("ack_failure", false)
 		}
@@ -172,6 +177,7 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 		}
 		n, _ := d.handleReportEchoLocked(rep.SequenceNumber)
 		acc = append(acc, n...)
+		speak, speakCode, speakState = d.maybeTakeSpeakableLocked()
 	case topicEnds(env.Topic, "/command/client"):
 		cmd, _ := protocol.DecodeCommandData(env.Data)
 		turnID := ""
@@ -184,7 +190,7 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 		_, n := d.appendEventLocked("command_received", turnID, "", "", "", "")
 		acc = append(acc, n)
 		if cmd.NeedAck == 1 {
-			d.enqueueAckLocked(uint32(cmd.SequenceNumber), protocol.DownlinkCommand)
+			d.enqueueAckLocked(uint32(cmd.SequenceNumber), protocol.DownlinkCommand, 0, env.Topic)
 		}
 		if related && d.turn != nil {
 			d.turn.hasCmd = true
@@ -269,7 +275,7 @@ func (d *DeviceInstance) applyFailedJSONLocked(reason string) ([]EventNotify, Te
 		acc = append(acc, n2)
 	}
 	tn := d.terminalLocked(EndError, ReplyEmpty, "error", false)
-	acc = append(acc, EventNotify{EventWaiters: tn.EventWaiters, SlowSubs: tn.SlowSubs})
+	acc = append(acc, eventNotifyOf(tn))
 	return acc, tn
 }
 
@@ -359,9 +365,44 @@ func (d *DeviceInstance) applyWaitingTimersLocked(raw []byte) {
 	}
 }
 
-func (d *DeviceInstance) enqueueAckLocked(seq, downlinkType uint32) {
+func jsonDownlinkType(t uint32) string {
+	switch t {
+	case protocol.DownlinkTTS:
+		return "tts"
+	case protocol.DownlinkHintAudio:
+		return "hint_audio"
+	case protocol.DownlinkCommand:
+		return "command"
+	default:
+		return "tts"
+	}
+}
+
+func (d *DeviceInstance) enqueueAckLocked(seq, downlinkType, uuid uint32, cmdTopic string) {
 	code := uint32(d.cfg.Behavior.DownlinkAck.Code)
-	raw, err := protocol.EncodeAckFrame(protocol.AudioBinaryAck(seq, downlinkType, code))
+	sleepMs := d.cfg.Behavior.DownlinkAck.SleepMs
+	d.throttle.Observe(sleepMs)
+	var raw []byte
+	var err error
+	if d.cfg.Behavior.DownlinkAck.Mode == "json" {
+		ack := protocol.JSONAck{
+			Ack:            seq,
+			SequenceNumber: seq,
+			DownlinkType:   jsonDownlinkType(downlinkType),
+			Code:           code,
+			SleepMs:        uint32(sleepMs),
+		}
+		if downlinkType == protocol.DownlinkCommand {
+			ack.Topic = cmdTopic
+		} else {
+			ack.UUID = uuid
+		}
+		raw, err = protocol.EncodeJSONAckFrame(d.cfg.Enterprise, d.cfg.DeviceType, d.cfg.DeviceID, ack)
+	} else {
+		m := protocol.AudioBinaryAck(seq, downlinkType, code)
+		m.SleepMs = uint32(sleepMs)
+		raw, err = protocol.EncodeAckFrame(m)
+	}
 	if err != nil {
 		return
 	}
@@ -412,7 +453,7 @@ func (d *DeviceInstance) applyDecisionLocked(dec Decision) ([]EventNotify, Termi
 		uplinkIfEmpty = "interrupt"
 	}
 	tn := d.terminalLocked(dec.EndReason, dec.ReplyKind, uplinkIfEmpty, false)
-	acc = append(acc, EventNotify{EventWaiters: tn.EventWaiters, SlowSubs: tn.SlowSubs})
+	acc = append(acc, eventNotifyOf(tn))
 	return acc, tn
 }
 

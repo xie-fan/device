@@ -55,9 +55,12 @@ func (d *DeviceInstance) Start(timeout time.Duration) error {
 	d.connGeneration = 1
 	d.connState = ConnConnected
 	d.connMu.Unlock()
-	d.appendEventLocked("connected", "", "", "", "", "")
+	_, n := d.appendEventLocked("connected", "", "", "", "", "")
+	speak, speakCode, speakState := d.maybeTakeSpeakableLocked()
 	d.readLoopDone = make(chan struct{})
 	d.deviceMu.Unlock()
+	notifySpeakable(speak, speakCode, speakState)
+	d.finishCritical([]EventNotify{n}, TerminalNotify{})
 
 	go d.readLoop(conn)
 	go d.writePump(conn)
@@ -113,6 +116,7 @@ func (d *DeviceInstance) readLoop(conn Conn) {
 		}
 		raw := append([]byte(nil), p...)
 		d.handleInbound(raw)
+		d.fireActivity()
 	}
 }
 
@@ -145,6 +149,7 @@ func (d *DeviceInstance) writePump(conn Conn) {
 			return
 		}
 		d.onWritten(f)
+		d.fireActivity()
 	}
 }
 

@@ -85,7 +85,8 @@ func run(args []string, opts core.Options) int {
 		return 1
 	}
 
-	if _, _, err := d.Speak(pcm.Samples); err != nil {
+	turnID, _, err := d.Speak(pcm.Samples)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "speak 失败:", err)
 		return 1
 	}
@@ -94,7 +95,7 @@ func run(args []string, opts core.Options) int {
 	// 立刻 return 0 会在 Occupied 时触发 defer Shutdown → BeginClose 滤掉未发完的 Stage=1/2。
 	// SIGINT 仍由上方 RequestFinalize("user_stop", true) 收口；正常路径此时槽应已 Terminal。
 	budget := d.WaitBudgetFor(len(pcm.Samples))
-	ev, err := d.WaitTurn(budget)
+	ev, err := d.WaitTurn(turnID, budget)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "等待 Turn 失败:", err)
 		if errors.Is(err, core.ErrWaitTimeout) {

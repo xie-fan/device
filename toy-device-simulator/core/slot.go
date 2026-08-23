@@ -2,6 +2,11 @@ package core
 
 import "errors"
 
+var (
+	ErrSlotOccupied = errors.New("槽已占用")
+	ErrSpeakPermit  = errors.New("speak_permit")
+)
+
 type TurnState int
 
 const (
@@ -42,7 +47,7 @@ func (s *Slot) Occupy(id string, uuid uint32, pcm []byte) error {
 		return errors.New("必须先拷贝 PCM")
 	}
 	if s.Occupied() {
-		return errors.New("槽已占用")
+		return ErrSlotOccupied
 	}
 	s.id = id
 	s.uuid = uuid
@@ -54,6 +59,19 @@ func (s *Slot) Occupy(id string, uuid uint32, pcm []byte) error {
 	s.woke = false
 	s.held = false
 	return nil
+}
+
+// Vacate 仅用于 occupy 成功但后续立刻失败（如 speak_permit）时回滚，不得留下 Reserved。
+func (s *Slot) Vacate() {
+	s.state = TurnEmpty
+	s.id = ""
+	s.uuid = 0
+	s.pcm = nil
+	s.uplinkEndReason = ""
+	s.turnEndReason = ""
+	s.replyKind = ""
+	s.woke = false
+	s.held = false
 }
 
 func (s *Slot) SetState(st TurnState) { s.state = st }
@@ -72,6 +90,8 @@ type TerminalNotify struct {
 	Event        Event
 	EventWaiters int
 	SlowSubs     int
+	wakes        []waiterWake
+	done         chan Event
 }
 
 // TerminalLocked 调用方必须已持锁。禁止在函数内唤醒。

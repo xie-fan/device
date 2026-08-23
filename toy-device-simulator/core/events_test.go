@@ -23,6 +23,33 @@ func TestEventSeqStartsAtOneAndAccumulates(t *testing.T) {
 	}
 }
 
+func TestAppendLockedPicksRegisteredWaiter(t *testing.T) {
+	log := NewEventLog("sim_001", "ins_w")
+	_, ch, expired, hit := log.FindOrRegisterWaiter(0, "ready", "")
+	if expired || hit || ch == nil {
+		t.Fatal("无人命中历史时应登记 waiter")
+	}
+	if log.WaiterCount() != 1 {
+		t.Fatalf("WaiterCount=%d", log.WaiterCount())
+	}
+	ev, n := log.AppendLocked("ready", "", "", "", "", "")
+	if n.EventWaiters != 1 {
+		t.Fatalf("登记后 AppendLocked 必须摘走 waiter, EventWaiters=%d", n.EventWaiters)
+	}
+	if log.WaiterCount() != 0 {
+		t.Fatal("摘走后表应空")
+	}
+	n.NotifyHTTP()
+	select {
+	case got := <-ch:
+		if got.EventSeq != ev.EventSeq || got.Type != "ready" {
+			t.Fatalf("%+v", got)
+		}
+	default:
+		t.Fatal("摘走的 waiter 必须被唤醒")
+	}
+}
+
 func TestForbiddenServerLogNames(t *testing.T) {
 	for _, name := range []string{"device_not_found", "status_invalid", "no_active_turn", "inferred_no_reply"} {
 		if !ForbiddenEventType(name) {

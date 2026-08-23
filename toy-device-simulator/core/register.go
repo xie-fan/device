@@ -42,8 +42,9 @@ func (d *DeviceInstance) startRegister() {
 	}
 	d.registerTimer = time.AfterFunc(timeout, func() { d.onRegisterTimeout(attempt) })
 	d.connMu.Unlock()
-	d.appendEventLocked("registering", "", "", "", "", "")
+	_, n := d.appendEventLocked("registering", "", "", "", "", "")
 	d.deviceMu.Unlock()
+	d.finishCritical([]EventNotify{n}, TerminalNotify{})
 
 	d.enqueueOrFinalize(Frame{Kind: KindManage, Raw: raw, Topic: protocol.Topic(d.cfg.Enterprise, d.cfg.DeviceType, d.cfg.DeviceID, "register", "server")})
 }

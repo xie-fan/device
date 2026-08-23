@@ -1,0 +1,409 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync"
+	"testing"
+	"time"
+
+	"toy-device-simulator/core"
+	"toy-device-simulator/manager"
+	"toy-device-simulator/protocol"
+)
+
+type autoOpts struct {
+	replyTTS bool
+	failJSON bool
+	needAck  bool
+	hold     bool
+	silent   bool
+}
+
+type testEnv struct {
+	t         *testing.T
+	srv       *httptest.Server
+	client    *http.Client
+	cfg       manager.Config
+	templates string
+	recDir    string
+	mu        sync.Mutex
+	conns     map[string]*fakeConn
+	auto      autoOpts
+	afterStat func()
+}
+
+func newEnv(t *testing.T) *testEnv {
+	t.Helper()
+	return newEnvCfg(t, nil)
+}
+
+func newEnvCfg(t *testing.T, mut func(*manager.Config)) *testEnv {
+	t.Helper()
+	e := &testEnv{
+		t:         t,
+		templates: t.TempDir(),
+		recDir:    t.TempDir(),
+		conns:     map[string]*fakeConn{},
+		client:    &http.Client{Timeout: 8 * time.Second},
+		cfg: manager.Config{
+			MaxConnections:        32,
+			MaxConcurrentSpeaking: 8,
+			DefaultStaggerMs:      50,
+			PerDeviceBufferBytes:  1048576,
+			WriteQueueDepth:       256,
+			WriteDrainTimeoutSec:  2,
+			EventLogMaxEntries:    10000,
+			EventLogTTLHours:      24,
+			AssetsRoot:            t.TempDir(),
+			MaxAssetBytes:         10 * 1024 * 1024,
+			MaxAssetDurationSec:   60,
+			MaxStreamEntries:      16,
+			MaxStreamDurationSec:  60,
+			WaitReadyTimeoutSec:   30,
+		},
+	}
+	if mut != nil {
+		mut(&e.cfg)
+	}
+	if e.cfg.AssetsRoot == "" {
+		e.cfg.AssetsRoot = t.TempDir()
+	}
+	h := New(Options{
+		Config:        e.cfg,
+		Dial:          e.dial,
+		TemplatesDir:  e.templates,
+		RecordingsDir: e.recDir,
+		AfterAssetStat: func() {
+			if e.afterStat != nil {
+				e.afterStat()
+			}
+		},
+	})
+	e.srv = httptest.NewServer(h)
+	t.Cleanup(func() {
+		if c, ok := h.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+		e.srv.Close()
+	})
+	return e
+}
+
+func (e *testEnv) dial(_ string, h http.Header) (core.Conn, error) {
+	c := newFakeConn()
+	if e.auto.hold {
+		c.writeGate = make(chan struct{})
+	}
+	startAuto(c, e.auto)
+	id := deviceIDFromHeader(h.Get("Device"))
+	e.mu.Lock()
+	e.conns[id] = c
+	e.mu.Unlock()
+	return c, nil
+}
+
+func (e *testEnv) conn(id string) *fakeConn {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.conns[id]
+}
+
+func deviceIDFromHeader(dev string) string {
+	if i := lastSlash(dev); i >= 0 && i+1 < len(dev) {
+		return dev[i+1:]
+	}
+	return dev
+}
+
+func lastSlash(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
+}
+
+func (e *testEnv) url(path string) string {
+	return e.srv.URL + path
+}
+
+func (e *testEnv) do(t *testing.T, method, path string, body any) (int, []byte) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rdr = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, e.url(path), rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, b
+}
+
+func (e *testEnv) post(t *testing.T, path string, body any) (int, []byte) {
+	t.Helper()
+	return e.do(t, http.MethodPost, path, body)
+}
+
+func (e *testEnv) put(t *testing.T, path string, body any) (int, []byte) {
+	t.Helper()
+	return e.do(t, http.MethodPut, path, body)
+}
+
+func (e *testEnv) get(t *testing.T, path string) (int, []byte, http.Header) {
+	t.Helper()
+	resp, err := e.client.Get(e.url(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, b, resp.Header.Clone()
+}
+
+func (e *testEnv) del(t *testing.T, path string) (int, []byte) {
+	t.Helper()
+	return e.do(t, http.MethodDelete, path, nil)
+}
+
+func decodeMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if len(body) == 0 {
+		return m
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("JSON 解析失败: %v body=%s", err, body)
+	}
+	return m
+}
+
+func strField(m map[string]any, k string) string {
+	if m == nil {
+		return ""
+	}
+	s, _ := m[k].(string)
+	return s
+}
+
+func boolField(m map[string]any, k string) bool {
+	b, _ := m[k].(bool)
+	return b
+}
+
+func intField(m map[string]any, k string) int {
+	switch v := m[k].(type) {
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func wavPCM(sampleRate int) []byte {
+	n := sampleRate / 10 * 2 // 100ms s16le mono
+	return core.EncodeWAV(core.PCM{
+		Samples:       bytes.Repeat([]byte{1, 0}, n/2),
+		SampleRate:    sampleRate,
+		Channels:      1,
+		BitsPerSample: 16,
+	})
+}
+
+func (e *testEnv) postAsset(t *testing.T, filename string, data []byte) (int, []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, e.url("/assets"), &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, b
+}
+
+func (e *testEnv) deviceBody(id string) map[string]any {
+	return map[string]any{
+		"enterprise":       "demo",
+		"device_type":      "A3",
+		"device_id":        id,
+		"action":           "chatbot",
+		"playing_mode":     1,
+		"firmware_version": "1.0.0",
+		"nic_type":         "wifi",
+		"nic_iccid":        "8986",
+		"audio": map[string]any{
+			"format":           "pcm",
+			"sample_rate":      16000,
+			"channels":         1,
+			"sample_format":    "s16le",
+			"slice_ms":         100,
+			"max_payload_size": 51200,
+		},
+		"behavior": map[string]any{
+			"auto_register":          true,
+			"auto_report":            true,
+			"keepalive_interval_sec": 60,
+			"report_sequence_start":  1,
+			"downlink_ack":           map[string]any{"mode": "binary", "sleep_ms": 0, "code": 0},
+		},
+		"uuid":      map[string]any{"min": 1, "max": 2147483647},
+		"server":    map[string]any{"url": "ws://127.0.0.1:1/"},
+		"recording": map[string]any{"enable_frame_log": true, "save_uplink_audio": true, "save_downlink_audio": true, "output_dir": e.recDir},
+	}
+}
+
+func (e *testEnv) createDevice(t *testing.T, id string) (instanceID string) {
+	t.Helper()
+	code, body := e.post(t, "/devices", map[string]any{"device": e.deviceBody(id)})
+	if code != http.StatusCreated {
+		t.Fatalf("POST /devices 应 201，得到 %d body=%s", code, body)
+	}
+	m := decodeMap(t, body)
+	inst, _ := m["instances"].([]any)
+	if len(inst) == 0 {
+		t.Fatalf("201 应含 instances，body=%s", body)
+	}
+	row, _ := inst[0].(map[string]any)
+	instanceID = strField(row, "instance_id")
+	if instanceID == "" {
+		t.Fatalf("instance_id 为空，body=%s", body)
+	}
+	return instanceID
+}
+
+func (e *testEnv) startDevice(t *testing.T, id string) (instanceID string, gen int) {
+	t.Helper()
+	start := time.Now()
+	code, body := e.post(t, "/devices/"+id+"/start", nil)
+	if code != http.StatusAccepted {
+		t.Fatalf("POST start 应 202，得到 %d body=%s", code, body)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("start 不得等待 Ready")
+	}
+	m := decodeMap(t, body)
+	instanceID = strField(m, "instance_id")
+	gen = intField(m, "conn_generation")
+	if instanceID == "" || gen == 0 {
+		t.Fatalf("start 应返回 instance_id 与 conn_generation，body=%s", body)
+	}
+	return instanceID, gen
+}
+
+func (e *testEnv) waitReady(t *testing.T, id, instanceID string, gen int) {
+	t.Helper()
+	code, body := e.post(t, "/devices/"+id+"/wait_ready", map[string]any{
+		"instance_id":     instanceID,
+		"conn_generation": gen,
+		"timeout_sec":     5,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("wait_ready 应 200，得到 %d body=%s", code, body)
+	}
+}
+
+func (e *testEnv) createStartReady(t *testing.T, id string) (instanceID string, gen int) {
+	t.Helper()
+	e.createDevice(t, id)
+	instanceID, gen = e.startDevice(t, id)
+	e.waitReady(t, id, instanceID, gen)
+	return instanceID, gen
+}
+
+func (e *testEnv) postTemplate(t *testing.T, templateID string, device map[string]any) (int, []byte) {
+	t.Helper()
+	return e.post(t, "/templates", map[string]any{"template_id": templateID, "device": device})
+}
+
+func (e *testEnv) uploadWAV(t *testing.T) string {
+	t.Helper()
+	code, body := e.postAsset(t, "a.wav", wavPCM(16000))
+	if code != http.StatusCreated {
+		t.Fatalf("POST /assets 应 201，得到 %d body=%s", code, body)
+	}
+	id := strField(decodeMap(t, body), "asset_id")
+	if id == "" {
+		t.Fatalf("asset_id 为空，body=%s", body)
+	}
+	return id
+}
+
+func containsBytes(body []byte, s string) bool {
+	return bytes.Contains(body, []byte(s))
+}
+
+func wsURL(httpURL, path, rawQuery string) string {
+	u, err := url.Parse(httpURL)
+	if err != nil {
+		return ""
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else {
+		u.Scheme = "ws"
+	}
+	u.Path = path
+	u.RawQuery = rawQuery
+	return u.String()
+}
+
+func manageIsRegister(raw []byte) bool {
+	if len(raw) == 0 || raw[0] != protocol.FirstManage {
+		return false
+	}
+	env, err := protocol.DecodeManage(raw)
+	if err != nil {
+		return false
+	}
+	return len(env.Topic) >= len("/register/server") &&
+		(env.Topic[len(env.Topic)-len("/register/server"):] == "/register/server")
+}

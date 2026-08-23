@@ -250,10 +250,11 @@ func TestHappyPathRegisterReportTTS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := d.Speak(pcm.Samples); err != nil {
+	turnID, _, err := d.Speak(pcm.Samples)
+	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := d.WaitTurn(d.WaitBudgetFor(len(pcm.Samples)))
+	ev, err := d.WaitTurn(turnID, d.WaitBudgetFor(len(pcm.Samples)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,10 +312,11 @@ func TestFailedJSONDoesNotCloseSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	pcm, _ := DecodeWAV(testdataWAV(t))
-	if _, _, err := d.Speak(pcm.Samples); err != nil {
+	turnID, _, err := d.Speak(pcm.Samples)
+	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := d.WaitTurn(d.WaitBudgetFor(len(pcm.Samples)))
+	ev, err := d.WaitTurn(turnID, d.WaitBudgetFor(len(pcm.Samples)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +359,7 @@ func TestFailedJSONDuringUplinkNoStage1AfterStage3(t *testing.T) {
 		t.Fatal(err)
 	}
 	pcm := uplinkPCM(cfg, 24)
-	_, uuid, err := d.Speak(pcm)
+	turnID, uuid, err := d.Speak(pcm)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +369,7 @@ func TestFailedJSONDuringUplinkNoStage1AfterStage3(t *testing.T) {
 	waitGap(t, d, uuid, protocol.StageBreak, func() { conn.Push(failJSON) })
 
 	releaseWriteGate(conn)
-	ev, err := d.WaitTurn(d.WaitBudgetFor(len(pcm)))
+	ev, err := d.WaitTurn(turnID, d.WaitBudgetFor(len(pcm)))
 	if err != nil {
 		t.Fatal(err)
 	}

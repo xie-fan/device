@@ -123,13 +123,14 @@ func (d *DeviceInstance) phaseC() {
 	var tn TerminalNotify
 	d.deviceMu.Lock()
 	d.finalizeCommitted = true
+	d.stopPendingReportsLocked()
 	if d.slot.Occupied() {
 		uplinkIfEmpty := ""
 		if d.slot.State() != TurnReserved {
 			uplinkIfEmpty = "error"
 		}
 		tn = d.terminalLocked(EndConnectionLost, "", uplinkIfEmpty, true)
-		acc = append(acc, EventNotify{EventWaiters: tn.EventWaiters, SlowSubs: tn.SlowSubs})
+		acc = append(acc, eventNotifyOf(tn))
 	}
 	d.connMu.Lock()
 	d.connState = ConnDisconnected
@@ -141,7 +142,9 @@ func (d *DeviceInstance) phaseC() {
 		_, n := d.appendEventLocked("connection_failed", "", d.finalizeReason, "", "", "")
 		acc = append(acc, n)
 	}
+	speak := d.takeSpeakableWaitersLocked()
 	close(d.finalizeDone)
 	d.deviceMu.Unlock()
+	notifySpeakable(speak, 409, ConnDisconnected)
 	d.finishCritical(acc, tn)
 }

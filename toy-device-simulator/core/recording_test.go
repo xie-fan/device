@@ -27,6 +27,27 @@ func TestPhase1RecordingPathHasNoInstanceID(t *testing.T) {
 	}
 }
 
+func TestRecordingLayoutIncludesInstanceID(t *testing.T) {
+	frames, uplink, downlink, turn, err := RecordingPathsPhase2("./recordings", "sim_001", "ins_abc", "turn_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.ToSlash(filepath.Join("recordings", "sim_001", "ins_abc", "turn_1"))
+	for _, p := range []string{frames, uplink, downlink, turn} {
+		dir := filepath.ToSlash(filepath.Dir(p))
+		if dir != want {
+			t.Fatalf("录音路径应为 recordings/{device_id}/{instance_id}/{turn_id}/，得到 %s", dir)
+		}
+		if !PathHasInstanceID(p, "ins_abc") {
+			t.Fatalf("路径必须含 instance_id: %s", p)
+		}
+	}
+	if filepath.Base(frames) != "frames.jsonl" || filepath.Base(uplink) != "uplink.pcm" ||
+		filepath.Base(downlink) != "downlink.pcm" || filepath.Base(turn) != "turn.json" {
+		t.Fatalf("文件名不对: %s %s %s %s", frames, uplink, downlink, turn)
+	}
+}
+
 func TestRecordingDirRejectsPathEscape(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "recordings")
 	ids := []string{"../etc", `..\etc`, "..", "/etc", `C:\Windows`, "foo/bar", "foo\\bar", "a\x00b", ""}

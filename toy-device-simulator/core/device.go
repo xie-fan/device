@@ -25,9 +25,15 @@ type Conn interface {
 type DialFunc func(url string, header http.Header) (Conn, error)
 
 type Options struct {
-	Dial         DialFunc
-	Fault        Fault
-	RecorderHook func()
+	Dial               DialFunc
+	Fault              Fault
+	RecorderHook       func()
+	InstanceID         string
+	EventLog           *EventLog
+	EventLogMaxEntries int
+	Phase2Recording    bool
+	OnTurnTerminal     func(turnID string, ev Event)
+	OnActivity         func()
 }
 
 type pendingMeta struct {
@@ -65,6 +71,8 @@ type turnRuntime struct {
 	upPath     string
 	downPath   string
 	turnPath   string
+
+	done chan Event
 }
 
 func (t *turnRuntime) signalDrained() {
@@ -118,11 +126,21 @@ type DeviceInstance struct {
 
 	completionCh chan Event
 	lastTerminal Event
+	turnDone     map[string]chan Event
+	turnTerm     map[string]Event
 
 	drainTimeout time.Duration
 	sampleRate   uint32
 
-	speakPermitOnce atomic.Bool
+	onTurnTerminal func(turnID string, ev Event)
+	onActivity     func()
+	deleted        bool
+
+	phase2Recording  bool
+	throttle         protocol.SleepThrottle
+	speakableWaiters []chan SpeakableResult
+	hubSubs          map[int]*WSSub
+	hubNext          int
 }
 
 func newInstanceID() string {
@@ -136,24 +154,39 @@ func NewDevice(cfg config.Device, opts Options) *DeviceInstance {
 	if start == 0 {
 		start = 1
 	}
-	id := newInstanceID()
+	id := opts.InstanceID
+	if id == "" {
+		id = newInstanceID()
+	}
+	events := opts.EventLog
+	if events == nil {
+		events = NewEventLog(cfg.DeviceID, id)
+		if opts.EventLogMaxEntries > 0 {
+			events.SetMaxEntries(opts.EventLogMaxEntries)
+		}
+	}
 	d := &DeviceInstance{
-		cfg:          cfg,
-		fault:        opts.Fault,
-		instanceID:   id,
-		dial:         opts.Dial,
-		slot:         NewSlot(),
-		events:       NewEventLog(cfg.DeviceID, id),
-		reports:      NewReportSeq(start),
-		pendingMeta:  map[int]*pendingMeta{},
-		outbound:     NewOutboundBuffer(cfg.Behavior.WriteQueueDepth),
-		recorder:     recording.New(cfg.Recording.EnableFrameLog, cfg.Recording.SaveUplinkAudio, cfg.Recording.SaveDownlinkAudio),
-		regDone:      make(chan error, 1),
-		readyDone:    make(chan error, 1),
-		finalizeDone: make(chan struct{}),
-		keepStop:     make(chan struct{}),
-		drainTimeout: time.Duration(cfg.Behavior.WriteDrainTimeoutSec) * time.Second,
-		sampleRate:   uint32(cfg.Audio.SampleRate),
+		cfg:             cfg,
+		fault:           opts.Fault,
+		instanceID:      id,
+		dial:            opts.Dial,
+		slot:            NewSlot(),
+		events:          events,
+		reports:         NewReportSeq(start),
+		pendingMeta:     map[int]*pendingMeta{},
+		outbound:        NewOutboundBuffer(cfg.Behavior.WriteQueueDepth),
+		recorder:        recording.New(cfg.Recording.EnableFrameLog, cfg.Recording.SaveUplinkAudio, cfg.Recording.SaveDownlinkAudio),
+		regDone:         make(chan error, 1),
+		readyDone:       make(chan error, 1),
+		finalizeDone:    make(chan struct{}),
+		keepStop:        make(chan struct{}),
+		drainTimeout:    time.Duration(cfg.Behavior.WriteDrainTimeoutSec) * time.Second,
+		sampleRate:      uint32(cfg.Audio.SampleRate),
+		phase2Recording: opts.Phase2Recording,
+		onTurnTerminal:  opts.OnTurnTerminal,
+		onActivity:      opts.OnActivity,
+		turnDone:        map[string]chan Event{},
+		turnTerm:        map[string]Event{},
 	}
 	if d.drainTimeout <= 0 {
 		d.drainTimeout = 2 * time.Second
@@ -206,8 +239,45 @@ func (d *DeviceInstance) SlotOccupied() bool {
 	return d.slot.Occupied()
 }
 
+func (d *DeviceInstance) SlotID() string {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.slot.ID()
+}
+
+// SlotInfo 供 HTTP interrupt / speak 短锁快照。
+func (d *DeviceInstance) SlotInfo() (occupied bool, id string, finalizeStarted bool) {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.slot.Occupied(), d.slot.ID(), d.finalizeStarted
+}
+
+func (d *DeviceInstance) FinalizeStarted() bool {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.finalizeStarted
+}
+
+func (d *DeviceInstance) FinalizeCommitted() bool {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.finalizeCommitted
+}
+
+func (d *DeviceInstance) EventSeq() int {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.events.Seq()
+}
+
+func (d *DeviceInstance) EventLog() *EventLog { return d.events }
+
+func (d *DeviceInstance) ThrottleLast() (int, bool) { return d.throttle.Last, d.throttle.Set }
+
 func (d *DeviceInstance) appendEventLocked(typ, turnID, reason, endReason, uplinkReason, replyKind string) (Event, EventNotify) {
-	return d.events.AppendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind)
+	ev, n := d.events.AppendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind)
+	n.SlowSubs += d.deliverHubLocked(ev)
+	return ev, n
 }
 
 func (d *DeviceInstance) terminalLocked(endReason, replyKind, uplinkIfEmpty string, phaseC bool) TerminalNotify {
@@ -219,14 +289,20 @@ func (d *DeviceInstance) terminalLocked(endReason, replyKind, uplinkIfEmpty stri
 		return n
 	}
 	d.stopTurnTimersLocked()
-	d.speakPermitOnce.CompareAndSwap(false, true) // Phase 1：释放 permit 为 once no-op
 	_, end, uplink, kind := d.slot.Snapshot()
 	turnID := d.slot.ID()
 	ev, en := d.appendEventLocked("turn_terminal", turnID, "", end, uplink, kind)
 	n.Event = ev
 	n.EventWaiters = en.EventWaiters
 	n.SlowSubs = en.SlowSubs
+	n.wakes = en.wakes
 	d.lastTerminal = ev
+	d.turnTerm[turnID] = ev
+	if d.turn != nil && d.turn.done != nil {
+		n.done = d.turn.done
+	} else {
+		n.done = d.completionCh
+	}
 	d.submitTurnFileLocked(ev)
 	if d.turn != nil {
 		d.turn.signalDrained()
@@ -275,16 +351,30 @@ func stopTimer(t *time.Timer) {
 }
 
 func (d *DeviceInstance) finishCritical(acc []EventNotify, tn TerminalNotify) {
-	_ = acc // Phase 1：HTTP waiter / hub 恒空，仍必须累加不得丢
 	if tn.Completion {
-		ch := d.completionCh
+		ch := tn.done
 		if ch != nil {
 			select {
 			case ch <- tn.Event:
 			default:
 			}
 		}
+		if d.onTurnTerminal != nil {
+			d.onTurnTerminal(tn.Event.TurnID, tn.Event)
+		}
 	}
+	eventNotifyOf(tn).NotifyHTTP()
+	for _, n := range acc {
+		n.NotifyHTTP()
+	}
+}
+
+func (d *DeviceInstance) fireActivity() {
+	fn := d.onActivity
+	if fn == nil {
+		return
+	}
+	go fn()
 }
 
 func (d *DeviceInstance) encodeStage3(uuid uint32, _ string) []byte {

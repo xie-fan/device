@@ -90,12 +90,21 @@ func LoadFile(path string) (Device, error) {
 }
 
 func Load(raw []byte) (Device, error) {
+	return loadWith(raw, Validate)
+}
+
+// LoadPhase2 供 Manager/API 创建设备：允许 json ACK 与非零 sleep_ms。
+func LoadPhase2(raw []byte) (Device, error) {
+	return loadWith(raw, ValidatePhase2)
+}
+
+func loadWith(raw []byte, validate func(Device) error) (Device, error) {
 	var f File
 	if err := yaml.Unmarshal(raw, &f); err != nil {
 		return Device{}, err
 	}
 	applyPhase1Defaults(&f.Device)
-	if err := Validate(f.Device); err != nil {
+	if err := validate(f.Device); err != nil {
 		return Device{}, err
 	}
 	return f.Device, nil
@@ -115,6 +124,34 @@ func applyPhase1Defaults(d *Device) {
 }
 
 func Validate(d Device) error {
+	if err := validateCommon(d); err != nil {
+		return err
+	}
+	if d.Behavior.DownlinkAck.Mode == "json" {
+		return fmt.Errorf("Phase 1 拒绝 json ACK")
+	}
+	if d.Behavior.DownlinkAck.SleepMs != 0 {
+		return fmt.Errorf("Phase 1 要求 sleep_ms=0")
+	}
+	return nil
+}
+
+// ValidatePhase2 允许 json ACK 与非零 SleepMs；其余与 Phase 1 相同。
+func ValidatePhase2(d Device) error {
+	if err := validateCommon(d); err != nil {
+		return err
+	}
+	mode := d.Behavior.DownlinkAck.Mode
+	if mode != "" && mode != "binary" && mode != "json" {
+		return fmt.Errorf("downlink_ack.mode 非法: %s", mode)
+	}
+	if d.Behavior.DownlinkAck.SleepMs < 0 {
+		return fmt.Errorf("sleep_ms 不得为负")
+	}
+	return nil
+}
+
+func validateCommon(d Device) error {
 	if d.Enterprise == "" || d.DeviceType == "" || d.DeviceID == "" {
 		return fmt.Errorf("enterprise/device_type/device_id 必填")
 	}
@@ -151,12 +188,6 @@ func Validate(d Device) error {
 	}
 	if d.Behavior.AutoReport != nil && !*d.Behavior.AutoReport {
 		return fmt.Errorf("Phase 1 拒绝 auto_report=false（仅允许 true + --inject）")
-	}
-	if d.Behavior.DownlinkAck.Mode == "json" {
-		return fmt.Errorf("Phase 1 拒绝 json ACK")
-	}
-	if d.Behavior.DownlinkAck.SleepMs != 0 {
-		return fmt.Errorf("Phase 1 要求 sleep_ms=0")
 	}
 	if d.Behavior.WriteQueueDepth < 2 {
 		return fmt.Errorf("write_queue_depth 必须 >= 2")

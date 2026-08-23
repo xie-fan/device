@@ -2,12 +2,21 @@ package core
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"toy-device-simulator/protocol"
 )
 
 func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err error) {
+	turnID, uuid, _, err = d.SpeakPermit(pcm, nil)
+	return turnID, uuid, err
+}
+
+// SpeakPermit occupy 成功后再 tryAcquire；seqBefore 在 occupy 成功之后取样。
+// tryAcquire 为 nil 时不占 speak_permit（Phase 1 CLI）。失败不得留下占用槽。
+func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (turnID string, uuid uint32, seqBefore int, err error) {
 	copied := append([]byte(nil), pcm...)
 
 	d.deviceMu.Lock()
@@ -16,47 +25,70 @@ func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err erro
 	d.connMu.Unlock()
 	if d.finalizeStarted {
 		d.deviceMu.Unlock()
-		return "", 0, fmt.Errorf("正在收口，不可 speak")
+		return "", 0, 0, fmt.Errorf("正在收口，不可 speak")
 	}
 	if !Speakable(st, d.fault) {
 		d.deviceMu.Unlock()
-		return "", 0, fmt.Errorf("当前连接状态不可 speak（conn=%v fault=%s）", st, d.fault)
+		return "", 0, 0, fmt.Errorf("当前连接状态不可 speak（conn=%v fault=%s）", st, d.fault)
 	}
 	if d.slot.Occupied() {
 		d.deviceMu.Unlock()
-		return "", 0, fmt.Errorf("槽已占用")
+		return "", 0, 0, ErrSlotOccupied
 	}
 
 	uuid = d.allocUUIDLocked()
 	turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
-	framesPath, upPath, downPath, turnPath, err := RecordingPaths(d.cfg.Recording.OutputDir, d.cfg.DeviceID, turnID)
+	var framesPath, upPath, downPath, turnPath string
+	if d.phase2Recording {
+		framesPath, upPath, downPath, turnPath, err = RecordingPathsPhase2(d.cfg.Recording.OutputDir, d.cfg.DeviceID, d.instanceID, turnID)
+	} else {
+		framesPath, upPath, downPath, turnPath, err = RecordingPaths(d.cfg.Recording.OutputDir, d.cfg.DeviceID, turnID)
+	}
 	if err != nil {
 		d.deviceMu.Unlock()
-		return "", 0, err
+		return "", 0, 0, err
 	}
 	if err := d.slot.Occupy(turnID, uuid, copied); err != nil {
 		d.deviceMu.Unlock()
-		return "", 0, err
+		return "", 0, 0, err
 	}
+	if tryAcquire != nil && !tryAcquire() {
+		d.slot.Vacate()
+		d.deviceMu.Unlock()
+		return "", 0, 0, ErrSpeakPermit
+	}
+	seqBefore = d.events.Seq()
+	done := make(chan Event, 1)
 	tr := &turnRuntime{
 		id:         turnID,
 		uuid:       uuid,
 		fault:      d.fault,
-		seqBefore:  d.events.Seq(),
+		seqBefore:  seqBefore,
 		startedAt:  time.Now().UTC(),
 		drained:    make(chan struct{}),
 		framesPath: framesPath,
 		upPath:     upPath,
 		downPath:   downPath,
 		turnPath:   turnPath,
+		done:       done,
 	}
 	d.turn = tr
-	d.completionCh = make(chan Event, 1)
+	d.completionCh = done
+	d.turnDone[turnID] = done
 	pcmCopy := append([]byte(nil), d.slot.PCM()...)
+	saveUp := d.cfg.Recording.SaveUplinkAudio
 	d.deviceMu.Unlock()
 
+	if saveUp {
+		// 解锁后只建空文件，不写整段 PCM；内容由 onWritten → recorder 追加实际发出的帧。
+		_ = os.MkdirAll(filepath.Dir(upPath), 0o755)
+		if f, err := os.OpenFile(upPath, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			_ = f.Close()
+		}
+	}
+
 	go d.uplinkTurn(turnID, uuid, pcmCopy)
-	return turnID, uuid, nil
+	return turnID, uuid, seqBefore, nil
 }
 
 // testBeforeUplinkEnqueue 仅测试：frozen/Terminal 检查已通过、即将 enqueueData。
@@ -179,14 +211,18 @@ func (d *DeviceInstance) enterWaitingReplyLocked() {
 	}
 }
 
-func (d *DeviceInstance) WaitTurn(timeout time.Duration) (Event, error) {
+func (d *DeviceInstance) WaitTurn(turnID string, timeout time.Duration) (Event, error) {
 	d.deviceMu.Lock()
-	ch := d.completionCh
-	if d.lastTerminal.Type == "turn_terminal" {
+	if ev, ok := d.turnTerm[turnID]; ok && ev.Type == "turn_terminal" {
+		d.deviceMu.Unlock()
+		return ev, nil
+	}
+	if d.lastTerminal.Type == "turn_terminal" && d.lastTerminal.TurnID == turnID {
 		ev := d.lastTerminal
 		d.deviceMu.Unlock()
 		return ev, nil
 	}
+	ch := d.turnDone[turnID]
 	d.deviceMu.Unlock()
 	if ch == nil {
 		return Event{}, fmt.Errorf("没有等待中的 Turn")
@@ -198,14 +234,27 @@ func (d *DeviceInstance) WaitTurn(timeout time.Duration) (Event, error) {
 	defer t.Stop()
 	select {
 	case ev := <-ch:
+		if ev.TurnID != "" && ev.TurnID != turnID {
+			return Event{}, fmt.Errorf("turn 终态不匹配")
+		}
 		return ev, nil
 	case <-t.C:
 		return Event{}, ErrWaitTimeout
 	case <-d.finalizeDone:
 		d.deviceMu.Lock()
 		defer d.deviceMu.Unlock()
-		if d.lastTerminal.Type == "turn_terminal" {
+		if ev, ok := d.turnTerm[turnID]; ok && ev.Type == "turn_terminal" {
+			return ev, nil
+		}
+		if d.lastTerminal.Type == "turn_terminal" && d.lastTerminal.TurnID == turnID {
 			return d.lastTerminal, nil
+		}
+		select {
+		case ev := <-ch:
+			if ev.TurnID == "" || ev.TurnID == turnID {
+				return ev, nil
+			}
+		default:
 		}
 		return Event{}, errString("连接已收口且无 turn_terminal")
 	}
