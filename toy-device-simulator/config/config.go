@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -100,6 +102,10 @@ func Validate(d Device) error {
 	if d.Enterprise == "" || d.DeviceType == "" || d.DeviceID == "" {
 		return fmt.Errorf("enterprise/device_type/device_id 必填")
 	}
+	// MH 前缀会命中 core 的 Seq 不重置例外，用例会假通过；硬拒绝，不可绕过。
+	if strings.HasPrefix(d.DeviceType, "MH") {
+		return fmt.Errorf("device_type 不得以 MH 前缀开头（否则 Seq 用例会假通过）")
+	}
 	if d.Action != "chatbot" {
 		return fmt.Errorf("action 必须为 chatbot")
 	}
@@ -128,4 +134,14 @@ func Validate(d Device) error {
 		return fmt.Errorf("server.url 必填")
 	}
 	return nil
+}
+
+// IsLoopbackServerURL 判断 server.url 主机是否为 localhost / 127.0.0.1 / ::1。
+func IsLoopbackServerURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
