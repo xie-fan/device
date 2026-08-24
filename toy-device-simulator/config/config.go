@@ -112,6 +112,7 @@ func loadWith(raw []byte, validate func(Device) error) (Device, error) {
 
 // applyPhase1Defaults 把省略的 auto_register / auto_report 缺省为 true。
 // 显式 false 保持 false，由 Validate 拒绝；禁止映射成 skip_register / skip_report。
+// 跳过握手只走 CLI --inject 或 POST /devices/{id}/faults。
 func applyPhase1Defaults(d *Device) {
 	if d.Behavior.AutoRegister == nil {
 		v := true
@@ -184,10 +185,10 @@ func validateCommon(d Device) error {
 		return fmt.Errorf("sample_rate 必须 > 0")
 	}
 	if d.Behavior.AutoRegister != nil && !*d.Behavior.AutoRegister {
-		return fmt.Errorf("Phase 1 拒绝 auto_register=false（仅允许 true + --inject）")
+		return fmt.Errorf("auto_register 只能为 true，禁止 false（不得映射为 skip_register）")
 	}
 	if d.Behavior.AutoReport != nil && !*d.Behavior.AutoReport {
-		return fmt.Errorf("Phase 1 拒绝 auto_report=false（仅允许 true + --inject）")
+		return fmt.Errorf("auto_report 只能为 true，禁止 false（不得映射为 skip_report）")
 	}
 	if d.Behavior.WriteQueueDepth < 2 {
 		return fmt.Errorf("write_queue_depth 必须 >= 2")

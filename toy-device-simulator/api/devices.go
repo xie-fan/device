@@ -335,6 +335,10 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "device 不存在")
 		return
 	}
+	if err := rejectExplicitAutoFalse(raw); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	running := d.state == stStarting || d.state == stRunning || d.state == stStopping
 	if running {
 		for k := range raw {
@@ -358,6 +362,32 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		d.playingMode = next.PlayingMode
 	}
 	writeJSON(w, http.StatusOK, configPublic(d.cfg))
+}
+
+func rejectExplicitAutoFalse(raw map[string]any) error {
+	beh, _ := raw["behavior"].(map[string]any)
+	if beh == nil {
+		return nil
+	}
+	if err := rejectFalseAutoFlag(beh, "auto_register", "skip_register"); err != nil {
+		return err
+	}
+	return rejectFalseAutoFlag(beh, "auto_report", "skip_report")
+}
+
+func rejectFalseAutoFlag(m map[string]any, key, skip string) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	flag, ok := v.(bool)
+	if !ok {
+		return fmt.Errorf("behavior.%s 类型非法", key)
+	}
+	if !flag {
+		return fmt.Errorf("%s 只能为 true，禁止 false（不得映射为 %s）", key, skip)
+	}
+	return nil
 }
 
 func rejectUnknownKeys(m map[string]any, allowed map[string]bool) error {
@@ -617,12 +647,18 @@ func applyPutBehavior(b *config.Behavior, m map[string]any) error {
 		if !ok {
 			return fmt.Errorf("behavior.auto_register 类型非法")
 		}
+		if !flag {
+			return fmt.Errorf("auto_register 只能为 true，禁止 false（不得映射为 skip_register）")
+		}
 		b.AutoRegister = &flag
 	}
 	if v, ok := m["auto_report"]; ok {
 		flag, ok := v.(bool)
 		if !ok {
 			return fmt.Errorf("behavior.auto_report 类型非法")
+		}
+		if !flag {
+			return fmt.Errorf("auto_report 只能为 true，禁止 false（不得映射为 skip_report）")
 		}
 		b.AutoReport = &flag
 	}

@@ -308,10 +308,27 @@ func TestLoadDefaultsOmittedAutoRegisterReportToTrue(t *testing.T) {
 
 func TestLoadRejectsExplicitAutoRegisterFalse(t *testing.T) {
 	src := strings.Replace(string(minimalYAMLWithoutAuto()), "write_queue_depth: 256", "auto_register: false\n    write_queue_depth: 256", 1)
-	if _, err := Load([]byte(src)); err == nil {
-		t.Fatal("auto_register: false 应拒绝")
-	} else if !strings.Contains(err.Error(), "auto_register") {
-		t.Fatalf("err=%v", err)
+	assertYAMLRejectsAutoFalse(t, Load, src, "auto_register")
+	assertYAMLRejectsAutoFalse(t, LoadPhase2, src, "auto_register")
+}
+
+func TestLoadRejectsExplicitAutoReportFalse(t *testing.T) {
+	src := strings.Replace(string(minimalYAMLWithoutAuto()), "write_queue_depth: 256", "auto_report: false\n    write_queue_depth: 256", 1)
+	assertYAMLRejectsAutoFalse(t, Load, src, "auto_report")
+	assertYAMLRejectsAutoFalse(t, LoadPhase2, src, "auto_report")
+}
+
+func assertYAMLRejectsAutoFalse(t *testing.T, load func([]byte) (Device, error), src, field string) {
+	t.Helper()
+	_, err := load([]byte(src))
+	if err == nil {
+		t.Fatalf("%s: false 应拒绝", field)
+	}
+	if !strings.Contains(err.Error(), field) {
+		t.Fatalf("err=%v, 应含 %q", err, field)
+	}
+	if strings.Contains(err.Error(), "Phase 1") {
+		t.Fatalf("文案不得再写 Phase 1: %v", err)
 	}
 }
 

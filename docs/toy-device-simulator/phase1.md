@@ -163,7 +163,7 @@ device:
     output_dir: "./recordings"
 ```
 
-`format` 非 pcm、非法 playing_mode、json ACK 或 sleep_ms≠0、`write_queue_depth < 2`、`write_drain_timeout_sec <= 0` → 启动拒绝。
+`format` 非 pcm、非法 playing_mode、json ACK 或 sleep_ms≠0、`write_queue_depth < 2`、`write_drain_timeout_sec <= 0`、`auto_register`/`auto_report` 显式 false → 启动拒绝。跳过 register/report 只用 `--inject`，禁止 YAML false 映射成 skip_*。
 
 ## 8. CLI
 

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,6 +174,54 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 	rec, _ := m["recording"].(map[string]any)
 	if boolField(rec, "enable_frame_log") {
 		t.Fatalf("recording.enable_frame_log 应为 false: %s", gbody)
+	}
+}
+
+func TestPUTAutoRegisterFalse400(t *testing.T) {
+	e := newEnv(t)
+	e.createDevice(t, "sim_arf")
+	code, body := e.put(t, "/devices/sim_arf/config", map[string]any{
+		"behavior": map[string]any{"auto_register": false},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("Created PUT auto_register=false 应 400，得到 %d %s", code, body)
+	}
+	if strings.Contains(string(body), "Phase 1") {
+		t.Fatalf("文案不得再写 Phase 1: %s", body)
+	}
+	code, body = e.put(t, "/devices/sim_arf/config", map[string]any{
+		"behavior": map[string]any{"auto_report": false},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("Created PUT auto_report=false 应 400，得到 %d %s", code, body)
+	}
+	code, body = e.put(t, "/devices/sim_arf/config", map[string]any{
+		"behavior": map[string]any{"auto_register": true, "auto_report": true},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("Created PUT auto_*=true 应 200，得到 %d %s", code, body)
+	}
+}
+
+func TestPUTAutoRegisterFalseOnRunning400Not409(t *testing.T) {
+	e := newEnv(t)
+	e.createStartReady(t, "sim_arfr")
+	code, body := e.put(t, "/devices/sim_arfr/config", map[string]any{
+		"behavior": map[string]any{"auto_register": false},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("Running PUT auto_register=false 应 400 不是 409，得到 %d %s", code, body)
+	}
+}
+
+func TestPOSTDeviceAutoRegisterFalse400(t *testing.T) {
+	e := newEnv(t)
+	dev := e.deviceBody("sim_arfp")
+	beh, _ := dev["behavior"].(map[string]any)
+	beh["auto_register"] = false
+	code, body := e.post(t, "/devices", map[string]any{"device": dev})
+	if code != http.StatusBadRequest {
+		t.Fatalf("POST /devices auto_register=false 应 400，得到 %d %s", code, body)
 	}
 }
 

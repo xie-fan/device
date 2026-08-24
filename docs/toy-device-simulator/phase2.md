@@ -17,7 +17,7 @@ Agent 按本节表即可实现客户端。Scenario 等到 speakable。终态字�
 
 | HTTP | 何时 |
 |------|------|
-| 400 | 缺 device_id/instance_id；wait_ready 缺 conn_generation；turns/frames/audio/interrupt 缺 instance_id；非 WAV；asset_id 与 stream 同时或都缺；stream 超 max_stream_entries / max_stream_duration_sec；WAV 与设备 audio_* 不符；PUT device_id 或 write_queue_* |
+| 400 | 缺 device_id/instance_id；wait_ready 缺 conn_generation；turns/frames/audio/interrupt 缺 instance_id；非 WAV；asset_id 与 stream 同时或都缺；stream 超 max_stream_entries / max_stream_duration_sec；WAV 与设备 audio_* 不符；PUT device_id 或 write_queue_*；`auto_register`/`auto_report` 为 false |
 | 404 | `GET /devices/{id}` 已摘 live；events/wait/WS/turns/录音的 instance_id 在 live 与 TTL 内 tombstone 都未命中；无 turn/asset/录音文件；tombstone 上 `/wait` 历史未命中 |
 | 409 | 重复 start；槽占用；not_speakable；generation_gone；audio_config_changed；generation_changed；Running PUT 身份/音频/playing_mode；批量创建冲突；interrupt 时 `finalize_started` / `turn_mismatch` |
 | 410 | after_event_seq < evicted_through_seq |
@@ -277,7 +277,9 @@ Content-Type: application/json。body **必填** `instance_id`（必须等于当
 | audio.* | 200 | 409 | — |
 | server.url, uuid.*, action, firmware, nic_* | 200 | 409 | — |
 | downlink_ack.* | 200 | 409 | — |
-| behavior 超时/keepalive/report_sequence_start/auto_register\|report | 200 | 409 | — |
+| behavior 超时/keepalive/report_sequence_start | 200 | 409 | — |
+| auto_register / auto_report（省略或 true） | 200 | 409 | — |
+| auto_register / auto_report = false | **400** | **400** | — |
 | recording.* | 200 | 200 | — |
 | write_queue_depth / write_drain_timeout_sec / device_id | 400 | 400 | — |
 
@@ -326,6 +328,8 @@ A/B/C：同一 **device_type** 且 DownlinkAck=true；三台不同 ID；status=1
 ## 8. 故障注入
 
 不查 Mongo。skip_register：夹具 `sim_sr_{run_uuid}_{n}` 写入 `testdata/fixtures/fresh_ids.jsonl`，本趟不预注册，**新建**实例。新建后 Running+Connected 可 speak。skip_report：Running+Registered 可 speak。
+
+`auto_register` / `auto_report` 只能省略或 true。YAML、创建、PUT 写 false → 400，**不得**映射成 skip_*。跳过握手只认 `POST /devices/{id}/faults`（仅 Created/Stopped）。
 
 | fault | 出站 | 期望 |
 |-------|------|------|

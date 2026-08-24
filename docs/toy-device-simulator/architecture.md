@@ -642,7 +642,9 @@ A/B/C：同一 **device_type** 且 DownlinkAck=true；三台不同 ID；status=1
 | audio.*（format/rate/channels/sample_format/slice_ms/max_payload） | 200 | **409** | — |
 | server.url, uuid.*, action, firmware, nic_* | 200 | **409** | — |
 | downlink_ack.* | 200 | **409** | — |
-| behavior 超时 / keepalive / report_sequence_start / auto_register\|report | 200 | **409** | — |
+| behavior 超时 / keepalive / report_sequence_start | 200 | **409** | — |
+| auto_register / auto_report（省略或 true） | 200 | **409** | — |
+| auto_register / auto_report = false | **400** | **400** | — |
 | recording.* | 200 | 200 | — |
 | write_queue_depth / write_drain_timeout_sec | **400** | **400** | — |
 | device_id | **400** | **400** | — |
