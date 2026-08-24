@@ -45,19 +45,30 @@ func (c *FakeConn) WriteMessage(_ int, data []byte) error {
 	cp := append([]byte(nil), data...)
 	c.mu.Lock()
 	c.writes = append(c.writes, cp)
+	gate := c.writeGate
 	c.mu.Unlock()
 	select {
 	case c.writeCh <- cp:
 	default:
 	}
-	if c.writeGate != nil {
+	if gate != nil {
 		select {
-		case <-c.writeGate:
+		case <-gate:
 		case <-c.closed:
 			return net.ErrClosed
 		}
 	}
 	return nil
+}
+
+func (c *FakeConn) ReleaseWriteGate() {
+	c.mu.Lock()
+	g := c.writeGate
+	c.writeGate = nil
+	c.mu.Unlock()
+	if g != nil {
+		close(g)
+	}
 }
 
 func (c *FakeConn) ReadMessage() (int, []byte, error) {
@@ -214,9 +225,7 @@ func newTestDevice(t *testing.T, cfg config.Device, fault Fault, auto autoOpts) 
 		},
 	})
 	t.Cleanup(func() {
-		if conn.writeGate != nil {
-			close(conn.writeGate)
-		}
+		conn.ReleaseWriteGate()
 		d.Shutdown()
 	})
 	return d, conn
@@ -458,8 +467,7 @@ func TestBeginCloseKeepsQueuedStage3(t *testing.T) {
 	if keep != 1 && (inf == nil || inf.Kind != KindStage3) {
 		t.Fatalf("BeginClose 必须保留 Stage=3: queued=%d inFlight=%v", keep, inf)
 	}
-	close(conn.writeGate)
-	conn.writeGate = nil
+	conn.ReleaseWriteGate()
 	d.WaitFinalize()
 	if d.recorder != nil {
 		d.recorder.Stop()
@@ -639,10 +647,7 @@ func uplinkPCM(cfg config.Device, slices int) []byte {
 }
 
 func releaseWriteGate(conn *FakeConn) {
-	if conn.writeGate != nil {
-		close(conn.writeGate)
-		conn.writeGate = nil
-	}
+	conn.ReleaseWriteGate()
 }
 
 func waitQueuedAudio(t *testing.T, d *DeviceInstance, n int, timeout time.Duration) {
@@ -682,7 +687,7 @@ func waitGap(t *testing.T, d *DeviceInstance, uuid, expectQueued uint32, inject 
 	t.Helper()
 	var once sync.Once
 	done := make(chan struct{})
-	testBeforeUplinkEnqueue = func() {
+	setTestBeforeUplinkEnqueue(func() {
 		once.Do(func() {
 			inject()
 			deadline := time.Now().Add(80 * time.Millisecond)
@@ -694,8 +699,8 @@ func waitGap(t *testing.T, d *DeviceInstance, uuid, expectQueued uint32, inject 
 			}
 			close(done)
 		})
-	}
-	t.Cleanup(func() { testBeforeUplinkEnqueue = nil })
+	})
+	t.Cleanup(func() { setTestBeforeUplinkEnqueue(nil) })
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):

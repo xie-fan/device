@@ -17,7 +17,7 @@ const (
 
 const wsLiveInboxCap = 256
 
-// WSSub 是 live 事件 WS 的订阅。close_mode / phase / last_pong 只在 device_mu 内改。
+// WSSub 是 live 事件 WS 的订阅。close_mode / phase / last_pong 只在 EventLog.mu 内改。
 type WSSub struct {
 	id        int
 	turnID    string
@@ -45,16 +45,26 @@ func (s *WSSub) Inbox() <-chan Event {
 }
 
 func (d *DeviceInstance) RegisterWS(after int, turnID string) (*WSSub, bool) {
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
-	if d.events.CursorExpired(after) {
+	if d == nil || d.events == nil {
 		return nil, false
 	}
-	return d.registerWSLocked(after, turnID), true
+	return d.events.RegisterWS(after, turnID)
 }
 
-func (d *DeviceInstance) registerWSLocked(after int, turnID string) *WSSub {
-	backlog := d.events.After(after)
+func (l *EventLog) RegisterWS(after int, turnID string) (*WSSub, bool) {
+	if l == nil {
+		return nil, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if after < l.evictedThrough {
+		return nil, false
+	}
+	return l.registerWSLocked(after, turnID), true
+}
+
+func (l *EventLog) registerWSLocked(after int, turnID string) *WSSub {
+	backlog := l.afterLocked(after)
 	if turnID != "" {
 		filtered := make([]Event, 0, len(backlog))
 		for _, e := range backlog {
@@ -64,13 +74,13 @@ func (d *DeviceInstance) registerWSLocked(after int, turnID string) *WSSub {
 		}
 		backlog = filtered
 	}
-	capN := d.events.MaxEntries()
+	capN := l.maxEntries
 	if capN <= 0 {
 		capN = 10000
 	}
-	d.hubNext++
+	l.hubNext++
 	sub := &WSSub{
-		id:        d.hubNext,
+		id:        l.hubNext,
 		turnID:    turnID,
 		afterSeq:  after,
 		backlog:   backlog,
@@ -79,23 +89,30 @@ func (d *DeviceInstance) registerWSLocked(after int, turnID string) *WSSub {
 		phase:     WSCatchup,
 		lastPong:  time.Now(),
 	}
-	if d.hubSubs == nil {
-		d.hubSubs = map[int]*WSSub{}
+	if l.hubSubs == nil {
+		l.hubSubs = map[int]*WSSub{}
 	}
-	d.hubSubs[sub.id] = sub
+	l.hubSubs[sub.id] = sub
 	return sub
 }
 
 func (d *DeviceInstance) RequestClose(sub *WSSub, mode int) {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return
 	}
-	d.deviceMu.Lock()
-	d.requestCloseLocked(sub, mode)
-	d.deviceMu.Unlock()
+	d.events.RequestClose(sub, mode)
 }
 
-func (d *DeviceInstance) requestCloseLocked(sub *WSSub, mode int) {
+func (l *EventLog) RequestClose(sub *WSSub, mode int) {
+	if l == nil || sub == nil {
+		return
+	}
+	l.mu.Lock()
+	l.requestCloseLocked(sub, mode)
+	l.mu.Unlock()
+}
+
+func (l *EventLog) requestCloseLocked(sub *WSSub, mode int) {
 	if sub == nil {
 		return
 	}
@@ -104,51 +121,81 @@ func (d *DeviceInstance) requestCloseLocked(sub *WSSub, mode int) {
 	} else if sub.closeMode == WSOpen && mode == WSDrain {
 		sub.closeMode = WSDrain
 	}
-	delete(d.hubSubs, sub.id)
+	delete(l.hubSubs, sub.id)
 	if !sub.closed {
 		sub.closed = true
 		close(sub.inbox)
 	}
 }
 
-func (d *DeviceInstance) requestCloseAllLocked(mode int) {
-	subs := make([]*WSSub, 0, len(d.hubSubs))
-	for _, sub := range d.hubSubs {
+func (l *EventLog) requestCloseAllLocked(mode int) {
+	subs := make([]*WSSub, 0, len(l.hubSubs))
+	for _, sub := range l.hubSubs {
 		subs = append(subs, sub)
 	}
 	for _, sub := range subs {
-		d.requestCloseLocked(sub, mode)
+		l.requestCloseLocked(sub, mode)
 	}
+}
+
+func (l *EventLog) RequestCloseAll(mode int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.requestCloseAllLocked(mode)
+	l.mu.Unlock()
 }
 
 func (d *DeviceInstance) NotePong(sub *WSSub) {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return
 	}
-	d.deviceMu.Lock()
+	d.events.NotePong(sub)
+}
+
+func (l *EventLog) NotePong(sub *WSSub) {
+	if l == nil || sub == nil {
+		return
+	}
+	l.mu.Lock()
 	sub.lastPong = time.Now()
-	d.deviceMu.Unlock()
+	l.mu.Unlock()
 }
 
 func (d *DeviceInstance) LastPong(sub *WSSub) time.Time {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return time.Time{}
 	}
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
+	return d.events.LastPong(sub)
+}
+
+func (l *EventLog) LastPong(sub *WSSub) time.Time {
+	if l == nil || sub == nil {
+		return time.Time{}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return sub.lastPong
 }
 
 func (d *DeviceInstance) WSCloseMode(sub *WSSub) int {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return WSAbort
 	}
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
+	return d.events.WSCloseMode(sub)
+}
+
+func (l *EventLog) WSCloseMode(sub *WSSub) int {
+	if l == nil || sub == nil {
+		return WSAbort
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return sub.closeMode
 }
 
-func (d *DeviceInstance) drainWSInboxLocked(sub *WSSub) (events []Event, closed bool) {
+func drainWSInboxLocked(sub *WSSub) (events []Event, closed bool) {
 	for {
 		select {
 		case ev, ok := <-sub.inbox:
@@ -162,17 +209,24 @@ func (d *DeviceInstance) drainWSInboxLocked(sub *WSSub) (events []Event, closed 
 	}
 }
 
-// CatchupWS 持锁排空 inbox；空且 open 才置 live。
 func (d *DeviceInstance) CatchupWS(sub *WSSub) (events []Event, abort, drainDone, live bool) {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return nil, true, false, false
 	}
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
+	return d.events.CatchupWS(sub)
+}
+
+// CatchupWS 持锁排空 inbox；空且 open 才置 live。
+func (l *EventLog) CatchupWS(sub *WSSub) (events []Event, abort, drainDone, live bool) {
+	if l == nil || sub == nil {
+		return nil, true, false, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if sub.closeMode == WSAbort {
 		return nil, true, false, false
 	}
-	events, inboxClosed := d.drainWSInboxLocked(sub)
+	events, inboxClosed := drainWSInboxLocked(sub)
 	if len(events) > 0 {
 		return events, false, false, false
 	}
@@ -183,17 +237,24 @@ func (d *DeviceInstance) CatchupWS(sub *WSSub) (events []Event, abort, drainDone
 	return nil, false, false, true
 }
 
-// PollWSLive 持锁看 close_mode 并排空 inbox；空则 idle=true。
 func (d *DeviceInstance) PollWSLive(sub *WSSub) (events []Event, abort, drainDone, idle bool) {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return nil, true, false, false
 	}
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
+	return d.events.PollWSLive(sub)
+}
+
+// PollWSLive 持锁看 close_mode 并排空 inbox；空则 idle=true。
+func (l *EventLog) PollWSLive(sub *WSSub) (events []Event, abort, drainDone, idle bool) {
+	if l == nil || sub == nil {
+		return nil, true, false, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if sub.closeMode == WSAbort {
 		return nil, true, false, false
 	}
-	events, inboxClosed := d.drainWSInboxLocked(sub)
+	events, inboxClosed := drainWSInboxLocked(sub)
 	if sub.closeMode == WSDrain {
 		if len(events) == 0 {
 			return nil, false, true, false
@@ -209,7 +270,7 @@ func (d *DeviceInstance) PollWSLive(sub *WSSub) (events []Event, abort, drainDon
 	return nil, false, false, true
 }
 
-func (d *DeviceInstance) MarkWSPingLocked(sub *WSSub) (ok bool, abort bool, skip bool) {
+func markWSPingLocked(sub *WSSub) (ok bool, abort bool, skip bool) {
 	if sub.closeMode != WSOpen {
 		if sub.closeMode == WSAbort {
 			return false, true, false
@@ -223,21 +284,35 @@ func (d *DeviceInstance) MarkWSPingLocked(sub *WSSub) (ok bool, abort bool, skip
 }
 
 func (d *DeviceInstance) PrepareIdlePing(sub *WSSub) (doPing, abort, skip bool) {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return false, true, false
 	}
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
-	ok, abort, skip := d.MarkWSPingLocked(sub)
+	return d.events.PrepareIdlePing(sub)
+}
+
+func (l *EventLog) PrepareIdlePing(sub *WSSub) (doPing, abort, skip bool) {
+	if l == nil || sub == nil {
+		return false, true, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ok, abort, skip := markWSPingLocked(sub)
 	return ok, abort, skip
 }
 
 func (d *DeviceInstance) IdleDeadlineAbort(sub *WSSub, pingAt, lastPong time.Time) (abortNow, skip, reopen bool) {
-	if d == nil || sub == nil {
+	if d == nil || d.events == nil {
 		return true, false, false
 	}
-	d.deviceMu.Lock()
-	defer d.deviceMu.Unlock()
+	return d.events.IdleDeadlineAbort(sub, pingAt, lastPong)
+}
+
+func (l *EventLog) IdleDeadlineAbort(sub *WSSub, pingAt, lastPong time.Time) (abortNow, skip, reopen bool) {
+	if l == nil || sub == nil {
+		return true, false, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if sub.closeMode == WSAbort {
 		return true, false, false
 	}
@@ -247,14 +322,14 @@ func (d *DeviceInstance) IdleDeadlineAbort(sub *WSSub, pingAt, lastPong time.Tim
 	if pingAt.IsZero() || !lastPong.Before(pingAt) {
 		return false, false, true
 	}
-	d.requestCloseLocked(sub, WSAbort)
+	l.requestCloseLocked(sub, WSAbort)
 	return true, false, false
 }
 
-func (d *DeviceInstance) deliverHubLocked(ev Event) int {
+func (l *EventLog) deliverHubLocked(ev Event) int {
 	slow := 0
 	var overflow []*WSSub
-	for _, sub := range d.hubSubs {
+	for _, sub := range l.hubSubs {
 		if sub == nil || sub.closed {
 			continue
 		}
@@ -282,7 +357,7 @@ func (d *DeviceInstance) deliverHubLocked(ev Event) int {
 		}
 	}
 	for _, sub := range overflow {
-		d.requestCloseLocked(sub, WSAbort)
+		l.requestCloseLocked(sub, WSAbort)
 		slow++
 	}
 	return slow
@@ -297,8 +372,8 @@ func (d *DeviceInstance) EmitDeleted() EventNotify {
 	d.deleted = true
 	d.stopPendingReportsLocked()
 	_, n := d.appendEventLocked("device_deleted", "", "", "", "", "")
-	d.requestCloseAllLocked(WSDrain)
 	d.deviceMu.Unlock()
+	d.events.RequestCloseAll(WSDrain)
 	return n
 }
 

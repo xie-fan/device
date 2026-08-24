@@ -68,6 +68,18 @@ func TestConnPermitExceeded429(t *testing.T) {
 	}
 }
 
+func TestBatchAllFailAny429Is429(t *testing.T) {
+	e := newEnvCfg(t, func(c *manager.Config) { c.MaxConnections = 1 })
+	e.createStartReady(t, "sim_mx_a")
+	e.createDevice(t, "sim_mx_b")
+	code, body := e.post(t, "/devices/batch/start", map[string]any{
+		"device_ids": []string{"sim_mx_a", "sim_mx_b"},
+	})
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("全失败且含 429 应 429，得到 %d body=%s", code, body)
+	}
+}
+
 func TestSpeakPermitExceeded429(t *testing.T) {
 	e := newEnvCfg(t, func(c *manager.Config) { c.MaxConcurrentSpeaking = 0 })
 	e.auto.replyTTS = false

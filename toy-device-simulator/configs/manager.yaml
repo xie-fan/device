@@ -1,0 +1,15 @@
+manager:
+  max_connections: 32
+  max_concurrent_speaking: 8
+  default_stagger_ms: 50
+  per_device_buffer_bytes: 1048576
+  write_queue_depth: 256
+  write_drain_timeout_sec: 2
+  event_log_max_entries: 10000
+  event_log_ttl_hours: 24
+  assets_root: "./data/assets"
+  max_asset_bytes: 10485760
+  max_asset_duration_sec: 60
+  max_stream_entries: 16
+  max_stream_duration_sec: 60
+  wait_ready_timeout_sec: 30

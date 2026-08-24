@@ -90,6 +90,8 @@ type EventLog struct {
 	maxEntries     int // 0=不限制，避免破坏 Phase 1
 	evictedThrough int
 	waiters        []*eventWaiter
+	hubSubs        map[int]*WSSub
+	hubNext        int
 }
 
 func NewEventLog(deviceID, instanceID string) *EventLog {
@@ -183,6 +185,7 @@ func (l *EventLog) AppendLocked(typ string, turnID, reason, endReason, uplinkRea
 		rest = append(rest, w)
 	}
 	l.waiters = rest
+	n.SlowSubs += l.deliverHubLocked(ev)
 	return ev, n
 }
 
@@ -266,6 +269,10 @@ func (l *EventLog) Snapshot() []Event {
 func (l *EventLog) After(after int) []Event {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.afterLocked(after)
+}
+
+func (l *EventLog) afterLocked(after int) []Event {
 	var out []Event
 	for _, e := range l.events {
 		if e.EventSeq > after {

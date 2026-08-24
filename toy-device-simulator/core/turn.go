@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"toy-device-simulator/protocol"
@@ -92,7 +93,24 @@ func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (turnID
 }
 
 // testBeforeUplinkEnqueue 仅测试：frozen/Terminal 检查已通过、即将 enqueueData。
-var testBeforeUplinkEnqueue func()
+// 用 atomic.Value 存 func，避免测试赋值与 uplinkTurn 读取形成数据竞争。
+type uplinkEnqueueHook func()
+
+var testBeforeUplinkEnqueue atomic.Value
+
+func setTestBeforeUplinkEnqueue(fn uplinkEnqueueHook) {
+	testBeforeUplinkEnqueue.Store(fn)
+}
+
+func runTestBeforeUplinkEnqueue() {
+	v := testBeforeUplinkEnqueue.Load()
+	if v == nil {
+		return
+	}
+	if fn, ok := v.(uplinkEnqueueHook); ok && fn != nil {
+		fn()
+	}
+}
 
 func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 	frames := BuildUplinkFrames(pcm, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault, d.cfg.Audio.MaxPayloadSize)
@@ -132,9 +150,7 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 		}
 		d.turn.out.Add(1)
 		tr := d.turn
-		if testBeforeUplinkEnqueue != nil {
-			testBeforeUplinkEnqueue()
-		}
+		runTestBeforeUplinkEnqueue()
 		// 持 deviceMu 入队，避免解锁窗口内 VAD / 失败 JSON / CancelTurn 把 Stage=1 排到 Stage=2/3 之后。
 		err := d.enqueueData(Frame{
 			Kind:          KindAudioData,
@@ -261,13 +277,14 @@ func (d *DeviceInstance) WaitTurn(turnID string, timeout time.Duration) (Event, 
 }
 
 func (d *DeviceInstance) WaitBudgetFor(pcmBytes int) time.Duration {
-	upload := UploadDuration(pcmBytes, d.cfg.Audio.SampleRate, d.cfg.Audio.Channels, 2, d.cfg.Audio.SliceMs)
+	cfg := d.Config()
+	upload := UploadDuration(pcmBytes, cfg.Audio.SampleRate, cfg.Audio.Channels, 2, cfg.Audio.SliceMs)
 	return WaitBudget(
 		upload,
-		seconds(d.cfg.Behavior.FirstReplyTimeoutSec),
-		seconds(d.cfg.Behavior.DownlinkIdleTimeoutSec),
-		seconds(d.cfg.Behavior.NonAudioFollowupSec),
-		seconds(d.cfg.Behavior.PostFinalASRSilenceSec),
-		seconds(d.cfg.Behavior.WaitTimeoutSlackSec),
+		seconds(cfg.Behavior.FirstReplyTimeoutSec),
+		seconds(cfg.Behavior.DownlinkIdleTimeoutSec),
+		seconds(cfg.Behavior.NonAudioFollowupSec),
+		seconds(cfg.Behavior.PostFinalASRSilenceSec),
+		seconds(cfg.Behavior.WaitTimeoutSlackSec),
 	)
 }

@@ -81,4 +81,31 @@ manager:
 	if cfg.MaxConcurrentSpeaking != 8 {
 		t.Fatalf("max_concurrent_speaking 缺省应为 8，得到 %d", cfg.MaxConcurrentSpeaking)
 	}
+	if cfg.PerDeviceBufferBytes != 1048576 {
+		t.Fatalf("per_device_buffer_bytes 缺省应为 1048576，得到 %d", cfg.PerDeviceBufferBytes)
+	}
+	if cfg.EventLogMaxEntries != 10000 {
+		t.Fatalf("event_log_max_entries 缺省应为 10000，得到 %d", cfg.EventLogMaxEntries)
+	}
+	if cfg.EventLogTTLHours != 24 {
+		t.Fatalf("event_log_ttl_hours 缺省应为 24，得到 %d", cfg.EventLogTTLHours)
+	}
+	if cfg.AssetsRoot != "./data/assets" {
+		t.Fatalf("assets_root 缺省应为 ./data/assets，得到 %s", cfg.AssetsRoot)
+	}
+	if cfg.MaxAssetBytes != 10485760 {
+		t.Fatalf("max_asset_bytes 缺省应为 10485760，得到 %d", cfg.MaxAssetBytes)
+	}
+	if cfg.MaxAssetDurationSec != 60 {
+		t.Fatalf("max_asset_duration_sec 缺省应为 60，得到 %d", cfg.MaxAssetDurationSec)
+	}
+	if cfg.MaxStreamEntries != 16 {
+		t.Fatalf("max_stream_entries 缺省应为 16，得到 %d", cfg.MaxStreamEntries)
+	}
+	if cfg.MaxStreamDurationSec != 60 {
+		t.Fatalf("max_stream_duration_sec 缺省应为 60，得到 %d", cfg.MaxStreamDurationSec)
+	}
+	if cfg.WaitReadyTimeoutSec != 30 {
+		t.Fatalf("wait_ready_timeout_sec 缺省应为 30，得到 %d", cfg.WaitReadyTimeoutSec)
+	}
 }

@@ -126,6 +126,10 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "需要 device 或 template_id+count")
 		return
 	}
+	if err := config.ValidatePathComponent(body.TemplateID); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	tmpl, err := s.readTemplate(body.TemplateID)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "模板不存在")
@@ -133,7 +137,7 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := make([]string, 0, body.Count)
 	for i := 1; i <= body.Count; i++ {
-		ids = append(ids, body.IDPrefix+strconv.Itoa(i))
+		ids = append(ids, body.IDPrefix+"_"+strconv.Itoa(i))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -797,10 +801,7 @@ func (s *Server) handlePostTemplate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	dir := s.opts.TemplatesDir
-	if dir == "" {
-		dir = filepath.Join("configs", "templates")
-	}
+	dir := s.templatesDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -823,12 +824,18 @@ func (s *Server) handlePostTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"template_id": body.TemplateID})
 }
 
-func (s *Server) readTemplate(id string) (map[string]any, error) {
-	dir := s.opts.TemplatesDir
-	if dir == "" {
-		dir = filepath.Join("configs", "templates")
+func (s *Server) templatesDir() string {
+	if s.opts.TemplatesDir != "" {
+		return s.opts.TemplatesDir
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, id+".yaml"))
+	return filepath.Join("configs", "templates")
+}
+
+func (s *Server) readTemplate(id string) (map[string]any, error) {
+	if err := config.ValidatePathComponent(id); err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(s.templatesDir(), id+".yaml"))
 	if err != nil {
 		return nil, err
 	}
@@ -842,7 +849,7 @@ func (s *Server) readTemplate(id string) (map[string]any, error) {
 }
 
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
-	dir := s.opts.TemplatesDir
+	dir := s.templatesDir()
 	ents, _ := os.ReadDir(dir)
 	ids := []string{}
 	for _, e := range ents {
@@ -856,6 +863,10 @@ func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if err := config.ValidatePathComponent(id); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	m, err := s.readTemplate(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "模板不存在")
@@ -866,8 +877,11 @@ func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	dir := s.opts.TemplatesDir
-	_ = os.Remove(filepath.Join(dir, id+".yaml"))
+	if err := config.ValidatePathComponent(id); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_ = os.Remove(filepath.Join(s.templatesDir(), id+".yaml"))
 	w.WriteHeader(http.StatusNoContent)
 }
 

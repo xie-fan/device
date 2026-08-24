@@ -57,6 +57,7 @@ type Recorder struct {
 	saveDown     bool
 	jobs         chan job
 	wg           sync.WaitGroup
+	mu           sync.Mutex
 	stopped      atomic.Bool
 	beforeWrite  atomic.Value // func()
 }
@@ -78,21 +79,32 @@ func (r *Recorder) SetBeforeWrite(fn func()) {
 }
 
 func (r *Recorder) Stop() {
-	if r == nil || !r.stopped.CompareAndSwap(false, true) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if !r.stopped.CompareAndSwap(false, true) {
+		r.mu.Unlock()
 		return
 	}
 	close(r.jobs)
+	r.mu.Unlock()
 	r.wg.Wait()
 }
 
 func (r *Recorder) submit(j job) {
-	if r == nil || r.stopped.Load() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped.Load() {
 		return
 	}
 	select {
 	case r.jobs <- j:
 	default:
-		go func() { r.jobs <- j }()
+		// 队列满则丢，避免另起 goroutine 在 Stop 后向已关闭 channel 发送。
 	}
 }
 

@@ -348,9 +348,13 @@ func (s *Server) handleBatchStart(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	var succ []batchOK
 	var fail []batchFail
+	stagger := body.StaggerMs
+	if stagger == 0 {
+		stagger = s.opts.Config.DefaultStaggerMs
+	}
 	for i, id := range body.DeviceIDs {
-		if i > 0 && body.StaggerMs > 0 {
-			time.Sleep(time.Duration(body.StaggerMs) * time.Millisecond)
+		if i > 0 && stagger > 0 {
+			time.Sleep(time.Duration(stagger) * time.Millisecond)
 		}
 		code, ins, gen, errMsg := s.startOne(id)
 		if code == http.StatusAccepted {
@@ -435,16 +439,16 @@ func batchHTTPStatus(okCode int, succ []batchOK, fail []batchFail) int {
 		return okCode
 	}
 	if len(succ) == 0 {
-		all429, all409 := true, true
+		any429, all409 := false, true
 		for _, f := range fail {
-			if f.HTTPStatus != http.StatusTooManyRequests {
-				all429 = false
+			if f.HTTPStatus == http.StatusTooManyRequests {
+				any429 = true
 			}
 			if f.HTTPStatus != http.StatusConflict {
 				all409 = false
 			}
 		}
-		if all429 {
+		if any429 {
 			return http.StatusTooManyRequests
 		}
 		if all409 {

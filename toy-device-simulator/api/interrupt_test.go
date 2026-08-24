@@ -122,9 +122,8 @@ func TestInterruptFinalizeStarted409(t *testing.T) {
 	if code != http.StatusConflict || !containsBytes(body, "finalize_started") {
 		t.Fatalf("finalize_started 时 interrupt 应 409 且不 CancelTurn，得到 %d body=%s", code, body)
 	}
-	if c := e.conn("sim_fs"); c != nil && c.writeGate != nil {
-		close(c.writeGate)
-		c.writeGate = nil
+	if c := e.conn("sim_fs"); c != nil {
+		c.ReleaseWriteGate()
 	}
 	select {
 	case <-done:

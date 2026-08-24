@@ -51,6 +51,33 @@ func Load(raw []byte) (Config, error) {
 	if c.MaxConcurrentSpeaking == 0 {
 		c.MaxConcurrentSpeaking = 8
 	}
+	if c.PerDeviceBufferBytes == 0 {
+		c.PerDeviceBufferBytes = 1048576
+	}
+	if c.EventLogMaxEntries == 0 {
+		c.EventLogMaxEntries = 10000
+	}
+	if c.EventLogTTLHours == 0 {
+		c.EventLogTTLHours = 24
+	}
+	if c.AssetsRoot == "" {
+		c.AssetsRoot = "./data/assets"
+	}
+	if c.MaxAssetBytes == 0 {
+		c.MaxAssetBytes = 10485760
+	}
+	if c.MaxAssetDurationSec == 0 {
+		c.MaxAssetDurationSec = 60
+	}
+	if c.MaxStreamEntries == 0 {
+		c.MaxStreamEntries = 16
+	}
+	if c.MaxStreamDurationSec == 0 {
+		c.MaxStreamDurationSec = 60
+	}
+	if c.WaitReadyTimeoutSec == 0 {
+		c.WaitReadyTimeoutSec = 30
+	}
 	return c, nil
 }
 

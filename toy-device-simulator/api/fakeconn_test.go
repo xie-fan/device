@@ -40,20 +40,31 @@ func (c *fakeConn) WriteMessage(_ int, data []byte) error {
 	cp := append([]byte(nil), data...)
 	c.mu.Lock()
 	c.writes = append(c.writes, cp)
+	gate := c.writeGate
 	c.mu.Unlock()
 	select {
 	case c.writeCh <- cp:
 	default:
 	}
 	// 仅堵住音频写出，避免握手（register/report）被 hold 卡死。
-	if c.writeGate != nil && len(data) > 0 && data[0] == protocol.FirstAudio {
+	if gate != nil && len(data) > 0 && data[0] == protocol.FirstAudio {
 		select {
-		case <-c.writeGate:
+		case <-gate:
 		case <-c.closed:
 			return net.ErrClosed
 		}
 	}
 	return nil
+}
+
+func (c *fakeConn) ReleaseWriteGate() {
+	c.mu.Lock()
+	g := c.writeGate
+	c.writeGate = nil
+	c.mu.Unlock()
+	if g != nil {
+		close(g)
+	}
 }
 
 func (c *fakeConn) ReadMessage() (int, []byte, error) {

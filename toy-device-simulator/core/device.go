@@ -139,8 +139,6 @@ type DeviceInstance struct {
 	phase2Recording  bool
 	throttle         protocol.SleepThrottle
 	speakableWaiters []chan SpeakableResult
-	hubSubs          map[int]*WSSub
-	hubNext          int
 }
 
 func newInstanceID() string {
@@ -203,7 +201,11 @@ func NewDevice(cfg config.Device, opts Options) *DeviceInstance {
 
 func (d *DeviceInstance) InstanceID() string { return d.instanceID }
 
-func (d *DeviceInstance) Config() config.Device { return d.cfg }
+func (d *DeviceInstance) Config() config.Device {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.cfg
+}
 
 func (d *DeviceInstance) Fault() Fault { return d.fault }
 
@@ -272,12 +274,14 @@ func (d *DeviceInstance) EventSeq() int {
 
 func (d *DeviceInstance) EventLog() *EventLog { return d.events }
 
-func (d *DeviceInstance) ThrottleLast() (int, bool) { return d.throttle.Last, d.throttle.Set }
+func (d *DeviceInstance) ThrottleLast() (int, bool) {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return d.throttle.Last, d.throttle.Set
+}
 
 func (d *DeviceInstance) appendEventLocked(typ, turnID, reason, endReason, uplinkReason, replyKind string) (Event, EventNotify) {
-	ev, n := d.events.AppendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind)
-	n.SlowSubs += d.deliverHubLocked(ev)
-	return ev, n
+	return d.events.AppendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind)
 }
 
 func (d *DeviceInstance) terminalLocked(endReason, replyKind, uplinkIfEmpty string, phaseC bool) TerminalNotify {

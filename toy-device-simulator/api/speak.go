@@ -146,7 +146,7 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 		writeJSON(w, http.StatusAccepted, resp)
 		return
 	}
-	timeout := 30 * time.Second
+	timeout := inst.WaitBudgetFor(len(pcm))
 	if body.TimeoutSec != nil {
 		timeout = time.Duration(*body.TimeoutSec * float64(time.Second))
 	}

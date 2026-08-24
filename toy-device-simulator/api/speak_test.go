@@ -109,6 +109,42 @@ func TestSpeakAccepted202(t *testing.T) {
 	}
 }
 
+func TestSpeakAndWaitDefaultBudgetFollowsIdleNotHardcoded30s(t *testing.T) {
+	e := newEnv(t)
+	e.auto.replyTTS = false
+	body := e.deviceBody("sim_swb")
+	beh, _ := body["behavior"].(map[string]any)
+	beh["first_reply_timeout_sec"] = 1
+	beh["downlink_idle_timeout_sec"] = 1
+	beh["non_audio_followup_sec"] = 0
+	beh["post_final_asr_silence_sec"] = 0
+	beh["wait_timeout_slack_sec"] = 0
+	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	if code != http.StatusCreated {
+		t.Fatalf("create %d %s", code, raw)
+	}
+	ins, gen := e.startDevice(t, "sim_swb")
+	e.waitReady(t, "sim_swb", ins, gen)
+	assetID := e.uploadWAV(t)
+	start := time.Now()
+	code, raw = e.post(t, "/devices/sim_swb/speak_and_wait", map[string]any{"asset_id": assetID})
+	elapsed := time.Since(start)
+	if elapsed > 6*time.Second {
+		t.Fatalf("默认预算应随 idle/first_reply 走，不得写死 30s，耗时 %s body=%s", elapsed, raw)
+	}
+	// replyTTS=false 时设备可能先用 first_reply/idle 收口（200 turn_terminal），
+	// 或 WaitTurn 先耗尽预算（504）。两种都证明 HTTP 没用写死的 30s。
+	if code == http.StatusGatewayTimeout {
+		return
+	}
+	if code != http.StatusOK {
+		t.Fatalf("未给 timeout_sec 时应 504 或快速 200，得到 %d body=%s", code, raw)
+	}
+	if strField(decodeMap(t, raw), "event_type") != "turn_terminal" {
+		t.Fatalf("快速 200 应为 turn_terminal，body=%s", raw)
+	}
+}
+
 func TestSpeakAndWaitTimeout504TurnContinues(t *testing.T) {
 	e := newEnv(t)
 	e.auto.replyTTS = false

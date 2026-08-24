@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,7 +38,7 @@ func TestPostDevicesBatchIDConflict409WholeBatch(t *testing.T) {
 	code, body = e.post(t, "/devices", map[string]any{
 		"template_id": "default_a3",
 		"count":       2,
-		"id_prefix":   "sim_cf_",
+		"id_prefix":   "sim_cf",
 	})
 	if code != http.StatusConflict {
 		t.Fatalf("批量 ID 冲突应整批 409，得到 %d body=%s", code, body)
@@ -44,6 +46,28 @@ func TestPostDevicesBatchIDConflict409WholeBatch(t *testing.T) {
 	code, _, _ = e.get(t, "/devices/sim_cf_2")
 	if code != http.StatusNotFound {
 		t.Fatalf("整批失败不得部分创建 sim_cf_2，GET 得到 %d", code)
+	}
+}
+
+func TestPostDevicesBatchIDPrefixUsesUnderscore(t *testing.T) {
+	e := newEnv(t)
+	tmpl := e.deviceBody("ignored")
+	delete(tmpl, "device_id")
+	code, body := e.postTemplate(t, "default_a3", tmpl)
+	if code != http.StatusCreated {
+		t.Fatalf("POST /templates 应 201，得到 %d body=%s", code, body)
+	}
+	code, body = e.post(t, "/devices", map[string]any{
+		"template_id": "default_a3",
+		"count":       1,
+		"id_prefix":   "sim",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("批量创建应 201，得到 %d body=%s", code, body)
+	}
+	ids, _ := decodeMap(t, body)["device_ids"].([]any)
+	if len(ids) != 1 || fmt.Sprint(ids[0]) != "sim_1" {
+		t.Fatalf("id_prefix=sim 应得 sim_1，body=%s", body)
 	}
 }
 
@@ -91,5 +115,43 @@ func TestTemplatePersistedUnderConfigsTemplates(t *testing.T) {
 	p := filepath.Join(e.templates, "default_a3.yaml")
 	if _, err := os.Stat(p); err != nil {
 		t.Fatalf("模板应落盘 %s: %v", p, err)
+	}
+}
+
+func TestTemplatePathTraversalRejected(t *testing.T) {
+	e := newEnv(t)
+	secret := filepath.Join(filepath.Dir(e.templates), "secret.yaml")
+	if err := os.WriteFile(secret, []byte("device:\n  device_id: leaked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodGet, e.srv.URL+"/templates/..%2fsecret", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("GET 模板路径穿越不得 200，body=%s", body)
+	}
+	req, err = http.NewRequest(http.MethodDelete, e.srv.URL+"/templates/..%2fsecret", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		if _, err := os.Stat(secret); err == nil {
+			t.Fatal("DELETE 路径穿越不得删掉模板目录外的 yaml")
+		}
+	}
+	if _, err := os.Stat(secret); err != nil {
+		t.Fatalf("secret.yaml 应仍在盘上: %v", err)
 	}
 }

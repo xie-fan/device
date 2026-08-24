@@ -3,6 +3,7 @@ package recording
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,4 +46,24 @@ func TestBadHeaderLenLessThan100(t *testing.T) {
 	if row.FirstByte != "0" {
 		t.Fatal(row.FirstByte)
 	}
+}
+
+func TestRecorderStopConcurrentSubmit(t *testing.T) {
+	dir := t.TempDir()
+	r := New(true, true, true)
+	path := filepath.Join(dir, "frames.jsonl")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				r.SubmitFrame(path, FrameRow{Direction: "outbound"})
+			}
+		}()
+	}
+	time.Sleep(2 * time.Millisecond)
+	r.Stop()
+	wg.Wait()
+	r.Stop()
 }
