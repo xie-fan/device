@@ -18,6 +18,8 @@ type Options struct {
 	TemplatesDir   string
 	RecordingsDir  string
 	AfterAssetStat func()
+	// TTL 测试覆盖 event log / 录音目录的过期时间；0 则用 Config.EventLogTTLHours。
+	TTL time.Duration
 }
 
 type Server struct {
@@ -146,4 +148,11 @@ func ttl(cfg manager.Config) time.Duration {
 		h = 24
 	}
 	return time.Duration(h) * time.Hour
+}
+
+func (s *Server) eventTTL() time.Duration {
+	if s.opts.TTL > 0 {
+		return s.opts.TTL
+	}
+	return ttl(s.opts.Config)
 }

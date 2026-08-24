@@ -55,6 +55,21 @@ func RecordingDirPhase2(outputDir, deviceID, instanceID, turnID string) (string,
 	return dir, nil
 }
 
+func RecordingInstanceDir(outputDir, deviceID, instanceID string) (string, error) {
+	if err := config.ValidatePathComponent(deviceID); err != nil {
+		return "", fmt.Errorf("device_id: %w", err)
+	}
+	if err := config.ValidatePathComponent(instanceID); err != nil {
+		return "", fmt.Errorf("instance_id: %w", err)
+	}
+	base := filepath.Clean(outputDir)
+	dir := filepath.Clean(filepath.Join(outputDir, deviceID, instanceID))
+	if !underOutputDir(base, dir) {
+		return "", fmt.Errorf("录制目录逃出 output_dir")
+	}
+	return dir, nil
+}
+
 func RecordingPathsPhase2(outputDir, deviceID, instanceID, turnID string) (frames, uplink, downlink, turn string, err error) {
 	dir, err := RecordingDirPhase2(outputDir, deviceID, instanceID, turnID)
 	if err != nil {

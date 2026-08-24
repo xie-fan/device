@@ -174,6 +174,7 @@ func TestWaitLiveEventAfterRegister200Not504(t *testing.T) {
 			"instance_id":     ins,
 			"event_type":      "tts_done",
 			"after_event_seq": newest,
+			"conn_generation": gen,
 			"timeout_sec":     5,
 		})
 		done <- [2]any{c, b}
@@ -396,16 +397,71 @@ func TestScenarioFailedStepVisibleInGET(t *testing.T) {
 	t.Fatal("失败步骤要反映在 GET 状态里")
 }
 
-func TestWaitOmitsGenerationForConnectedOK(t *testing.T) {
+func TestWaitSpeakableRequiresConnGeneration(t *testing.T) {
 	e := newEnv(t)
-	ins, _ := e.createStartReady(t, "sim_nogen")
+	ins, gen := e.createStartReady(t, "sim_nogen")
 	code, body := e.post(t, "/wait", map[string]any{
 		"device_id":   "sim_nogen",
 		"instance_id": ins,
 		"event_type":  "connected",
 		"timeout_sec": 2,
 	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("Ready 设备 POST /wait 无 conn_generation 应 400，得到 %d %s", code, body)
+	}
+	code, body = e.post(t, "/wait", map[string]any{
+		"device_id":       "sim_nogen",
+		"instance_id":     ins,
+		"event_type":      "connected",
+		"conn_generation": gen,
+		"timeout_sec":     2,
+	})
 	if code != http.StatusOK {
-		t.Fatalf("等 connected 省略 generation 不得 400，得到 %d %s", code, body)
+		t.Fatalf("带 conn_generation 等 connected 应 200，得到 %d %s", code, body)
+	}
+}
+
+func TestWaitPrevGenerationNotCompletedByNewTurnTerminal(t *testing.T) {
+	e := newEnv(t)
+	e.auto.replyTTS = true
+	ins, gen := e.createStartReady(t, "sim_wcross")
+	done := make(chan [2]any, 1)
+	go func() {
+		c, b := e.post(t, "/wait", map[string]any{
+			"device_id":       "sim_wcross",
+			"instance_id":     ins,
+			"event_type":      "turn_terminal",
+			"conn_generation": gen,
+			"timeout_sec":     3,
+		})
+		done <- [2]any{c, b}
+	}()
+	time.Sleep(80 * time.Millisecond)
+	code, body := e.post(t, "/devices/sim_wcross/stop", nil)
+	if code != http.StatusOK {
+		t.Fatalf("stop 应 200，得到 %d %s", code, body)
+	}
+	ins2, gen2 := e.startDevice(t, "sim_wcross")
+	if ins2 != ins {
+		t.Fatalf("stop/start 应保持 instance_id，%s vs %s", ins, ins2)
+	}
+	if gen2 <= gen {
+		t.Fatalf("新一代 conn_generation 应递增，%d -> %d", gen, gen2)
+	}
+	e.waitReady(t, "sim_wcross", ins2, gen2)
+	assetID := e.uploadWAV(t)
+	code, body = e.post(t, "/devices/sim_wcross/speak", map[string]any{"asset_id": assetID})
+	if code != http.StatusAccepted {
+		t.Fatalf("speak 应 202，得到 %d %s", code, body)
+	}
+	select {
+	case got := <-done:
+		c := got[0].(int)
+		b := got[1].([]byte)
+		if c == http.StatusOK {
+			t.Fatalf("上一代 waiter 不得被新一代 turn_terminal 以 200 完成，body=%s", b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("上一代 waiter 应结束（409/超时），不得一直挂起")
 	}
 }

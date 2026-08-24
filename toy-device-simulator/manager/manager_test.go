@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -107,5 +109,16 @@ manager:
 	}
 	if cfg.WaitReadyTimeoutSec != 30 {
 		t.Fatalf("wait_ready_timeout_sec 缺省应为 30，得到 %d", cfg.WaitReadyTimeoutSec)
+	}
+}
+
+func TestRepoManagerYAMLLoads(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	path := filepath.Join(filepath.Dir(file), "..", "configs", "manager.yaml")
+	if _, err := LoadFile(path); err != nil {
+		t.Fatalf("LoadFile configs/manager.yaml: %v", err)
 	}
 }

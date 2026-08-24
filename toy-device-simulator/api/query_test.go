@@ -2,7 +2,10 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestTurnsFramesAudioMissingInstanceID400(t *testing.T) {
@@ -132,6 +135,59 @@ func TestGetDevice404AfterDeleteButOldEvents200WithinTTL(t *testing.T) {
 	}
 	if !containsBytes(body, "device_deleted") {
 		t.Fatalf("冻结日志应含 device_deleted，body=%s", body)
+	}
+}
+
+func TestRecordingAndEvents404AfterTombTTLAndDirRemoved(t *testing.T) {
+	e := newEnvTTL(t, 200*time.Millisecond)
+	e.auto.replyTTS = true
+	ins, _ := e.createStartReady(t, "sim_ttl")
+	assetID := e.uploadWAV(t)
+	code, body := e.post(t, "/devices/sim_ttl/speak", map[string]any{"asset_id": assetID})
+	if code != http.StatusAccepted {
+		t.Fatalf("speak 应 202，得到 %d %s", code, body)
+	}
+	turnID := strField(decodeMap(t, body), "turn_id")
+	q := "?instance_id=" + ins
+	deadline := time.Now().Add(5 * time.Second)
+	var downCode int
+	for time.Now().Before(deadline) {
+		downCode, _, _ = e.get(t, "/devices/sim_ttl/turns/"+turnID+"/audio/downlink"+q)
+		if downCode == http.StatusOK {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if downCode != http.StatusOK {
+		t.Fatalf("TTL 前 GET downlink 应 200，得到 %d", downCode)
+	}
+	recDir := filepath.Join(e.recDir, "sim_ttl", ins)
+	if _, err := os.Stat(recDir); err != nil {
+		t.Fatalf("录音目录应存在: %v", err)
+	}
+	code, body = e.del(t, "/devices/sim_ttl")
+	if code != http.StatusOK {
+		t.Fatalf("DELETE 应 200，得到 %d %s", code, body)
+	}
+	code, _, _ = e.get(t, "/devices/sim_ttl/events"+q)
+	if code != http.StatusOK {
+		t.Fatalf("TTL 内 events 应 200，得到 %d", code)
+	}
+	code, _, _ = e.get(t, "/devices/sim_ttl/turns/"+turnID+"/audio/downlink"+q)
+	if code != http.StatusOK {
+		t.Fatalf("TTL 内旧录音应 200，得到 %d", code)
+	}
+	time.Sleep(350 * time.Millisecond)
+	code, _, _ = e.get(t, "/devices/sim_ttl/events"+q)
+	if code != http.StatusNotFound {
+		t.Fatalf("过期后 events 应 404，得到 %d", code)
+	}
+	code, _, _ = e.get(t, "/devices/sim_ttl/turns/"+turnID+"/audio/downlink"+q)
+	if code != http.StatusNotFound {
+		t.Fatalf("过期后 downlink 应 404，得到 %d", code)
+	}
+	if _, err := os.Stat(recDir); !os.IsNotExist(err) {
+		t.Fatalf("过期后 instance 目录应删除，err=%v", err)
 	}
 }
 

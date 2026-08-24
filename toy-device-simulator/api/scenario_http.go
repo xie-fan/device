@@ -79,6 +79,12 @@ func (s *Server) execScenario(runID string, spec scenario.Spec) {
 			continue
 		}
 		out, err := s.execStep(st, prev)
+		if out.ConnGeneration == 0 {
+			out.ConnGeneration = prev.ConnGeneration
+		}
+		if out.InstanceID == "" {
+			out.InstanceID = prev.InstanceID
+		}
 		if err != nil {
 			out.Index = i
 			out.Status = "failed"
@@ -173,9 +179,13 @@ func (s *Server) execSpeak(st scenario.Step) (stepResult, error) {
 	m := map[string]any{}
 	_ = json.Unmarshal(raw, &m)
 	out := stepResult{
-		InstanceID: jsonStr(m, "instance_id"),
-		TurnID:     jsonStr(m, "turn_id"),
-		SeqBefore:  jsonInt(m, "seq_before"),
+		InstanceID:     jsonStr(m, "instance_id"),
+		TurnID:         jsonStr(m, "turn_id"),
+		SeqBefore:      jsonInt(m, "seq_before"),
+		ConnGeneration: jsonInt(m, "conn_generation"),
+	}
+	if out.ConnGeneration == 0 {
+		_, out.ConnGeneration = s.liveConnMeta(st.DeviceID, out.InstanceID)
 	}
 	want := http.StatusAccepted
 	if st.Wait {
@@ -200,6 +210,10 @@ func (s *Server) execAssert(st scenario.Step, prev stepResult) (stepResult, erro
 		ins = prev.InstanceID
 	}
 	turnID := st.TurnID
+	gen := prev.ConnGeneration
+	if _, g := s.liveConnMeta(st.DeviceID, ins); g != 0 {
+		gen = g
+	}
 	body := map[string]any{
 		"device_id":       st.DeviceID,
 		"instance_id":     ins,
@@ -208,18 +222,35 @@ func (s *Server) execAssert(st scenario.Step, prev stepResult) (stepResult, erro
 		"after_event_seq": after,
 		"timeout_sec":     waitReadyDefault(s.opts.Config).Seconds(),
 	}
+	if gen != 0 {
+		body["conn_generation"] = gen
+	}
 	code, raw := s.internalJSON(http.MethodPost, "/wait", body)
 	m := map[string]any{}
 	_ = json.Unmarshal(raw, &m)
 	out := stepResult{
-		InstanceID: ins,
-		TurnID:     jsonStr(m, "turn_id"),
-		SeqBefore:  after,
+		InstanceID:     ins,
+		TurnID:         jsonStr(m, "turn_id"),
+		SeqBefore:      after,
+		ConnGeneration: gen,
 	}
 	if code != http.StatusOK {
 		return out, fmt.Errorf("assert HTTP %d %s", code, raw)
 	}
 	return out, nil
+}
+
+func (s *Server) liveConnMeta(deviceID, instanceID string) (ins string, gen int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.devices[deviceID]
+	if !ok {
+		return instanceID, 0
+	}
+	if instanceID != "" && d.instanceID != instanceID {
+		return instanceID, 0
+	}
+	return d.instanceID, d.gen
 }
 
 func jsonStr(m map[string]any, k string) string {

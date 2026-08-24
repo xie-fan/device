@@ -14,7 +14,7 @@ import (
 
 func TestWaitEventTimeoutAfterRemoveFailsWaitsNotify(t *testing.T) {
 	log := core.NewEventLog("sim_we", "ins_we")
-	_, ch, expired, hit := log.FindOrRegisterWaiter(0, "ready", "")
+	_, ch, expired, hit := log.FindOrRegisterWaiter(0, "ready", "", 0)
 	if expired || hit || ch == nil {
 		t.Fatal("应登记 waiter")
 	}
@@ -22,7 +22,7 @@ func TestWaitEventTimeoutAfterRemoveFailsWaitsNotify(t *testing.T) {
 	s := &Server{devices: map[string]*managedDevice{}, tombs: map[string]*tombstone{}}
 	done := make(chan [2]any, 1)
 	go func() {
-		code, payload := s.waitEventTimeout("sim_we", "ins_we", log, nil, ch)
+		code, payload := s.waitEventTimeout("sim_we", "ins_we", log, nil, ch, 0)
 		done <- [2]any{code, payload}
 	}()
 	select {

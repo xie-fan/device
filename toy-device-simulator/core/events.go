@@ -15,8 +15,9 @@ type Event struct {
 	Reason       string    `json:"reason,omitempty"`
 	EndReason    string    `json:"turn_end_reason,omitempty"`
 	UplinkReason string    `json:"uplink_end_reason,omitempty"`
-	ReplyKind    string    `json:"reply_kind,omitempty"`
-	At           time.Time `json:"-"`
+	ReplyKind      string    `json:"reply_kind,omitempty"`
+	ConnGeneration int       `json:"-"`
+	At             time.Time `json:"-"`
 }
 
 func (e Event) MarshalJSON() ([]byte, error) {
@@ -75,10 +76,11 @@ func eventNotifyOf(tn TerminalNotify) EventNotify {
 }
 
 type eventWaiter struct {
-	eventType string
-	turnID    string
-	afterSeq  int
-	ch        chan Event
+	eventType  string
+	turnID     string
+	afterSeq   int
+	generation int
+	ch         chan Event
 }
 
 type EventLog struct {
@@ -92,10 +94,20 @@ type EventLog struct {
 	waiters        []*eventWaiter
 	hubSubs        map[int]*WSSub
 	hubNext        int
+	connGeneration int
 }
 
 func NewEventLog(deviceID, instanceID string) *EventLog {
 	return &EventLog{deviceID: deviceID, instanceID: instanceID}
+}
+
+func (l *EventLog) SetConnGeneration(g int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.connGeneration = g
 }
 
 // SetMaxEntries 0 表示不淘汰。
@@ -158,16 +170,17 @@ func (l *EventLog) AppendLocked(typ string, turnID, reason, endReason, uplinkRea
 	defer l.mu.Unlock()
 	l.seq++
 	ev := Event{
-		DeviceID:     l.deviceID,
-		InstanceID:   l.instanceID,
-		EventSeq:     l.seq,
-		Type:         typ,
-		TurnID:       turnID,
-		Reason:       reason,
-		EndReason:    endReason,
-		UplinkReason: uplinkReason,
-		ReplyKind:    replyKind,
-		At:           time.Now().UTC(),
+		DeviceID:       l.deviceID,
+		InstanceID:     l.instanceID,
+		EventSeq:       l.seq,
+		Type:           typ,
+		TurnID:         turnID,
+		Reason:         reason,
+		EndReason:      endReason,
+		UplinkReason:   uplinkReason,
+		ReplyKind:      replyKind,
+		ConnGeneration: l.connGeneration,
+		At:             time.Now().UTC(),
 	}
 	l.events = append(l.events, ev)
 	l.evictLocked()
@@ -175,6 +188,10 @@ func (l *EventLog) AppendLocked(typ string, turnID, reason, endReason, uplinkRea
 	rest := l.waiters[:0]
 	for _, w := range l.waiters {
 		if w == nil {
+			continue
+		}
+		if w.generation != 0 && w.generation != ev.ConnGeneration {
+			rest = append(rest, w)
 			continue
 		}
 		if ev.EventSeq > w.afterSeq && eventMatches(ev, w.eventType, w.turnID) {
@@ -190,7 +207,7 @@ func (l *EventLog) AppendLocked(typ string, turnID, reason, endReason, uplinkRea
 }
 
 // FindOrRegisterWaiter 检查历史与登记同一临界区。命中不登记。
-func (l *EventLog) FindOrRegisterWaiter(after int, typ, turnID string) (ev Event, ch chan Event, expired, hit bool) {
+func (l *EventLog) FindOrRegisterWaiter(after int, typ, turnID string, gen int) (ev Event, ch chan Event, expired, hit bool) {
 	if l == nil {
 		return Event{}, nil, false, false
 	}
@@ -200,16 +217,20 @@ func (l *EventLog) FindOrRegisterWaiter(after int, typ, turnID string) (ev Event
 		return Event{}, nil, true, false
 	}
 	for _, e := range l.events {
+		if gen != 0 && e.ConnGeneration != gen {
+			continue
+		}
 		if e.EventSeq > after && eventMatches(e, typ, turnID) {
 			return e, nil, false, true
 		}
 	}
 	ch = make(chan Event, 1)
 	l.waiters = append(l.waiters, &eventWaiter{
-		eventType: typ,
-		turnID:    turnID,
-		afterSeq:  after,
-		ch:        ch,
+		eventType:  typ,
+		turnID:     turnID,
+		afterSeq:   after,
+		generation: gen,
+		ch:         ch,
 	})
 	return Event{}, ch, false, false
 }

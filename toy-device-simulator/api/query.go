@@ -15,6 +15,7 @@ func (s *Server) requireInstance(r *http.Request) (string, bool) {
 }
 
 func (s *Server) resolveInstance(deviceID, instanceID string) (live *managedDevice, tomb *tombstone, found string) {
+	s.purgeExpiredTombsLocked()
 	if d, ok := s.devices[deviceID]; ok && d.instanceID == instanceID {
 		return d, nil, "live"
 	}
@@ -22,6 +23,32 @@ func (s *Server) resolveInstance(deviceID, instanceID string) (live *managedDevi
 		return nil, t, "tomb"
 	}
 	return nil, nil, ""
+}
+
+func (s *Server) purgeExpiredTombsLocked() {
+	now := time.Now()
+	for id, t := range s.tombs {
+		if now.Before(t.expires) {
+			continue
+		}
+		s.removeInstanceRecordingsLocked(t)
+		delete(s.tombs, id)
+	}
+}
+
+func (s *Server) removeInstanceRecordingsLocked(t *tombstone) {
+	if t == nil {
+		return
+	}
+	out := t.cfg.Recording.OutputDir
+	if out == "" {
+		out = s.opts.RecordingsDir
+	}
+	dir, err := core.RecordingInstanceDir(out, t.deviceID, t.instanceID)
+	if err != nil {
+		return
+	}
+	_ = os.RemoveAll(dir)
 }
 
 func (s *Server) handleListTurns(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func exampleYAML(t *testing.T) []byte {
@@ -83,43 +86,174 @@ func TestValidateRejectsPhase1IllegalConfigs(t *testing.T) {
 
 func TestTrackedConfigYAMLsHaveNoMHAndLoopbackOnly(t *testing.T) {
 	root := moduleRoot(t)
-	cmd := exec.Command("git", "ls-files", "--", "configs/*.yaml")
+	files := listedConfigYAMLs(t)
+	if len(files) == 0 {
+		t.Fatal("未找到 configs YAML")
+	}
+	sawDevice := false
+	for _, rel := range files {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		slash := filepath.ToSlash(rel)
+		base := filepath.Base(rel)
+		switch {
+		case base == "manager.yaml":
+			// manager.yaml 由 manager 包 LoadFile 校验，避免 config 测试 import 循环。
+			continue
+		case strings.Contains(slash, "/templates/"):
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Errorf("%s: %v", rel, err)
+				continue
+			}
+			if yamlHasKey(raw, "device_id") {
+				t.Errorf("%s: 模板禁止 device_id", rel)
+				continue
+			}
+			if yamlHasKey(raw, "write_queue_depth") || yamlHasKey(raw, "write_drain_timeout_sec") {
+				t.Errorf("%s: 模板禁止 write_queue_*", rel)
+				continue
+			}
+			filled, err := fillTemplateDeviceID(raw, "sim_gate")
+			if err != nil {
+				t.Errorf("%s: %v", rel, err)
+				continue
+			}
+			d, err := LoadPhase2(filled)
+			if err != nil {
+				t.Errorf("%s: 填 ID 后 LoadPhase2: %v", rel, err)
+				continue
+			}
+			assertNoMHAndLoopback(t, rel, d)
+		default:
+			sawDevice = true
+			d, err := LoadFile(path)
+			if err != nil {
+				t.Errorf("%s: %v", rel, err)
+				continue
+			}
+			assertNoMHAndLoopback(t, rel, d)
+		}
+	}
+	if !sawDevice {
+		t.Fatal("应至少跟踪一份设备 YAML")
+	}
+}
+
+func assertNoMHAndLoopback(t *testing.T, rel string, d Device) {
+	t.Helper()
+	if strings.HasPrefix(d.DeviceType, "MH") {
+		t.Errorf("%s: device_type 不得以 MH 开头", rel)
+	}
+	u, err := url.Parse(d.Server.URL)
+	if err != nil {
+		t.Errorf("%s: 解析 server.url: %v", rel, err)
+		return
+	}
+	host := u.Hostname()
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		t.Errorf("%s: server.url 必须是 loopback", rel)
+	}
+}
+
+func fillTemplateDeviceID(raw []byte, id string) ([]byte, error) {
+	var root map[string]any
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	dev, _ := root["device"].(map[string]any)
+	if dev == nil {
+		return nil, fmt.Errorf("缺 device")
+	}
+	dev["device_id"] = id
+	beh, _ := dev["behavior"].(map[string]any)
+	if beh == nil {
+		beh = map[string]any{}
+		dev["behavior"] = beh
+	}
+	beh["write_queue_depth"] = 256
+	beh["write_drain_timeout_sec"] = 2
+	return yaml.Marshal(root)
+}
+
+func yamlHasKey(raw []byte, key string) bool {
+	var v any
+	if err := yaml.Unmarshal(raw, &v); err != nil {
+		return false
+	}
+	return yamlValueHasKey(v, key)
+}
+
+func yamlValueHasKey(v any, key string) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if k == key {
+				return true
+			}
+			if yamlValueHasKey(val, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if yamlValueHasKey(val, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func listedConfigYAMLs(t *testing.T) []string {
+	t.Helper()
+	root := moduleRoot(t)
+	seen := map[string]struct{}{}
+	var files []string
+	add := func(rel string) {
+		rel = filepath.ToSlash(strings.TrimSpace(rel))
+		if rel == "" {
+			return
+		}
+		if !strings.HasSuffix(rel, ".yaml") && !strings.HasSuffix(rel, ".yml") {
+			return
+		}
+		if _, ok := seen[rel]; ok {
+			return
+		}
+		seen[rel] = struct{}{}
+		files = append(files, rel)
+	}
+	cmd := exec.Command("git", "ls-files", "--", "configs")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git ls-files: %v", err)
 	}
-	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
-	var files []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			files = append(files, line)
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
+		add(line)
+	}
+	// 未跟踪的 manager.yaml / templates 也要过门禁；*.local.yaml 是本机覆盖，不扫。
+	add("configs/manager.yaml")
+	tmplDir := filepath.Join(root, "configs", "templates")
+	ents, _ := os.ReadDir(tmplDir)
+	for _, ent := range ents {
+		if ent.IsDir() {
+			continue
 		}
+		add(filepath.ToSlash(filepath.Join("configs", "templates", ent.Name())))
 	}
-	if len(files) == 0 {
-		t.Fatal("未找到已跟踪的 configs/*.yaml")
-	}
+	var outFiles []string
 	for _, rel := range files {
-		path := filepath.Join(root, filepath.FromSlash(rel))
-		d, err := LoadFile(path)
-		if err != nil {
-			t.Errorf("%s: %v", rel, err)
+		base := filepath.Base(rel)
+		if strings.HasSuffix(base, ".local.yaml") || strings.HasSuffix(base, ".local.yml") {
 			continue
 		}
-		if strings.HasPrefix(d.DeviceType, "MH") {
-			t.Errorf("%s: device_type 不得以 MH 开头", rel)
-		}
-		u, err := url.Parse(d.Server.URL)
-		if err != nil {
-			t.Errorf("%s: 解析 server.url: %v", rel, err)
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 			continue
 		}
-		host := u.Hostname()
-		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-			t.Errorf("%s: server.url 必须是 loopback", rel)
-		}
+		outFiles = append(outFiles, rel)
 	}
+	return outFiles
 }
 
 func moduleRoot(t *testing.T) string {

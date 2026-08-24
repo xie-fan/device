@@ -14,12 +14,13 @@ import (
 
 func TestWaitOmittedAfterEventSeqEqualsZero(t *testing.T) {
 	e := newEnv(t)
-	ins, _ := e.createStartReady(t, "sim_om")
+	ins, gen := e.createStartReady(t, "sim_om")
 	code, body := e.post(t, "/wait", map[string]any{
-		"device_id":   "sim_om",
-		"instance_id": ins,
-		"event_type":  "connected",
-		"timeout_sec": 2,
+		"device_id":       "sim_om",
+		"instance_id":     ins,
+		"event_type":      "connected",
+		"conn_generation": gen,
+		"timeout_sec":     2,
 	})
 	if code != http.StatusOK {
 		t.Fatalf("省略 after_event_seq ≡ 0，历史 connected 应 200 而非空等，得到 %d body=%s", code, body)
@@ -31,12 +32,13 @@ func TestWaitOmittedAfterEventSeqEqualsZero(t *testing.T) {
 
 func TestWaitLiveHistoryHit200Not504(t *testing.T) {
 	e := newEnv(t)
-	ins, _ := e.createStartReady(t, "sim_hist")
+	ins, gen := e.createStartReady(t, "sim_hist")
 	code, body := e.post(t, "/wait", map[string]any{
 		"device_id":       "sim_hist",
 		"instance_id":     ins,
 		"event_type":      "ready",
 		"after_event_seq": 0,
+		"conn_generation": gen,
 		"timeout_sec":     1,
 	})
 	if code != http.StatusOK {

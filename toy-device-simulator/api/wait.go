@@ -39,21 +39,69 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request) {
 		timeout = time.Duration(*body.TimeoutSec * float64(time.Second))
 	}
 
+	gen := 0
+	if body.ConnGeneration != nil {
+		gen = *body.ConnGeneration
+	}
+
 	if body.EventType == "speakable" {
 		if body.ConnGeneration == nil {
 			writeErr(w, http.StatusBadRequest, "speakable 必填 conn_generation")
 			return
 		}
-		code, payload := s.waitReady(body.DeviceID, body.InstanceID, *body.ConnGeneration, timeout)
+		code, payload := s.waitReady(body.DeviceID, body.InstanceID, gen, timeout)
 		writeJSON(w, code, payload)
 		return
 	}
 
-	code, payload := s.waitEvent(body.DeviceID, body.InstanceID, body.EventType, body.TurnID, after, timeout)
+	s.mu.Lock()
+	code, payload, proceed := s.gateWaitGenerationLocked(body.DeviceID, body.InstanceID, body.ConnGeneration)
+	s.mu.Unlock()
+	if !proceed {
+		writeJSON(w, code, payload)
+		return
+	}
+
+	code, payload = s.waitEvent(body.DeviceID, body.InstanceID, body.EventType, body.TurnID, after, timeout, gen)
 	writeJSON(w, code, payload)
 }
 
-func (s *Server) waitEvent(deviceID, instanceID, eventType, turnID string, after int, timeout time.Duration) (int, any) {
+// gateWaitGenerationLocked：live 且当前 speakable（或请求带了 generation）时缺 conn_generation → 400；
+// 带了但与当前代 / committed / tombstone 不符 → 409 generation_gone。
+func (s *Server) gateWaitGenerationLocked(deviceID, instanceID string, genp *int) (int, any, bool) {
+	live, tomb, found := s.resolveInstance(deviceID, instanceID)
+	speakable := live != nil && live.inst != nil && core.Speakable(live.inst.ConnectionState(), live.fault)
+	needGen := speakable || genp != nil
+	if !needGen {
+		return 0, nil, true
+	}
+	if genp == nil {
+		return http.StatusBadRequest, map[string]any{"error": "speakable 时必填 conn_generation"}, false
+	}
+	gen := *genp
+	if found == "" {
+		return http.StatusNotFound, map[string]any{"error": "instance 未命中"}, false
+	}
+	if tomb != nil {
+		if tomb.gen != gen {
+			return http.StatusConflict, map[string]any{"error": "generation_gone"}, false
+		}
+		return 0, nil, true
+	}
+	if live.committed[gen] {
+		return http.StatusConflict, map[string]any{"error": "generation_gone"}, false
+	}
+	if live.inst != nil && live.inst.FinalizeCommitted() && live.gen == gen {
+		live.committed[gen] = true
+		return http.StatusConflict, map[string]any{"error": "generation_gone"}, false
+	}
+	if live.gen != gen {
+		return http.StatusConflict, map[string]any{"error": "generation_gone"}, false
+	}
+	return 0, nil, true
+}
+
+func (s *Server) waitEvent(deviceID, instanceID, eventType, turnID string, after int, timeout time.Duration, gen int) (int, any) {
 	s.mu.Lock()
 	live, tomb, found := s.resolveInstance(deviceID, instanceID)
 	if found == "" {
@@ -92,9 +140,9 @@ func (s *Server) waitEvent(deviceID, instanceID, eventType, turnID string, after
 	var ch chan core.Event
 	expired, hit := false, false
 	if inst != nil {
-		ev, ch, expired, hit = inst.OfferEventWait(after, eventType, turnID)
+		ev, ch, expired, hit = inst.OfferEventWait(after, eventType, turnID, gen)
 	} else {
-		ev, ch, expired, hit = log.FindOrRegisterWaiter(after, eventType, turnID)
+		ev, ch, expired, hit = log.FindOrRegisterWaiter(after, eventType, turnID, gen)
 	}
 	s.mu.Unlock()
 	if expired {
@@ -111,23 +159,32 @@ func (s *Server) waitEvent(deviceID, instanceID, eventType, turnID string, after
 	defer t.Stop()
 	select {
 	case got := <-ch:
+		if gen != 0 && got.ConnGeneration != gen {
+			return http.StatusConflict, map[string]any{"error": "generation_gone"}
+		}
 		return http.StatusOK, eventWaitJSON(got)
 	case <-t.C:
-		return s.waitEventTimeout(deviceID, instanceID, log, inst, ch)
+		return s.waitEventTimeout(deviceID, instanceID, log, inst, ch, gen)
 	}
 }
 
-func (s *Server) waitEventTimeout(deviceID, instanceID string, log *core.EventLog, inst *core.DeviceInstance, ch chan core.Event) (int, any) {
+func (s *Server) waitEventTimeout(deviceID, instanceID string, log *core.EventLog, inst *core.DeviceInstance, ch chan core.Event, gen int) (int, any) {
 	still := log.RemoveWaiter(ch)
 	if !still {
 		got := <-ch
+		if gen != 0 && got.ConnGeneration != gen {
+			return http.StatusConflict, map[string]any{"error": "generation_gone"}
+		}
 		return http.StatusOK, eventWaitJSON(got)
 	}
 	s.mu.Lock()
-	_, tomb, found := s.resolveInstance(deviceID, instanceID)
+	live, tomb, found := s.resolveInstance(deviceID, instanceID)
 	s.mu.Unlock()
 	if found == "" || tomb != nil {
 		return http.StatusNotFound, map[string]any{"error": "tombstone 历史未命中"}
+	}
+	if gen != 0 && live != nil && (live.gen != gen || live.committed[gen]) {
+		return http.StatusConflict, map[string]any{"error": "generation_gone"}
 	}
 	if inst != nil && inst.FinalizeCommitted() {
 		return http.StatusConflict, map[string]any{"error": "generation_gone"}

@@ -25,7 +25,7 @@ func TestEventSeqStartsAtOneAndAccumulates(t *testing.T) {
 
 func TestAppendLockedPicksRegisteredWaiter(t *testing.T) {
 	log := NewEventLog("sim_001", "ins_w")
-	_, ch, expired, hit := log.FindOrRegisterWaiter(0, "ready", "")
+	_, ch, expired, hit := log.FindOrRegisterWaiter(0, "ready", "", 0)
 	if expired || hit || ch == nil {
 		t.Fatal("无人命中历史时应登记 waiter")
 	}
@@ -55,5 +55,30 @@ func TestForbiddenServerLogNames(t *testing.T) {
 		if !ForbiddenEventType(name) {
 			t.Fatalf("%s 禁止发出", name)
 		}
+	}
+}
+
+func TestWaiterIgnoresOtherGeneration(t *testing.T) {
+	log := NewEventLog("sim_001", "ins_g")
+	log.SetConnGeneration(1)
+	_, _ = log.AppendLocked("connected", "", "", "", "", "")
+	_, ch, expired, hit := log.FindOrRegisterWaiter(0, "turn_terminal", "", 1)
+	if expired || hit || ch == nil {
+		t.Fatal("gen=1 的 turn_terminal 未发生时应登记 waiter")
+	}
+	log.SetConnGeneration(2)
+	_, n := log.AppendLocked("turn_terminal", "t2", "", EndIdle, "stage2", ReplyTTS)
+	if n.EventWaiters != 0 {
+		t.Fatalf("新一代事件不得摘走上一代 waiter, EventWaiters=%d", n.EventWaiters)
+	}
+	n.NotifyHTTP()
+	select {
+	case ev := <-ch:
+		t.Fatalf("上一代 waiter 被新一代事件唤醒: %+v", ev)
+	default:
+	}
+	_, _, _, hit = log.FindOrRegisterWaiter(0, "connected", "", 2)
+	if hit {
+		t.Fatal("gen=2 不得命中 gen=1 的 connected")
 	}
 }

@@ -452,8 +452,8 @@ func (d *DeviceInstance) RemoveSpeakableWaiter(ch chan SpeakableResult) bool {
 	return false
 }
 
-func (d *DeviceInstance) OfferEventWait(after int, typ, turnID string) (ev Event, ch chan Event, expired, hit bool) {
+func (d *DeviceInstance) OfferEventWait(after int, typ, turnID string, gen int) (ev Event, ch chan Event, expired, hit bool) {
 	d.deviceMu.Lock()
 	defer d.deviceMu.Unlock()
-	return d.events.FindOrRegisterWaiter(after, typ, turnID)
+	return d.events.FindOrRegisterWaiter(after, typ, turnID, gen)
 }

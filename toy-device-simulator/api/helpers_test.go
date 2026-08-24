@@ -40,10 +40,20 @@ type testEnv struct {
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
-	return newEnvCfg(t, nil)
+	return newEnvFull(t, nil, 0)
 }
 
 func newEnvCfg(t *testing.T, mut func(*manager.Config)) *testEnv {
+	t.Helper()
+	return newEnvFull(t, mut, 0)
+}
+
+func newEnvTTL(t *testing.T, d time.Duration) *testEnv {
+	t.Helper()
+	return newEnvFull(t, nil, d)
+}
+
+func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *testEnv {
 	t.Helper()
 	e := &testEnv{
 		t:         t,
@@ -79,6 +89,7 @@ func newEnvCfg(t *testing.T, mut func(*manager.Config)) *testEnv {
 		Dial:          e.dial,
 		TemplatesDir:  e.templates,
 		RecordingsDir: e.recDir,
+		TTL:           ttl,
 		AfterAssetStat: func() {
 			if e.afterStat != nil {
 				e.afterStat()

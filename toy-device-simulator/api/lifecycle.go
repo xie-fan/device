@@ -49,6 +49,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) spawnInstance(d *managedDevice) *core.DeviceInstance {
+	d.log.SetConnGeneration(d.gen)
 	id := d.id
 	opts := core.Options{
 		Dial:               s.opts.Dial,
@@ -314,7 +315,7 @@ func (s *Server) deleteDevice(id string) (int, any) {
 	s.tombs[d.instanceID] = &tombstone{
 		deviceID:   d.id,
 		instanceID: d.instanceID,
-		expires:    time.Now().Add(ttl(s.opts.Config)),
+		expires:    time.Now().Add(s.eventTTL()),
 		log:        d.log,
 		turns:      d.turns,
 		cfg:        d.cfg,
