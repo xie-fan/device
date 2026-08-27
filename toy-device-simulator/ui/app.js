@@ -39,7 +39,14 @@
     framesDebounce: 0,
     framePoll: 0,
     flashTimer: 0,
+    // 全局事件总线（Phase 4）：切到「全局」页签才连；断线记住 global_seq 续传。
+    globalWs: null,
+    globalEvents: [],
+    globalNewest: 0,
   };
+
+  // 全局带最多留这么多条；调试面板不是归档，翻更早的去 /ws/events/global 拿回放。
+  const GLOBAL_MAX = 500;
 
   function esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({
@@ -75,7 +82,7 @@
 
   // ingestEvent 是高频路径，合帧后再画；用户动作仍走同步渲染，
   // 免得按钮 disabled 晚一帧被点第二下。
-  const dirty = { roster: false, talk: false, tape: false, turns: false };
+  const dirty = { roster: false, talk: false, tape: false, turns: false, global: false };
   let frame = 0;
   let frameTimer = 0;
 
@@ -86,11 +93,12 @@
     frame = 0;
     frameTimer = 0;
     const d = { ...dirty };
-    dirty.roster = dirty.talk = dirty.tape = dirty.turns = false;
+    dirty.roster = dirty.talk = dirty.tape = dirty.turns = dirty.global = false;
     if (d.roster) renderRoster();
     if (d.talk) renderTalk();
     if (d.tape) renderTape();
     if (d.turns) renderTurns();
+    if (d.global) renderGlobalTape();
   }
 
   function paint(...keys) {
@@ -158,9 +166,15 @@
   function speakableUI() {
     if (state.tombstone || !state.live) return false;
     if (state.live.instance_state === "starting") return false;
-    if (state.occupiedTurnId) return false;
+    // backlog 开启（depth>0）时槽占用仍可送出：进队列排队。
+    if (state.occupiedTurnId && !backlogEnabled()) return false;
     if (state.live.instance_state !== "running") return false;
     return true;
+  }
+
+  function backlogEnabled() {
+    const beh = (state.config && state.config.behavior) || {};
+    return Number(beh.speak_backlog_depth) > 0;
   }
 
   function interruptableUI() {
@@ -449,12 +463,16 @@
     const st = state.tombstone ? "deleted" : (live.instance_state || "created");
     const conn = live.connection_state || "—";
     const err = live.last_error ? `<span class="stamp stamp--err">error</span>` : "";
+    const backlog = Number(live.speak_backlog_len) || 0;
+    const backlogBadge = backlog > 0
+      ? `<span class="stamp" title="speak backlog 排队数">排队 ${backlog}</span>` : "";
     setHTML($("talk-facts"), `
       <span class="led led--${esc(st)}" aria-hidden="true"></span>
       <span class="stamp stamp--${esc(st)}">${esc(st)}</span>
       <span class="stamp">${esc(conn)}</span>
       <span class="mono" title="${esc(state.instanceId || "")}">${esc(shortId(state.instanceId) || "—")}</span>
       <span class="status__gen">gen ${esc(state.connGeneration ?? live.conn_generation ?? "—")}</span>
+      ${backlogBadge}
       ${err}
     `);
 
@@ -484,7 +502,8 @@
     const slot = $("slot-banner");
     if (state.occupiedTurnId) {
       slot.hidden = false;
-      setText(slot, `槽占用 ${state.occupiedTurnId} · 等 turn_terminal`);
+      const q = backlog > 0 ? ` · 队列 ${backlog} 项` : "";
+      setText(slot, `槽占用 ${state.occupiedTurnId} · 等 turn_terminal${q}`);
     } else {
       slot.hidden = true;
     }
@@ -493,7 +512,10 @@
     $("btn-stop").disabled = state.tombstone || state.busy;
     $("btn-delete").disabled = state.tombstone || state.busy;
     $("btn-speak").disabled = !speakableUI() || starting || state.busy;
-    $("btn-speak").title = starting ? "Starting 时禁用说话" : (state.occupiedTurnId ? "槽占用，等 turn_terminal" : "Ctrl/⌘ + Enter 送出");
+    $("btn-speak").title = starting ? "Starting 时禁用说话"
+      : (state.occupiedTurnId
+        ? (backlogEnabled() ? "槽占用 · 送出将进队列" : "槽占用，等 turn_terminal")
+        : "Ctrl/⌘ + Enter 送出");
     $("btn-interrupt").disabled = !interruptableUI() || state.busy;
     $("btn-report").disabled = state.tombstone || live.connection_state !== "ready" || state.busy;
     $("wav-file").disabled = state.tombstone;
@@ -565,7 +587,13 @@
           <label>slice_ms<input name="slice_ms" type="number" value="${esc(audio.slice_ms ?? 100)}"></label>
           <label>max_payload_size<input name="max_payload_size" type="number" value="${esc(audio.max_payload_size ?? 51200)}"></label>
         </div>
-        <p class="hint">format=${esc(audio.format)} · channels=${esc(audio.channels)} · sample_format=${esc(audio.sample_format)}</p>
+        <label>线上格式（wav=整段一次加头再切流）
+          <select name="audio_format">
+            <option value="pcm"${(audio.format || "pcm") === "pcm" ? " selected" : ""}>pcm</option>
+            <option value="wav"${audio.format === "wav" ? " selected" : ""}>wav</option>
+          </select>
+        </label>
+        <p class="hint">channels=${esc(audio.channels)} · sample_format=${esc(audio.sample_format)}</p>
         <div class="split">
           <label>uuid.min<input name="uuid_min" type="number" value="${esc(uuid.min ?? 1)}"></label>
           <label>uuid.max<input name="uuid_max" type="number" value="${esc(uuid.max ?? 2147483647)}"></label>
@@ -574,6 +602,11 @@
           <label>keepalive_interval_sec<input name="keepalive_interval_sec" type="number" value="${esc(beh.keepalive_interval_sec ?? 60)}"></label>
           <label>first_reply_timeout_sec<input name="first_reply_timeout_sec" type="number" value="${esc(beh.first_reply_timeout_sec ?? 20)}"></label>
         </div>
+        <label>speak_backlog_depth（0=关闭，槽占用 409；>0 排队）
+          <input name="speak_backlog_depth" type="number" min="0" max="64" value="${esc(beh.speak_backlog_depth ?? 0)}">
+        </label>
+        <label class="chk"><input type="checkbox" name="silence_probe" ${beh.silence_probe ? "checked" : ""}> silence_probe（timeout 静默终态后发探针 report）</label>
+        <label class="chk"><input type="checkbox" name="interrupt_on_disconnect" ${beh.interrupt_on_disconnect ? "checked" : ""}> interrupt_on_disconnect（事件 WS 断开即打断当前 turn）</label>
       </fieldset>
       <fieldset>
         <legend>录音（Running 也可改）</legend>
@@ -609,7 +642,7 @@
       nic_iccid: fd.get("nic_iccid"),
       playing_mode: Number(fd.get("playing_mode")),
       audio: {
-        format: "pcm",
+        format: fd.get("audio_format") || "pcm",
         sample_rate: Number(fd.get("sample_rate")),
         channels: 1,
         sample_format: "s16le",
@@ -620,6 +653,9 @@
       behavior: {
         keepalive_interval_sec: Number(fd.get("keepalive_interval_sec")),
         first_reply_timeout_sec: Number(fd.get("first_reply_timeout_sec")),
+        speak_backlog_depth: Number(fd.get("speak_backlog_depth")) || 0,
+        silence_probe: f.querySelector('[name="silence_probe"]').checked,
+        interrupt_on_disconnect: f.querySelector('[name="interrupt_on_disconnect"]').checked,
       },
       recording: rec,
     };
@@ -1024,6 +1060,16 @@
       state.live.instance_state = "stopped";
       state.occupiedTurnId = null;
       stopFramePoll();
+      return;
+    }
+    // backlog 计数只在 GET /devices/{id} 里，事件流不带；
+    // 排队相关事件到了就按语义就地修正，等下一次拉取纠偏。
+    if (typ === "speak_queued") {
+      state.live.speak_backlog_len = (Number(state.live.speak_backlog_len) || 0) + 1;
+      return;
+    }
+    if (typ === "speak_dequeued" || typ === "speak_backlog_dropped") {
+      state.live.speak_backlog_len = Math.max(0, (Number(state.live.speak_backlog_len) || 0) - 1);
     }
   }
 
@@ -1064,6 +1110,12 @@
       maybePlayDownlink(ev);
       const extra = [ev.reply_kind, ev.turn_end_reason].filter(Boolean).join(" / ");
       flash("本轮结束" + (extra ? " · " + extra : "") + " · 可再送出", "ok");
+    }
+    if (ev.event_type === "speak_dequeued" && ev.turn_id) {
+      // backlog 出队即上槽：跟上新 turn，帧轮询与横幅都指向它。
+      state.occupiedTurnId = ev.turn_id;
+      startFramePoll(ev.turn_id);
+      flash("排队请求出队 · " + ev.turn_id, "ok");
     }
     if (ev.event_type === "connection_failed") {
       flash("连接失败" + (ev.reason ? " · " + ev.reason : "") + "。重新启动后可再送出", "err");
@@ -1508,10 +1560,15 @@
       const spoken = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/speak`, {
         asset_id: asset.asset_id,
       });
-      state.occupiedTurnId = spoken.turn_id;
-      setFollow(true);
-      startFramePoll(spoken.turn_id);
-      flash("已受理 " + spoken.turn_id + " · 等 turn_terminal", "ok");
+      if (spoken.queued) {
+        // Phase 4 backlog：槽占用时进队列，终态后自动出队。
+        flash(`已排队 ${spoken.turn_id} · 位置 ${spoken.queue_position} · 终态后自动出队`, "ok");
+      } else {
+        state.occupiedTurnId = spoken.turn_id;
+        setFollow(true);
+        startFramePoll(spoken.turn_id);
+        flash("已受理 " + spoken.turn_id + " · 等 turn_terminal", "ok");
+      }
       renderTalk();
     } catch (err) {
       const extra = err.data && err.data.instance_state
@@ -1569,16 +1626,76 @@
 
   function showSide(which) {
     const tape = which === "tape";
+    const turns = which === "turns";
+    const global = which === "global";
     $("tape").hidden = !tape;
-    $("turns").hidden = tape;
+    $("turns").hidden = !turns;
+    $("global-tape").hidden = !global;
     $("tape-chips").hidden = !tape;
     $("tape-tools").hidden = !tape;
     $("tab-tape").classList.toggle("is-on", tape);
-    $("tab-turns").classList.toggle("is-on", !tape);
+    $("tab-turns").classList.toggle("is-on", turns);
+    $("tab-global").classList.toggle("is-on", global);
     $("tab-tape").setAttribute("aria-selected", String(tape));
-    $("tab-turns").setAttribute("aria-selected", String(!tape));
+    $("tab-turns").setAttribute("aria-selected", String(turns));
+    $("tab-global").setAttribute("aria-selected", String(global));
     if (tape && state.tapeFollow) {
       const ol = $("tape");
+      ol.scrollTop = ol.scrollHeight;
+    }
+    if (global) {
+      connectGlobalWS();
+      renderGlobalTape();
+    }
+  }
+
+  // ——— 全局事件总线（Phase 4）———
+  // 与设备事件带独立：一条 WS 看所有设备。切到页签才连；连接保持，
+  // 断线后下次切回用 after_global_seq 续传，不重复拉全量。
+
+  function connectGlobalWS() {
+    if (state.globalWs && state.globalWs.readyState <= 1) return;
+    const q = state.globalNewest > 0 ? `?after_global_seq=${state.globalNewest}` : "";
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${location.host}/ws/events/global${q}`);
+    state.globalWs = ws;
+    ws.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch { return; }
+      if (!ev || typeof ev.global_seq !== "number" || ev.global_seq <= state.globalNewest) return;
+      state.globalNewest = ev.global_seq;
+      state.globalEvents.push(ev);
+      if (state.globalEvents.length > GLOBAL_MAX) {
+        state.globalEvents.splice(0, state.globalEvents.length - GLOBAL_MAX);
+      }
+      paint("global");
+    };
+    ws.onclose = () => {
+      if (state.globalWs === ws) state.globalWs = null;
+    };
+    ws.onerror = () => { /* onclose 收尾；410 过期由后端拒绝升级 */ };
+  }
+
+  function globalEventHTML(ev) {
+    const extra = [ev.turn_id, ev.reply_kind, ev.turn_end_reason, ev.reason].filter(Boolean).join(" · ");
+    return `<li class="tl tl--ev event--${esc(ev.event_type)}">
+      <time datetime="${esc(ev.ts || "")}">${esc(fmtClock(ev.ts))}</time>
+      <div>
+        <div class="tl__title">${esc(ev.event_type)}<span class="tl__dev mono">${esc(ev.device_id || "")}</span></div>
+        <div class="hint">#${esc(ev.global_seq)}${extra ? " · " + esc(extra) : ""}</div>
+      </div>
+    </li>`;
+  }
+
+  function renderGlobalTape() {
+    const ol = $("global-tape");
+    setCount($("global-count"), state.globalEvents.length);
+    if (ol.hidden) return;
+    if (!state.globalEvents.length) {
+      setHTML(ol, `<li class="tl tl--empty"><span class="empty">还没有全局事件。任意设备的动作都会汇到这里。</span></li>`);
+      return;
+    }
+    if (setHTML(ol, state.globalEvents.map(globalEventHTML).join(""))) {
       ol.scrollTop = ol.scrollHeight;
     }
   }
@@ -1696,6 +1813,7 @@
 
     $("tab-tape").addEventListener("click", () => showSide("tape"));
     $("tab-turns").addEventListener("click", () => showSide("turns"));
+    $("tab-global").addEventListener("click", () => showSide("global"));
     $("turns").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-play]");
       if (!btn) return;

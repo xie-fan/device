@@ -12,6 +12,8 @@
 
 在 `toy-device-simulator/` 下启动 Manager：`go run ./cmd/manager --config configs/manager.yaml`（默认 `127.0.0.1:8090`；`--registry` 可改树落盘路径）。`POST /devices` 可用。
 
+本地无真实服务端时，可另起 `go run ./cmd/echosrv`（默认 `127.0.0.1:8089`，与 `configs/registry.yaml` 默认环境一致）：注册即 ack、report 回显、收上行后慢推一段 440Hz TTS，设备靠 `downlink_idle_timeout_sec` 收尾——足够跑通 UI 全链路与 backlog 排队验收。调试 UI 已支持 Phase 4：配置表单含 `speak_backlog_depth`／`silence_probe`／`interrupt_on_disconnect` 与 `audio.format=wav`，设备状态行显示排队数，右栏「全局」页签消费 `/ws/events/global`。
+
 实现前须对声明的基线提交做 PCM/TTS 冒烟（不要混入该仓库未提交改动），并从 `AudioHeader` 生成 golden。基线见 `architecture.md` §10。
 
 ## 实现契约

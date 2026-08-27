@@ -231,6 +231,7 @@
         <div class="tabs" role="tablist" aria-label="事件与 Turn">
           <button type="button" role="tab" class="tab is-on" id="tab-tape" aria-selected="true" aria-controls="tape">事件<span class="count" id="tape-count" hidden></span></button>
           <button type="button" role="tab" class="tab" id="tab-turns" aria-selected="false" aria-controls="turns">Turn<span class="count" id="turns-count" hidden></span></button>
+          <button type="button" role="tab" class="tab" id="tab-global" aria-selected="false" aria-controls="global-tape" title="全部设备的事件（global_seq）">全局<span class="count" id="global-count" hidden></span></button>
         </div>
         <div class="side__tools" id="tape-tools">
           <button type="button" class="btn btn--ghost btn--sm" id="btn-follow" aria-pressed="true" title="自动滚到最新">跟随</button>
@@ -246,6 +247,8 @@
       </div>
       <ol class="tape" id="tape" role="tabpanel" aria-labelledby="tab-tape"></ol>
       <ul class="turns" id="turns" role="tabpanel" aria-labelledby="tab-turns" hidden></ul>
+      <!-- 全局事件总线（/ws/events/global）：跨设备汇聚，global_seq 严格递增。切到本页签才连。 -->
+      <ol class="tape" id="global-tape" role="tabpanel" aria-labelledby="tab-global" hidden></ol>
     </aside>
   </div>
   <script src="/ui/app.js" defer></script>

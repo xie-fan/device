@@ -1196,6 +1196,14 @@ legend {
   color: oklch(94% 0.02 95);
 }
 
+/* 全局事件带：type 后跟设备名小标签 */
+.tl__dev {
+  margin-left: 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: oklch(78% 0.025 95 / 0.85);
+}
+
 .tl summary .tl__title::before {
   content: "";
   display: inline-block;
