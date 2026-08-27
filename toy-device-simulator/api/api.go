@@ -90,6 +90,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("POST /scenarios/run", s.handleScenarioRun)
 	mux.HandleFunc("GET /scenarios/runs/{id}", s.handleScenarioGet)
 
+	s.mountUI()
 	return s
 }
 

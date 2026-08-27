@@ -1,0 +1,9 @@
+# IDE
+.idea/
+
+# 运行时产物（Manager 上传的资产与设备录音）
+toy-device-simulator/data/
+toy-device-simulator/recordings/
+
+# 本地联调录音（个人语音，不入库；hello.wav 测试夹具仍跟踪）
+toy-device-simulator/testdata/audio/veepai-test/

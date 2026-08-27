@@ -206,7 +206,7 @@ func findEvent(evs []core.Event, typ, turnID string) (core.Event, bool) {
 }
 
 func eventWaitJSON(e core.Event) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"device_id":         e.DeviceID,
 		"instance_id":       e.InstanceID,
 		"turn_id":           e.TurnID,
@@ -215,5 +215,10 @@ func eventWaitJSON(e core.Event) map[string]any {
 		"turn_end_reason":   e.EndReason,
 		"uplink_end_reason": e.UplinkReason,
 		"reply_kind":        e.ReplyKind,
+		"ts":                e.At.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 	}
+	if e.PayloadLen > 0 {
+		m["payload_len"] = e.PayloadLen
+	}
+	return m
 }

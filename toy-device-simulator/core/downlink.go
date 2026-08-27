@@ -75,7 +75,7 @@ func (d *DeviceInstance) handleAudioDownlink(raw []byte) {
 
 	matched := d.slot.Occupied() && h.UUID == d.slot.UUID()
 	if matched && h.Stage == protocol.StageUploading {
-		_, n := d.appendEventLocked("tts_chunk", d.slot.ID(), "", "", "", "")
+		_, n := d.appendChunkLocked("tts_chunk", d.slot.ID(), len(view.Payload))
 		acc = append(acc, n)
 		if d.turn != nil {
 			d.turn.hasTTS = true

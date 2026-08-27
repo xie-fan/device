@@ -155,3 +155,24 @@ func TestTemplatePathTraversalRejected(t *testing.T) {
 		t.Fatalf("secret.yaml 应仍在盘上: %v", err)
 	}
 }
+
+func TestListDevicesIncludesEnterpriseAndType(t *testing.T) {
+	e := newEnv(t)
+	e.createDevice(t, "sim_flt_1")
+	code, body, _ := e.get(t, "/devices")
+	if code != http.StatusOK {
+		t.Fatalf("GET /devices 应 200，得到 %d body=%s", code, body)
+	}
+	m := decodeMap(t, body)
+	devs, _ := m["devices"].([]any)
+	if len(devs) == 0 {
+		t.Fatal("应列出设备")
+	}
+	row, _ := devs[0].(map[string]any)
+	if strField(row, "device_id") != "sim_flt_1" {
+		t.Fatalf("device_id=%s body=%s", strField(row, "device_id"), body)
+	}
+	if strField(row, "enterprise") != "demo" || strField(row, "device_type") != "A3" {
+		t.Fatalf("列表应含 enterprise/device_type，body=%s", body)
+	}
+}

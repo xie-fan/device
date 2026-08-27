@@ -85,7 +85,7 @@ Content-Type: multipart/form-data，字段名 `file`。仅 WAV。超 max_asset_b
 或批量 `{ "template_id":"default_a3","count":3,"id_prefix":"sim" }`。ID 冲突整批 409。  
 201：`{ "device_ids":["sim_1"], "instances":[ { "device_id":"sim_1","instance_id":"ins_..." } ] }`。
 
-`GET /devices` → `{ "devices":[ { "device_id","instance_id","instance_state","connection_state","conn_generation","last_activity","playing_mode","last_error" } ] }`。  
+`GET /devices` → `{ "devices":[ { "device_id","instance_id","instance_state","connection_state","conn_generation","last_activity","playing_mode","last_error","enterprise","device_type" } ] }`。  
 `GET /devices/{id}` 单台 live。已从 live 摘除 → **404**。TTL 内旧 `instance_id` 的 events/turns/audio 见 §6.7–§6.8。
 
 ### 6.3 模板

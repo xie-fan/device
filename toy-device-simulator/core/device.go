@@ -284,6 +284,10 @@ func (d *DeviceInstance) appendEventLocked(typ, turnID, reason, endReason, uplin
 	return d.events.AppendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind)
 }
 
+func (d *DeviceInstance) appendChunkLocked(typ, turnID string, payloadLen int) (Event, EventNotify) {
+	return d.events.AppendChunkLocked(typ, turnID, payloadLen)
+}
+
 func (d *DeviceInstance) terminalLocked(endReason, replyKind, uplinkIfEmpty string, phaseC bool) TerminalNotify {
 	if d.finalizeStarted && !phaseC {
 		return TerminalNotify{}

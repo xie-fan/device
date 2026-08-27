@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestEventSeqStartsAtOneAndAccumulates(t *testing.T) {
 	log := NewEventLog("sim_001", "ins_test")
@@ -55,6 +58,29 @@ func TestForbiddenServerLogNames(t *testing.T) {
 		if !ForbiddenEventType(name) {
 			t.Fatalf("%s 禁止发出", name)
 		}
+	}
+}
+
+func TestChunkEventMarshalsPayloadLenAndTS(t *testing.T) {
+	log := NewEventLog("sim_001", "ins_test")
+	ev, _ := log.AppendChunkLocked("tts_chunk", "t1", 3200)
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["event_type"] != "tts_chunk" {
+		t.Fatalf("event_type=%v", m["event_type"])
+	}
+	if m["payload_len"] != float64(3200) {
+		t.Fatalf("payload_len=%v body=%s", m["payload_len"], b)
+	}
+	ts, _ := m["ts"].(string)
+	if ts == "" {
+		t.Fatalf("须有 ts，body=%s", b)
 	}
 }
 

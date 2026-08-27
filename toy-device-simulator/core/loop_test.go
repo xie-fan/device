@@ -280,6 +280,18 @@ func TestHappyPathRegisterReportTTS(t *testing.T) {
 	if !contains(types, "tts_chunk") || !contains(types, "tts_done") || !contains(types, "turn_terminal") {
 		t.Fatalf("TTS 终态事件不全: %v", types)
 	}
+	var ttsLen bool
+	for _, ev := range d.Events() {
+		if ev.Type == "tts_chunk" {
+			if ev.PayloadLen <= 0 {
+				t.Fatalf("tts_chunk 应带 payload_len，得到 %d", ev.PayloadLen)
+			}
+			ttsLen = true
+		}
+	}
+	if !ttsLen {
+		t.Fatal("TTS 路径应产生带 payload_len 的 tts_chunk")
+	}
 	acks := 0
 	hasStage1, hasStage2 := false, false
 	for _, w := range conn.Writes() {

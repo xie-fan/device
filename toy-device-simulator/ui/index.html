@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>台架 · 设备调试</title>
+  <script>
+    // 主题在样式生效前定，避免深色下闪白。
+    try {
+      var t = localStorage.getItem("bench.theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (e) { /* 隐私模式下忽略 */ }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- 台架常在离线机房跑：字体不挡首屏，取不到就退到系统字体。 -->
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap"
+        rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  </noscript>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <!--
+    THESIS: 工位仪器台。主路径是名册 → 启动 → 送出 → 事件；其余折叠。
+    OWN-WORLD: 深色机柜顶栏 + 冷钢工作面；镉黄指示灯；等宽遥测。
+    STORY: 选设备 → Ready → 送 WAV → 看事件/听下行。
+    FIRST VIEWPORT: 左名册、中作业条、右事件带。
+    FORM: 检验工单叠在机柜面板上。Operate / restrained。
+  -->
+  <a class="skip" href="#talk">跳到对话</a>
+  <header class="mast">
+    <div class="mast__brand">
+      <span class="mast__mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <div class="mast__titles">
+        <h1>台架</h1>
+        <span class="mast__sep">设备调试</span>
+      </div>
+    </div>
+    <div class="mast__right">
+      <p class="mast__note" id="ws-note" data-tone="idle" aria-live="polite">未连接事件流</p>
+      <button type="button" class="mast__icon" id="btn-theme" aria-label="切换主题" title="主题：跟随系统">
+        <span id="theme-glyph" aria-hidden="true">◐</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="bench">
+    <aside class="roster" aria-labelledby="roster-title">
+      <div class="pane-head">
+        <h2 id="roster-title">设备<span class="count" id="roster-count" hidden></span></h2>
+        <button type="button" class="btn btn--ghost" id="btn-refresh">刷新</button>
+      </div>
+      <input type="search" id="roster-q" class="roster-q" placeholder="搜索 device_id ⁄ 按 /" aria-label="搜索设备" autocomplete="off" spellcheck="false">
+      <div class="roster-filters" id="roster-filters">
+        <label>厂商
+          <select id="filter-enterprise" aria-label="按厂商筛选">
+            <option value="">全部厂商</option>
+          </select>
+        </label>
+        <label>设备类型
+          <select id="filter-type" aria-label="按设备类型筛选">
+            <option value="">全部类型</option>
+          </select>
+        </label>
+      </div>
+      <ul class="roster__list" id="roster-list"></ul>
+      <p class="empty" id="roster-empty">还没有设备。底部新建后启动，再送 WAV。</p>
+      <details class="create" id="create-box">
+        <summary>新建</summary>
+        <form id="form-create" class="stack">
+          <label>device_id
+            <input name="device_id" required autocomplete="off" value="sim_0001" maxlength="64">
+          </label>
+          <label>server.url
+            <input name="server_url" required value="ws://127.0.0.1:8089/" spellcheck="false">
+          </label>
+          <div class="split">
+            <label>enterprise
+              <input name="enterprise" value="demo" required>
+            </label>
+            <label>device_type
+              <input name="device_type" value="A3" required>
+            </label>
+          </div>
+          <label>firmware_version
+            <input name="firmware_version" value="1.0.0">
+          </label>
+          <div class="split">
+            <label>nic_type
+              <input name="nic_type" value="wifi">
+            </label>
+            <label>nic_iccid
+              <input name="nic_iccid" value="8986xxxxxxxxxx">
+            </label>
+          </div>
+          <div class="split">
+            <label>playing_mode
+              <input name="playing_mode" type="number" min="1" max="3" value="1">
+            </label>
+            <label>sample_rate
+              <input name="sample_rate" type="number" min="8000" value="16000">
+            </label>
+          </div>
+          <button type="submit" class="btn btn--primary">创建</button>
+        </form>
+        <form id="form-template" class="stack stack--tight">
+          <p class="hint">模板批量创建，ID 冲突整批失败。</p>
+          <label>模板
+            <select name="template_id" id="template-select">
+              <option value="">选择模板</option>
+            </select>
+          </label>
+          <div class="split">
+            <label>count
+              <input name="count" type="number" min="1" value="2">
+            </label>
+            <label>id_prefix
+              <input name="id_prefix" value="sim" autocomplete="off">
+            </label>
+          </div>
+          <button type="submit" class="btn">按模板创建</button>
+        </form>
+      </details>
+    </aside>
+
+    <main class="talk" id="talk">
+      <div class="pane-head">
+        <h2 id="talk-title">对话</h2>
+        <p class="mono" id="talk-ids"></p>
+      </div>
+      <p class="empty" id="talk-empty">从左侧选一台设备。</p>
+      <div class="flash" id="flash" role="status" aria-live="assertive" hidden>
+        <span id="flash-text"></span>
+        <button type="button" class="flash__x" id="flash-x" aria-label="关闭提示">✕</button>
+      </div>
+      <section class="talk__body" id="talk-body" hidden>
+        <div class="status" id="talk-facts"></div>
+        <p class="fault" id="talk-error" hidden></p>
+        <p class="slot" id="slot-banner" hidden></p>
+        <div class="toolbar" id="life-actions">
+          <button type="button" class="btn btn--primary" id="btn-start">启动并等待 Ready</button>
+          <button type="button" class="btn" id="btn-stop">停止</button>
+          <button type="button" class="btn btn--danger" id="btn-delete" data-armed="0">删除</button>
+        </div>
+        <form id="form-speak" class="speak">
+          <p class="speak__wait" id="speak-wait">启动并 Ready 后可送出。</p>
+          <div class="speak__work" id="speak-work" hidden>
+            <div class="speak__row">
+              <label class="speak__fixture">夹具
+                <select id="sample-select">
+                  <option value="">选择夹具</option>
+                </select>
+              </label>
+              <button type="button" class="btn" id="btn-sample">选用夹具</button>
+              <button type="submit" class="btn btn--accent" id="btn-speak">送出</button>
+              <button type="button" class="btn" id="btn-interrupt">打断</button>
+            </div>
+            <label class="file" id="drop-zone">
+              <span>或选文件（也可把 WAV 拖进来）</span>
+              <input type="file" id="wav-file" accept=".wav,audio/wav,audio/x-wav">
+            </label>
+            <p class="hint" id="wav-meta">pcm · s16le · 16 kHz 单声道</p>
+          </div>
+        </form>
+        <div class="player" id="player-box" hidden>
+          <div class="player__head">
+            <p class="player__label" id="player-label">下行</p>
+            <a class="player__dl" id="player-dl" download hidden>下载 WAV</a>
+          </div>
+          <audio id="downlink-audio" controls preload="none"></audio>
+        </div>
+        <details class="more" id="more-box">
+          <summary>热更新与配置</summary>
+          <form id="form-report" class="report">
+            <div class="report__row">
+              <label>playingMode
+                <input name="playing_mode" id="report-mode" type="number" min="1" max="3" value="1">
+              </label>
+              <button type="submit" class="btn" id="btn-report">热更新</button>
+            </div>
+          </form>
+          <p class="hint" id="config-hint">身份与音频仅 Created / Stopped 可改。Running 改采样率会 409。</p>
+          <form id="form-config" class="stack"></form>
+        </details>
+      </section>
+    </main>
+
+    <aside class="side" aria-label="事件与 Turn">
+      <div class="pane-head">
+        <div class="tabs" role="tablist" aria-label="事件与 Turn">
+          <button type="button" role="tab" class="tab is-on" id="tab-tape" aria-selected="true" aria-controls="tape">事件<span class="count" id="tape-count" hidden></span></button>
+          <button type="button" role="tab" class="tab" id="tab-turns" aria-selected="false" aria-controls="turns">Turn<span class="count" id="turns-count" hidden></span></button>
+        </div>
+        <div class="side__tools" id="tape-tools">
+          <button type="button" class="btn btn--ghost btn--sm" id="btn-follow" aria-pressed="true" title="自动滚到最新">跟随</button>
+          <button type="button" class="btn btn--ghost btn--sm" id="btn-copy" title="把当前筛选出的事件复制成 JSONL">复制</button>
+        </div>
+      </div>
+      <div class="chips" id="tape-chips" role="group" aria-label="事件筛选">
+        <button type="button" class="chip is-on" data-scope="all">全部</button>
+        <button type="button" class="chip" data-scope="key">关键</button>
+        <button type="button" class="chip" data-scope="audio">音频</button>
+        <button type="button" class="chip" data-scope="err">异常</button>
+        <input type="search" id="tape-q" placeholder="过滤 type ⁄ turn_id" aria-label="过滤事件" autocomplete="off" spellcheck="false">
+      </div>
+      <ol class="tape" id="tape" role="tabpanel" aria-labelledby="tab-tape"></ol>
+      <ul class="turns" id="turns" role="tabpanel" aria-labelledby="tab-turns" hidden></ul>
+    </aside>
+  </div>
+  <script src="/ui/app.js" defer></script>
+</body>
+</html>

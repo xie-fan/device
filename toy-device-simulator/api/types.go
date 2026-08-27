@@ -112,5 +112,7 @@ func deviceView(d *managedDevice) map[string]any {
 		"last_activity":    d.lastActivity.UTC().Format(time.RFC3339Nano),
 		"playing_mode":     d.playingMode,
 		"last_error":       d.lastError,
+		"enterprise":       d.cfg.Enterprise,
+		"device_type":      d.cfg.DeviceType,
 	}
 }

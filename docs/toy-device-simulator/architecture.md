@@ -1,6 +1,6 @@
 ﻿# 玩具设备模拟器 — 整体架构设计文档
 
-下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI 与 Phase 2 Manager / REST / WS / Scenario。Phase 3 UI 与 Phase 4 speak backlog 仍未落地。
+下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario 与 Phase 3 调试 UI。Phase 4 speak backlog 仍未落地。
 
 ## 1. 背景与目标
 
@@ -359,7 +359,7 @@ live:
 | `asr_result` | Action=asr_result；完成只认 IsFinal=true |
 | `command_received` | `'1'` + `/command/client` |
 | `json_reply` | 无前缀 Code==0 且非 asr_result |
-| `tts_chunk` | 匹配 UUID 的 `'0'` Stage=1 |
+| `tts_chunk` | 匹配 UUID 的 `'0'` Stage=1；可带 `payload_len`（音频净荷字节） |
 | `tts_done` | ≥1 帧匹配 TTS 且经 TTS idle 进入 Terminal |
 | `vad` | Stage=4 |
 | `expected_server_drop` | 见 §4.4 终止表；仅 fault 矩阵 drop 行作为通过 |
@@ -743,7 +743,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 
 ## 9. 目录
 
-`protocol/` `core/` `cmd/speak|check|fixture/` `configs/example_device.yaml` `configs/manager.yaml` `configs/templates/` `testdata/` `data/assets/`
+`protocol/` `core/` `cmd/speak|check|fixture|manager/` `api/` `ui/` `configs/example_device.yaml` `configs/manager.yaml` `configs/templates/` `testdata/` `data/assets/`
 
 ## 10. 对齐基线
 

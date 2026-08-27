@@ -7,15 +7,16 @@ import (
 )
 
 type Event struct {
-	DeviceID     string    `json:"device_id"`
-	InstanceID   string    `json:"instance_id"`
-	EventSeq     int       `json:"event_seq"`
-	Type         string    `json:"event_type"`
-	TurnID       string    `json:"turn_id,omitempty"`
-	Reason       string    `json:"reason,omitempty"`
-	EndReason    string    `json:"turn_end_reason,omitempty"`
-	UplinkReason string    `json:"uplink_end_reason,omitempty"`
+	DeviceID       string    `json:"device_id"`
+	InstanceID     string    `json:"instance_id"`
+	EventSeq       int       `json:"event_seq"`
+	Type           string    `json:"event_type"`
+	TurnID         string    `json:"turn_id,omitempty"`
+	Reason         string    `json:"reason,omitempty"`
+	EndReason      string    `json:"turn_end_reason,omitempty"`
+	UplinkReason   string    `json:"uplink_end_reason,omitempty"`
 	ReplyKind      string    `json:"reply_kind,omitempty"`
+	PayloadLen     int       `json:"-"`
 	ConnGeneration int       `json:"-"`
 	At             time.Time `json:"-"`
 }
@@ -32,6 +33,7 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		EndReason    string `json:"turn_end_reason,omitempty"`
 		UplinkReason string `json:"uplink_end_reason,omitempty"`
 		ReplyKind    string `json:"reply_kind,omitempty"`
+		PayloadLen   int    `json:"payload_len,omitempty"`
 	}
 	ts := e.At.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	return json.Marshal(wire{
@@ -45,6 +47,7 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		EndReason:    e.EndReason,
 		UplinkReason: e.UplinkReason,
 		ReplyKind:    e.ReplyKind,
+		PayloadLen:   e.PayloadLen,
 	})
 }
 
@@ -166,6 +169,14 @@ func eventMatches(e Event, typ, turnID string) bool {
 }
 
 func (l *EventLog) AppendLocked(typ string, turnID, reason, endReason, uplinkReason, replyKind string) (Event, EventNotify) {
+	return l.appendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind, 0)
+}
+
+func (l *EventLog) AppendChunkLocked(typ, turnID string, payloadLen int) (Event, EventNotify) {
+	return l.appendLocked(typ, turnID, "", "", "", "", payloadLen)
+}
+
+func (l *EventLog) appendLocked(typ, turnID, reason, endReason, uplinkReason, replyKind string, payloadLen int) (Event, EventNotify) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seq++
@@ -179,6 +190,7 @@ func (l *EventLog) AppendLocked(typ string, turnID, reason, endReason, uplinkRea
 		EndReason:      endReason,
 		UplinkReason:   uplinkReason,
 		ReplyKind:      replyKind,
+		PayloadLen:     payloadLen,
 		ConnGeneration: l.connGeneration,
 		At:             time.Now().UTC(),
 	}
