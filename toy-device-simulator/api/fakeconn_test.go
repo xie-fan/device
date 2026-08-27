@@ -124,6 +124,7 @@ func startAuto(c *fakeConn, opts autoOpts) {
 	go func() {
 		sentTTS := false
 		sentFail := false
+		echoed := 0
 		for {
 			select {
 			case msg := <-c.writeCh:
@@ -141,8 +142,11 @@ func startAuto(c *fakeConn, opts autoOpts) {
 						c.Push(ack)
 					}
 					if len(env.Topic) >= len("/report/server") && env.Topic[len(env.Topic)-len("/report/server"):] == "/report/server" {
-						echo, _ := protocol.EncodeManage(env.Topic[:len(env.Topic)-len("server")]+"client", json.RawMessage(env.Data))
-						c.Push(echo)
+						if opts.echoLimit <= 0 || echoed < opts.echoLimit {
+							echoed++
+							echo, _ := protocol.EncodeManage(env.Topic[:len(env.Topic)-len("server")]+"client", json.RawMessage(env.Data))
+							c.Push(echo)
+						}
 					}
 				case protocol.FirstAudio:
 					view := protocol.Inspect(msg)

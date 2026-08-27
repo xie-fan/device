@@ -19,7 +19,7 @@ func (d *DeviceInstance) sendReport(kind string) int {
 	}
 	d.connMu.Unlock()
 	playingMode := d.cfg.PlayingMode
-	seq := d.registerPendingLocked(kind)
+	seq := d.registerPendingLocked(kind, "")
 	var n EventNotify
 	if kind == "initial" {
 		_, n = d.appendEventLocked("reporting", "", "", "", "", "")
@@ -51,7 +51,7 @@ func (d *DeviceInstance) encodeReport(seq, playingMode int) ([]byte, error) {
 	)
 }
 
-func (d *DeviceInstance) registerPendingLocked(kind string) int {
+func (d *DeviceInstance) registerPendingLocked(kind, turnID string) int {
 	d.reportMu.Lock()
 	defer d.reportMu.Unlock()
 	seq := d.reports.TakeLocked()
@@ -59,7 +59,7 @@ func (d *DeviceInstance) registerPendingLocked(kind string) int {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	meta := &pendingMeta{kind: kind}
+	meta := &pendingMeta{kind: kind, turnID: turnID}
 	meta.timer = time.AfterFunc(timeout, func() { d.onReportTimeout(seq) })
 	d.pendingMeta[seq] = meta
 	return seq
@@ -94,7 +94,7 @@ func (d *DeviceInstance) ManualReport(playingMode *int) (int, error) {
 		d.cfg.PlayingMode = *playingMode
 	}
 	playing := d.cfg.PlayingMode
-	seq := d.registerPendingLocked("manual")
+	seq := d.registerPendingLocked("manual", "")
 	d.deviceMu.Unlock()
 
 	raw, err := d.encodeReport(seq, playing)
@@ -104,6 +104,34 @@ func (d *DeviceInstance) ManualReport(playingMode *int) (int, error) {
 	}
 	d.enqueueOrFinalize(Frame{Kind: KindReport, Raw: raw, Seq: uint32(seq)})
 	return seq, nil
+}
+
+// runSilenceProbe（Phase 4b）：turn 以 timeout 静默终态后发一次探针 report，
+// 借 pending echo 机制区分「服务端静默成功」（echo_ok）与「上行被 drop」
+// （echo_timeout）。仅 Ready 且未 finalize 时发；不改终态语义、不动完成矩阵。
+func (d *DeviceInstance) runSilenceProbe(turnID string) {
+	d.deviceMu.Lock()
+	if d.finalizeStarted || d.finalizeCommitted || d.deleted {
+		d.deviceMu.Unlock()
+		return
+	}
+	d.connMu.Lock()
+	st := d.connState
+	d.connMu.Unlock()
+	if st != ConnReady {
+		d.deviceMu.Unlock()
+		return
+	}
+	playing := d.cfg.PlayingMode
+	seq := d.registerPendingLocked("probe", turnID)
+	d.deviceMu.Unlock()
+
+	raw, err := d.encodeReport(seq, playing)
+	if err != nil {
+		d.requestFinalizeAsync("report_encode", false)
+		return
+	}
+	d.enqueueOrFinalize(Frame{Kind: KindReport, Raw: raw, Seq: uint32(seq)})
 }
 
 func (d *DeviceInstance) onReportTimeout(seq int) {
@@ -119,7 +147,7 @@ func (d *DeviceInstance) onReportTimeout(seq int) {
 	}
 	delete(d.pendingMeta, seq)
 	d.reports.Ack(seq)
-	kind := meta.kind
+	kind, probeTurn := meta.kind, meta.turnID
 	d.reportMu.Unlock()
 	if d.finalizeStarted || d.finalizeCommitted || d.deleted {
 		d.deviceMu.Unlock()
@@ -127,6 +155,11 @@ func (d *DeviceInstance) onReportTimeout(seq int) {
 	}
 	_, n := d.appendEventLocked("report_timeout", "", "", "", "", "")
 	acc = append(acc, n)
+	if kind == "probe" {
+		// 探针 echo 超时：上行疑似被服务端 drop。
+		_, np := d.appendEventLocked("silence_probe", probeTurn, "echo_timeout", "", "", "")
+		acc = append(acc, np)
+	}
 	d.connMu.Lock()
 	if kind == "initial" && d.connState == ConnReporting {
 		finalize = true
@@ -174,13 +207,18 @@ func (d *DeviceInstance) handleReportEchoLocked(seq int) (acc []EventNotify, rea
 	if meta.timer != nil {
 		meta.timer.Stop()
 	}
-	kind := meta.kind
+	kind, probeTurn := meta.kind, meta.turnID
 	delete(d.pendingMeta, seq)
 	d.reports.Ack(seq)
 	d.reportMu.Unlock()
 
 	_, n := d.appendEventLocked("report_echo", "", "", "", "", "")
 	acc = append(acc, n)
+	if kind == "probe" {
+		// 探针 echo 正常：链路仍活，先前 timeout 倾向「服务端静默成功」。
+		_, np := d.appendEventLocked("silence_probe", probeTurn, "echo_ok", "", "", "")
+		acc = append(acc, np)
+	}
 	d.connMu.Lock()
 	if kind == "initial" && d.connState == ConnReporting {
 		d.connState = ConnReady

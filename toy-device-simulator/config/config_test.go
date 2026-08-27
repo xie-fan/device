@@ -69,6 +69,7 @@ func TestValidateRejectsPhase1IllegalConfigs(t *testing.T) {
 		{"device_id 斜杠逃逸", func(d *Device) { d.DeviceID = "../etc" }, "device_id"},
 		{"device_id 反斜杠逃逸", func(d *Device) { d.DeviceID = `..\etc` }, "device_id"},
 		{"speak_backlog_depth 非零", func(d *Device) { d.Behavior.SpeakBacklogDepth = 2 }, "speak_backlog_depth"},
+		{"silence_probe 开启", func(d *Device) { d.Behavior.SilenceProbe = true }, "silence_probe"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

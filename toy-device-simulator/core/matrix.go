@@ -3,13 +3,13 @@ package core
 import "time"
 
 const (
-	ReplyTTS         = "tts"
-	ReplyCommand     = "command"
-	ReplyJSON        = "json"
-	ReplySilent      = "silent"
-	ReplyCommandTTS  = "command+tts"
-	ReplyJSONTTS     = "json+tts"
-	ReplyEmpty       = ""
+	ReplyTTS        = "tts"
+	ReplyCommand    = "command"
+	ReplyJSON       = "json"
+	ReplySilent     = "silent"
+	ReplyCommandTTS = "command+tts"
+	ReplyJSONTTS    = "json+tts"
+	ReplyEmpty      = ""
 
 	EndIdle           = "idle"
 	EndTimeout        = "timeout"
@@ -35,21 +35,21 @@ const (
 )
 
 type CompletionInput struct {
-	Phase            Phase
-	CallerIsPhaseC   bool
-	HasTTS           bool
-	HasCommand       bool
-	HasSuccessJSON   bool
-	HasIsFinal       bool
-	HasInterim       bool
-	FailedJSON       bool
-	Interrupt        bool
-	ConnectionClose  bool
+	Phase             Phase
+	CallerIsPhaseC    bool
+	HasTTS            bool
+	HasCommand        bool
+	HasSuccessJSON    bool
+	HasIsFinal        bool
+	HasInterim        bool
+	FailedJSON        bool
+	Interrupt         bool
+	ConnectionClose   bool
 	FirstReplyExpired bool
-	TTSIdleExpired   bool
-	FollowupExpired  bool
-	SilentExpired    bool
-	FaultDropRow     bool
+	TTSIdleExpired    bool
+	FollowupExpired   bool
+	SilentExpired     bool
+	FaultDropRow      bool
 }
 
 type Decision struct {

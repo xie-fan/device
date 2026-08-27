@@ -23,5 +23,5 @@ func (b *EarlyBuf) Drain() [][]byte {
 	return out
 }
 
-func (b *EarlyBuf) Len() int  { return len(b.items) }
+func (b *EarlyBuf) Len() int   { return len(b.items) }
 func (b *EarlyBuf) Drops() int { return b.drops }

@@ -1,6 +1,6 @@
 ﻿# 玩具设备模拟器 — 整体架构设计文档
 
-下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI 与 Phase 4 speak backlog（契约见 phase4.md）。
+下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI 与 Phase 4 speak backlog、静默成功探针（契约见 phase4.md）。
 
 ## 1. 背景与目标
 
@@ -486,7 +486,7 @@ WaitingReply 前：不启动完成计时、不 Terminal、不释槽（失败 JSO
 | 用户 interrupt | 取消表 | 保持已有或空 | interrupt | 无 tts_done（除非此前已发） | **CancelTurn**（连接保持） |
 | 连接收口 Phase C | 取消表 | 保持已有或空 | connection_lost | 无 | **BeginClose**（关连接） |
 
-完全无包的静默成功与 drop 在正常路径不可区分：`timeout`。探针属 Phase 4。
+完全无包的静默成功与 drop 在正常路径不可区分：`timeout`。区分靠 Phase 4 探针（`behavior.silence_probe`，契约见 phase4.md），不改终态语义。
 
 `finalize_started` 后本表不进入 Terminal（仅 Phase C）。
 

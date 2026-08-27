@@ -60,6 +60,9 @@ type Behavior struct {
 	// Phase 4 speak backlog：Turn 排队深度，0=关闭（槽占用仍 409）。
 	// 与 writePump 的 outbound buffer（write_queue_depth）不是同一功能。
 	SpeakBacklogDepth int `yaml:"speak_backlog_depth"`
+	// Phase 4 静默成功探针：turn 以 timeout 终态且全程无下行包时，发一次
+	// 探针 report 借 echo 区分「静默成功」与「被 drop」。默认关。
+	SilenceProbe bool `yaml:"silence_probe"`
 }
 
 type DownlinkAck struct {
@@ -139,6 +142,9 @@ func Validate(d Device) error {
 	}
 	if d.Behavior.SpeakBacklogDepth != 0 {
 		return fmt.Errorf("speak_backlog_depth 是 Phase 4 Manager 设备功能，Phase 1 CLI 拒绝")
+	}
+	if d.Behavior.SilenceProbe {
+		return fmt.Errorf("silence_probe 是 Phase 4 Manager 设备功能，Phase 1 CLI 拒绝")
 	}
 	return nil
 }

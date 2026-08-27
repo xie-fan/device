@@ -190,5 +190,3 @@ func TestRecordingAndEvents404AfterTombTTLAndDirRemoved(t *testing.T) {
 		t.Fatalf("过期后 instance 目录应删除，err=%v", err)
 	}
 }
-
-

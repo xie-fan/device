@@ -91,8 +91,10 @@ type TerminalNotify struct {
 	Event        Event
 	EventWaiters int
 	SlowSubs     int
-	wakes        []waiterWake
-	done         chan Event
+	// ProbeTurnID 非空时，finishCritical 需为该 turn 触发静默成功探针（Phase 4b）。
+	ProbeTurnID string
+	wakes       []waiterWake
+	done        chan Event
 }
 
 // TerminalLocked 调用方必须已持锁。禁止在函数内唤醒。

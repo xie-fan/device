@@ -39,9 +39,10 @@ type Options struct {
 }
 
 type pendingMeta struct {
-	kind  string
-	once  Once
-	timer *time.Timer
+	kind   string
+	turnID string // kind=probe 时关联的 turn，其余为空
+	once   Once
+	timer  *time.Timer
 }
 
 type turnRuntime struct {
@@ -320,7 +321,22 @@ func (d *DeviceInstance) terminalLocked(endReason, replyKind, uplinkIfEmpty stri
 	if d.turn != nil {
 		d.turn.signalDrained()
 	}
+	// Phase 4b：timeout 终态且全程无下行包（静默）→ 标记发探针 report。
+	// finalize 收尾（phaseC）不探针。
+	if !phaseC && end == EndTimeout && kind == ReplyEmpty &&
+		d.cfg.Behavior.SilenceProbe && d.turnAllSilentLocked() {
+		n.ProbeTurnID = turnID
+	}
 	return n
+}
+
+// turnAllSilentLocked 判定当前 turn 是否全程未收到任何 turn 相关下行。
+func (d *DeviceInstance) turnAllSilentLocked() bool {
+	t := d.turn
+	if t == nil {
+		return false
+	}
+	return !t.hasTTS && !t.hasCmd && !t.hasJSON && !t.hasInter && !t.hasFinal
 }
 
 func (d *DeviceInstance) submitTurnFileLocked(ev Event) {
@@ -377,6 +393,9 @@ func (d *DeviceInstance) finishCritical(acc []EventNotify, tn TerminalNotify) {
 		}
 		// Phase 4：槽已空，异步出队下一个排队 speak（协程内自持 deviceMu）。
 		go d.dispatchBacklog()
+		if tn.ProbeTurnID != "" {
+			go d.runSilenceProbe(tn.ProbeTurnID)
+		}
 	}
 	eventNotifyOf(tn).NotifyHTTP()
 	for _, n := range acc {

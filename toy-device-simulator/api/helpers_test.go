@@ -24,6 +24,8 @@ type autoOpts struct {
 	needAck  bool
 	hold     bool
 	silent   bool
+	// echoLimit>0 时只回显前 N 个 report echo（用于探针 echo 超时用例）。
+	echoLimit int
 }
 
 type testEnv struct {

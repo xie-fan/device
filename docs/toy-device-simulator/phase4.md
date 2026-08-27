@@ -13,9 +13,15 @@
 - 收口（stop/断链/删除）Phase C 清队，逐项 dropped(finalize) 并唤醒 waiter；`WaitTurn` 对 dropped 与 turn_terminal 同样收梢（speak_and_wait 200，`event_type=speak_backlog_dropped`）。interrupt 只打断当前 turn，不清队。
 - `GET /devices/{id}` 增加 `speak_backlog_len`。
 
+### 静默成功探针
+
+- 配置 `behavior.silence_probe`（bool，默认 false=关闭）。Phase 1 CLI 配置 true → 启动拒绝。PUT 归 behavior 组。
+- 触发：turn 以 `turn_end_reason=timeout` 且全程无任何 turn 下行（无 interim/TTS/命令/JSON/is_final）终态后，异步发一次探针 report（复用 pending_reports echo 机制；仅 Ready 且未 finalize 时发，不占 turn 槽）。
+- 结果事件 `silence_probe`（turn_id=原 turn）：echo 正常 → reason=`echo_ok`（链路仍活，倾向服务端「静默成功」）；echo 超时 → reason=`echo_timeout`（倾向上行被 drop）。伴随常规 `report_echo`/`report_timeout` 事件。
+- 不改终态语义、不动完成矩阵；有过任何下行包的 timeout（如仅 interim）不触发。
+
 ## 按需清单（未落地）
 
-- 静默成功探针（正常路径 timeout 与 drop 的区分）
 - 线上 mp3/wav 推流：整段 PCM 只编码一次再切流
 - HTTP 上传 raw PCM（须带完整 fmt；Phase 2 不做）
 - 跨设备全局事件总线（当前 event_seq 为 instance 级）

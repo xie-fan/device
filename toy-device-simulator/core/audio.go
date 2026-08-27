@@ -14,9 +14,9 @@ var (
 )
 
 type PCM struct {
-	Samples      []byte
-	SampleRate   int
-	Channels     int
+	Samples       []byte
+	SampleRate    int
+	Channels      int
 	BitsPerSample int
 }
 
