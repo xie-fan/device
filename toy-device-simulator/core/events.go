@@ -99,6 +99,18 @@ type EventLog struct {
 	hubNext        int
 	connGeneration int
 	mirror         func(Event)
+	onWSAbort      func()
+}
+
+// SetOnWSAbort 登记 WS 订阅 abort 回调（Phase 4e 断开即 interrupt）。
+// 回调经 go 异步触发，可安全拿设备/manager 锁。
+func (l *EventLog) SetOnWSAbort(fn func()) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.onWSAbort = fn
 }
 
 // SetMirror 登记全局总线镜像（Phase 4d）。fn 在 l.mu 临界区内被调，

@@ -234,6 +234,8 @@ func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 	log := core.NewEventLog(cfg.DeviceID, ins)
 	log.SetMaxEntries(s.opts.Config.EventLogMaxEntries)
 	log.SetMirror(s.bus.Publish)
+	devID := cfg.DeviceID
+	log.SetOnWSAbort(func() { s.interruptOnWSAbort(devID) })
 	return &managedDevice{
 		id:           cfg.DeviceID,
 		instanceID:   ins,
@@ -327,6 +329,7 @@ func configPublic(cfg config.Device, envName string) map[string]any {
 			"expect_downlink_need_ack":   cfg.Behavior.ExpectDownlinkNeedAck,
 			"speak_backlog_depth":        cfg.Behavior.SpeakBacklogDepth,
 			"silence_probe":              cfg.Behavior.SilenceProbe,
+			"interrupt_on_disconnect":    cfg.Behavior.InterruptOnDisconnect,
 			"downlink_ack": map[string]any{
 				"mode": ack.Mode, "sleep_ms": ack.SleepMs, "code": ack.Code,
 			},
@@ -706,6 +709,7 @@ func applyPutBehavior(b *config.Behavior, m map[string]any) error {
 		"post_final_asr_silence_sec": true, "wait_timeout_slack_sec": true,
 		"expect_downlink_need_ack": true, "downlink_ack": true,
 		"speak_backlog_depth": true, "silence_probe": true,
+		"interrupt_on_disconnect": true,
 	}
 	if err := rejectUnknownKeys(m, allowed); err != nil {
 		return err
@@ -780,6 +784,13 @@ func applyPutBehavior(b *config.Behavior, m map[string]any) error {
 			return fmt.Errorf("behavior.silence_probe 类型非法")
 		}
 		b.SilenceProbe = flag
+	}
+	if v, ok := m["interrupt_on_disconnect"]; ok {
+		flag, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("behavior.interrupt_on_disconnect 类型非法")
+		}
+		b.InterruptOnDisconnect = flag
 	}
 	if v, ok := m["downlink_ack"]; ok {
 		ack, ok := v.(map[string]any)

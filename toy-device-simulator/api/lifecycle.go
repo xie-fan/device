@@ -49,6 +49,25 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// interruptOnWSAbort（Phase 4e）：事件 WS 订阅 abort（断开/半开/慢订阅）后，
+// 若设备开启 interrupt_on_disconnect 则打断当前 turn；槽空或 finalize 中为 no-op。
+// 由 EventLog 异步回调触发，不持任何 core 锁。
+func (s *Server) interruptOnWSAbort(id string) {
+	s.mu.Lock()
+	d, ok := s.devices[id]
+	var inst *core.DeviceInstance
+	enabled := false
+	if ok {
+		enabled = d.cfg.Behavior.InterruptOnDisconnect
+		inst = d.inst
+	}
+	s.mu.Unlock()
+	if !enabled || inst == nil {
+		return
+	}
+	_, _ = inst.Interrupt("")
+}
+
 // refreshServerURLLocked 启动前按环境重解析 url：环境 url 更新后重启生效。
 // 删除有引用守卫，解析理论上不会失败；防御性保留旧值。调用方须持 s.mu。
 func (s *Server) refreshServerURLLocked(d *managedDevice) {

@@ -32,11 +32,16 @@
 - `GET /ws/events/global?after_global_seq=N`：回放 + live，条目为事件 wire 格式外加 `global_seq`（`device_id`/`instance_id` 事件本身已带）。`after < evicted_through` → 410 `global_seq_expired`；参数非法 → 400。
 - 慢订阅：inbox（256）满即摘除并关连接（abort），不阻塞事件产生方。instance 级 `event_seq`/`GET /ws/events` 语义不变。
 
+### 断开即 interrupt
+
+- 配置 `behavior.interrupt_on_disconnect`（bool，默认 false=关闭）。Phase 1 CLI 配置 true → 启动拒绝。PUT 归 behavior 组。
+- 触发：该设备的事件 WS 订阅进入 abort（客户端断开、写失败、半开 ping 无 pong、慢订阅被掐）时，对当前 turn 走 CancelTurn（`turn_end_reason=interrupt`）；槽空或 finalize 中为 no-op。连接不拆（不 BeginClose）。
+- drain 不触发：设备删除（`device_deleted` → WSDrain 收口）不算断开。回调经 EventLog 异步触发，不在锁内。
+
 ## 按需清单（未落地）
 
 - 线上 mp3/wav 推流：整段 PCM 只编码一次再切流
 - 可选 Mongo 预检 / 清 Redis deviceMemory
-- 断开即 interrupt（默认关；若开启仍走 CancelTurn 而非 BeginClose，除非同时要拆连接）
 - 不查 DownlinkAck；不提供 device_id 重键
 - 浏览器麦克风、指标、SQLite、压测、MQTT
 - wake 交叉；dup_uuid 经基线实证后再写入 drop 矩阵

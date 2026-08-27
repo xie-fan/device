@@ -116,6 +116,7 @@ func (l *EventLog) requestCloseLocked(sub *WSSub, mode int) {
 	if sub == nil {
 		return
 	}
+	wasAbort := sub.closeMode == WSAbort
 	if mode == WSAbort {
 		sub.closeMode = WSAbort
 	} else if sub.closeMode == WSOpen && mode == WSDrain {
@@ -125,6 +126,10 @@ func (l *EventLog) requestCloseLocked(sub *WSSub, mode int) {
 	if !sub.closed {
 		sub.closed = true
 		close(sub.inbox)
+	}
+	// Phase 4e：首次进入 abort 才回调，且必须异步逃出 l.mu（回调会拿设备锁）。
+	if mode == WSAbort && !wasAbort && l.onWSAbort != nil {
+		go l.onWSAbort()
 	}
 }
 
