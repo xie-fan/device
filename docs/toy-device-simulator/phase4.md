@@ -38,9 +38,15 @@
 - 触发：该设备的事件 WS 订阅进入 abort（客户端断开、写失败、半开 ping 无 pong、慢订阅被掐）时，对当前 turn 走 CancelTurn（`turn_end_reason=interrupt`）；槽空或 finalize 中为 no-op。连接不拆（不 BeginClose）。
 - drain 不触发：设备删除（`device_deleted` → WSDrain 收口）不算断开。回调经 EventLog 异步触发，不在锁内。
 
+### wav 推流（线上音频容器）
+
+- `audio.format` 允许 `wav`（Phase 2+；Phase 1 CLI 仍仅 `pcm`；`mp3` 拒绝——需引入编码器依赖，留待真实需求）。
+- 语义：上行整段 PCM 只 `EncodeWAV` 一次（加 RIFF 头），再按 `slice_ms` 切流发送；首片含头、后续为纯数据流，**禁止逐片封装 WAV**。pace 与等待预算仍按纯 PCM 时长计（44 字节头忽略不计）。
+- 资产管线不变（HTTP 仍收 WAV/raw PCM、内部仍存纯 PCM）；录音 up 文件记录实际发出字节（wav 模式含头）。
+
 ## 按需清单（未落地）
 
-- 线上 mp3/wav 推流：整段 PCM 只编码一次再切流
+- 线上 mp3 推流（需编码器依赖，wav 已落地）
 - 可选 Mongo 预检 / 清 Redis deviceMemory
 - 不查 DownlinkAck；不提供 device_id 重键
 - 浏览器麦克风、指标、SQLite、压测、MQTT

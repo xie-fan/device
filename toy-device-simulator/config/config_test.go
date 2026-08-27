@@ -71,6 +71,7 @@ func TestValidateRejectsPhase1IllegalConfigs(t *testing.T) {
 		{"speak_backlog_depth 非零", func(d *Device) { d.Behavior.SpeakBacklogDepth = 2 }, "speak_backlog_depth"},
 		{"silence_probe 开启", func(d *Device) { d.Behavior.SilenceProbe = true }, "silence_probe"},
 		{"interrupt_on_disconnect 开启", func(d *Device) { d.Behavior.InterruptOnDisconnect = true }, "interrupt_on_disconnect"},
+		{"format=mp3", func(d *Device) { d.Audio.Format = "mp3" }, "format"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -337,6 +338,24 @@ func TestValidatePhase2AllowsJSONAckAndNonZeroSleepMs(t *testing.T) {
 	}
 	if err := ValidatePhase2(d); err != nil {
 		t.Fatalf("ValidatePhase2 应允许 json 与 sleep_ms=500: %v", err)
+	}
+}
+
+func TestValidatePhase2AllowsWavFormat(t *testing.T) {
+	d, err := Load(exampleYAML(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Audio.Format = "wav"
+	if err := Validate(d); err == nil {
+		t.Fatal("Phase 1 Validate 必须拒绝 format=wav")
+	}
+	if err := ValidatePhase2(d); err != nil {
+		t.Fatalf("ValidatePhase2 应允许 format=wav: %v", err)
+	}
+	d.Audio.Format = "mp3"
+	if err := ValidatePhase2(d); err == nil {
+		t.Fatal("ValidatePhase2 必须拒绝 format=mp3")
 	}
 }
 

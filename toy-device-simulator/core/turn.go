@@ -232,7 +232,18 @@ func runTestBeforeUplinkEnqueue() {
 }
 
 func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
-	frames := BuildUplinkFrames(pcm, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault, d.cfg.Audio.MaxPayloadSize)
+	stream := pcm
+	// Phase 4f wav 推流：整段 PCM 只编码一次（加 RIFF 头）再按 slice 切流，
+	// 禁止逐片封装 WAV；pace/时长仍按纯 PCM 计。
+	if d.cfg.Audio.Format == "wav" {
+		stream = EncodeWAV(PCM{
+			Samples:       pcm,
+			SampleRate:    d.cfg.Audio.SampleRate,
+			Channels:      d.cfg.Audio.Channels,
+			BitsPerSample: 16,
+		})
+	}
+	frames := BuildUplinkFrames(stream, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault, d.cfg.Audio.MaxPayloadSize)
 
 	d.deviceMu.Lock()
 	if d.slot.ID() != turnID || d.finalizeStarted {

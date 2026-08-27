@@ -5,8 +5,8 @@
 本目录可单独阅读。同目录 `architecture.md` 与 `phase*.md` 可以互相参照；凡被参照的表，本目录内必须有全文。协议正文见 `docs/toy-device-websocket-protocol.md`。
 
 产品：忠实模拟 chatbot、批量并发、Agent API、调试 UI。  
-当前落地：Phase 1 CLI（speak / check / fixture）、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI（`GET /`）、Phase 4 speak backlog（`behavior.speak_backlog_depth`）与静默成功探针（`behavior.silence_probe`）。  
-阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需（speak backlog ≠ outbound buffer；其余项见 phase4.md 清单）。
+当前落地：Phase 1 CLI（speak / check / fixture）、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI（`GET /`）、Phase 4 全部主项——speak backlog、静默成功探针、raw PCM 上传、全局事件总线（`/ws/events/global`）、断开即 interrupt、wav 推流（契约见 phase4.md；mp3 等剩余项见其清单）。  
+阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需增强（speak backlog ≠ outbound buffer；已落地与剩余清单见 phase4.md）。
 
 设备身份走配置树（环境 → 厂商 → 设备类型 → 设备，`/registry`，落盘 `configs/registry.yaml`）：厂商/类型有名称与简称，wire 值与环境 url 占位符都用简称；设备创建引用树路径，不再平铺身份字段（phase2.md §6.10）。Phase 1 CLI 仍用单机平铺 YAML。
 
@@ -28,7 +28,7 @@
 | `phase1.md` | CLI；完整矩阵与 YAML |
 | `phase2.md` | 完整 API |
 | `phase3.md` | UI |
-| `phase4.md` | speak backlog / 非 pcm / 探针 |
+| `phase4.md` | 按需增强（backlog / 探针 / raw PCM / 全局总线 / 断开打断 / wav 推流） |
 
 ## 阅读顺序
 

@@ -1,6 +1,6 @@
 ﻿# 玩具设备模拟器 — 整体架构设计文档
 
-下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI 与 Phase 4 speak backlog、静默成功探针（契约见 phase4.md）。
+下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI 与 Phase 4 主项（speak backlog、静默探针、raw PCM 上传、全局事件总线、断开即 interrupt、wav 推流；契约见 phase4.md）。
 
 ## 1. 背景与目标
 
@@ -731,7 +731,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 
 ## 6. 音频管线
 
-源 WAV 解 RIFF → 内部 PCM → silence=全零 → 按 slice_ms 切 pcm 字节。禁止逐片封装 WAV。Phase 4 才允许线上 mp3/wav 推流。
+源 WAV 解 RIFF → 内部 PCM → silence=全零 → 按 slice_ms 切 pcm 字节。禁止逐片封装 WAV。Phase 4 `audio.format=wav` 时整段只加一次 RIFF 头再切流（契约见 phase4.md）；mp3 未落地。
 
 ## 7. 技术选型
 
@@ -744,7 +744,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 | Phase 1 | 单设备 CLI：握手→register→report→pcm 上行→回复；落盘；keepalive |
 | Phase 2 | 批量+API+Scenario；playingMode 热更新；JSON ACK；WAV |
 | Phase 3 | UI 只消费 Phase 2 |
-| Phase 4 | speak backlog、非 pcm、静默探针 |
+| Phase 4 | speak backlog、静默探针、raw PCM、全局总线、断开打断、wav 推流 |
 
 ## 9. 目录
 

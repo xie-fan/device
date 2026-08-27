@@ -152,6 +152,9 @@ func Validate(d Device) error {
 	if d.Behavior.InterruptOnDisconnect {
 		return fmt.Errorf("interrupt_on_disconnect 是 Phase 4 Manager 设备功能，Phase 1 CLI 拒绝")
 	}
+	if d.Audio.Format != "pcm" {
+		return fmt.Errorf("Phase 1 仅允许 format=pcm，得到 %q", d.Audio.Format)
+	}
 	return nil
 }
 
@@ -190,8 +193,9 @@ func validateCommon(d Device) error {
 	if d.PlayingMode < 1 || d.PlayingMode > 3 {
 		return fmt.Errorf("非法 playing_mode=%d", d.PlayingMode)
 	}
-	if d.Audio.Format != "pcm" {
-		return fmt.Errorf("Phase 1 仅允许 format=pcm，得到 %q", d.Audio.Format)
+	// Phase 4f：wav 推流（线上流整段加一次 RIFF 头）；除 pcm/wav 外拒绝。
+	if d.Audio.Format != "pcm" && d.Audio.Format != "wav" {
+		return fmt.Errorf("format 仅支持 pcm/wav，得到 %q", d.Audio.Format)
 	}
 	if d.Audio.Channels != 1 {
 		return fmt.Errorf("Phase 1 仅允许 channels=1，得到 %d", d.Audio.Channels)
