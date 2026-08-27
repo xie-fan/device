@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"toy-device-simulator/config"
 	"toy-device-simulator/core"
+	"toy-device-simulator/manager"
 )
 
 func newInstanceID() string {
@@ -53,19 +55,43 @@ func valueHasKey(v any, key string) bool {
 	return false
 }
 
-func (s *Server) parseDevice(raw json.RawMessage) (config.Device, error) {
+// prepDeviceMap 做设备体静态门禁：禁止 write_queue_*，禁止身份三键
+// （enterprise/device_type/server 由树引用派生）。
+func prepDeviceMap(raw json.RawMessage) (map[string]any, error) {
 	if jsonHasKey(raw, "write_queue_depth") || jsonHasKey(raw, "write_drain_timeout_sec") {
-		return config.Device{}, fmt.Errorf("write_queue")
+		return nil, fmt.Errorf("write_queue")
+	}
+	for _, k := range []string{"enterprise", "device_type", "server"} {
+		if jsonHasKey(raw, k) {
+			return nil, fmt.Errorf("设备体不得含 %s（由树引用派生）", k)
+		}
 	}
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// parseDeviceLocked 解析树引用、注入派生身份并做全量校验。
+// 调用方须持 s.mu：Resolve 与类型节点删除的引用检查在同一临界区互斥。
+func (s *Server) parseDeviceLocked(m map[string]any, refs createBody) (config.Device, error) {
+	id, _ := m["device_id"].(string)
+	resolved, err := s.reg.Resolve(refs.Environment, refs.Enterprise, refs.DeviceType, id)
+	if err != nil {
 		return config.Device{}, err
 	}
+	m = cloneMap(m)
+	m["enterprise"] = refs.Enterprise
+	m["device_type"] = refs.DeviceType
+	m["server"] = map[string]any{"url": resolved}
 	beh, _ := m["behavior"].(map[string]any)
 	if beh == nil {
 		beh = map[string]any{}
-		m["behavior"] = beh
+	} else {
+		beh = cloneMap(beh)
 	}
+	m["behavior"] = beh
 	beh["write_queue_depth"] = s.opts.Config.WriteQueueDepth
 	beh["write_drain_timeout_sec"] = s.opts.Config.WriteDrainTimeoutSec
 	wrapped, err := yaml.Marshal(map[string]any{"device": m})
@@ -82,11 +108,21 @@ func (s *Server) parseDevice(raw json.RawMessage) (config.Device, error) {
 	return cfg, nil
 }
 
+func refErrStatus(err error) int {
+	if errors.Is(err, manager.ErrRegistryNotFound) {
+		return http.StatusNotFound
+	}
+	return http.StatusBadRequest
+}
+
 type createBody struct {
-	Device     json.RawMessage `json:"device"`
-	TemplateID string          `json:"template_id"`
-	Count      int             `json:"count"`
-	IDPrefix   string          `json:"id_prefix"`
+	Environment string          `json:"environment"`
+	Enterprise  string          `json:"enterprise"`
+	DeviceType  string          `json:"device_type"`
+	Device      json.RawMessage `json:"device"`
+	TemplateID  string          `json:"template_id"`
+	Count       int             `json:"count"`
+	IDPrefix    string          `json:"id_prefix"`
 }
 
 func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
@@ -95,23 +131,29 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
+	if body.Environment == "" || body.Enterprise == "" || body.DeviceType == "" {
+		writeErr(w, http.StatusBadRequest, "缺 environment/enterprise/device_type（树引用）")
+		return
+	}
 	if len(body.Device) > 0 && string(body.Device) != "null" {
-		cfg, err := s.parseDevice(body.Device)
+		m, err := prepDeviceMap(body.Device)
 		if err != nil {
-			if strings.Contains(err.Error(), "write_queue") {
-				writeErr(w, http.StatusBadRequest, err.Error())
-				return
-			}
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		s.mu.Lock()
+		cfg, err := s.parseDeviceLocked(m, body)
+		if err != nil {
+			s.mu.Unlock()
+			writeErr(w, refErrStatus(err), err.Error())
+			return
+		}
 		if _, exists := s.devices[cfg.DeviceID]; exists {
 			s.mu.Unlock()
 			writeErr(w, http.StatusConflict, "device_id 冲突")
 			return
 		}
-		d := s.newManaged(cfg)
+		d := s.newManaged(cfg, body.Environment)
 		s.devices[cfg.DeviceID] = d
 		s.mu.Unlock()
 		writeJSON(w, http.StatusCreated, map[string]any{
@@ -156,12 +198,17 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		raw := cloneMap(tmpl)
 		raw["device_id"] = id
 		b, _ := json.Marshal(raw)
-		cfg, err := s.parseDevice(b)
+		m, err := prepDeviceMap(b)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		d := s.newManaged(cfg)
+		cfg, err := s.parseDeviceLocked(m, body)
+		if err != nil {
+			writeErr(w, refErrStatus(err), err.Error())
+			return
+		}
+		d := s.newManaged(cfg, body.Environment)
 		s.devices[id] = d
 		made = append(made, created{id, d})
 	}
@@ -182,13 +229,14 @@ func cloneMap(m map[string]any) map[string]any {
 	return out
 }
 
-func (s *Server) newManaged(cfg config.Device) *managedDevice {
+func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 	ins := newInstanceID()
 	log := core.NewEventLog(cfg.DeviceID, ins)
 	log.SetMaxEntries(s.opts.Config.EventLogMaxEntries)
 	return &managedDevice{
 		id:           cfg.DeviceID,
 		instanceID:   ins,
+		envName:      envName,
 		cfg:          cfg,
 		state:        stCreated,
 		committed:    map[int]bool{},
@@ -231,11 +279,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := d.cfg
+	envName := d.envName
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, configPublic(cfg))
+	writeJSON(w, http.StatusOK, configPublic(cfg, envName))
 }
 
-func configPublic(cfg config.Device) map[string]any {
+func configPublic(cfg config.Device, envName string) map[string]any {
 	ack := cfg.Behavior.DownlinkAck
 	autoReg, autoRep := true, true
 	if cfg.Behavior.AutoRegister != nil {
@@ -245,6 +294,7 @@ func configPublic(cfg config.Device) map[string]any {
 		autoRep = *cfg.Behavior.AutoReport
 	}
 	return map[string]any{
+		"environment":      envName,
 		"enterprise":       cfg.Enterprise,
 		"device_type":      cfg.DeviceType,
 		"device_id":        cfg.DeviceID,
@@ -287,15 +337,16 @@ func configPublic(cfg config.Device) map[string]any {
 	}
 }
 
+// server 不在 allowlist：url 由环境派生，直设 → 400 未知字段。
 var putTopAllowed = map[string]bool{
-	"enterprise": true, "device_type": true, "playing_mode": true, "audio": true,
-	"server": true, "uuid": true, "action": true, "firmware_version": true, "firmware": true,
+	"environment": true, "enterprise": true, "device_type": true, "playing_mode": true,
+	"audio": true, "uuid": true, "action": true, "firmware_version": true, "firmware": true,
 	"nic_type": true, "nic_iccid": true, "downlink_ack": true, "behavior": true, "recording": true,
 }
 
 var putRunningForbidden = map[string]bool{
-	"enterprise": true, "device_type": true, "playing_mode": true, "audio": true,
-	"server": true, "uuid": true, "action": true, "firmware_version": true, "firmware": true,
+	"environment": true, "enterprise": true, "device_type": true, "playing_mode": true,
+	"audio": true, "uuid": true, "action": true, "firmware_version": true, "firmware": true,
 	"nic_type": true, "nic_iccid": true, "downlink_ack": true, "behavior": true,
 }
 
@@ -349,6 +400,31 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	next := d.cfg
+	newEnv := d.envName
+	// 树引用重新挂靠：可部分给出，缺省沿用当前；持 s.mu 调 Resolve（叶子锁）。
+	if hasAnyKey(raw, "environment", "enterprise", "device_type") {
+		env, ent, typ := d.envName, d.cfg.Enterprise, d.cfg.DeviceType
+		if err := takeStringKey(raw, "environment", &env); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := takeStringKey(raw, "enterprise", &ent); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := takeStringKey(raw, "device_type", &typ); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		resolved, err := s.reg.Resolve(env, ent, typ, d.id)
+		if err != nil {
+			writeErr(w, refErrStatus(err), err.Error())
+			return
+		}
+		next.Enterprise, next.DeviceType = ent, typ
+		next.Server.URL = resolved
+		newEnv = env
+	}
 	if err := applyPutAllowlist(&next, raw); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -358,10 +434,33 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.cfg = next
+	d.envName = newEnv
 	if !running {
 		d.playingMode = next.PlayingMode
 	}
-	writeJSON(w, http.StatusOK, configPublic(d.cfg))
+	writeJSON(w, http.StatusOK, configPublic(d.cfg, d.envName))
+}
+
+func hasAnyKey(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func takeStringKey(m map[string]any, key string, dst *string) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%s 类型非法", key)
+	}
+	*dst = s
+	return nil
 }
 
 func rejectExplicitAutoFalse(raw map[string]any) error {
@@ -399,21 +498,9 @@ func rejectUnknownKeys(m map[string]any, allowed map[string]bool) error {
 	return nil
 }
 
+// applyPutAllowlist 只处理设备级属性；environment/enterprise/device_type
+// 是树引用，由 handlePutConfig 先行解析，这里跳过。
 func applyPutAllowlist(cfg *config.Device, raw map[string]any) error {
-	if v, ok := raw["enterprise"]; ok {
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("enterprise 类型非法")
-		}
-		cfg.Enterprise = s
-	}
-	if v, ok := raw["device_type"]; ok {
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("device_type 类型非法")
-		}
-		cfg.DeviceType = s
-	}
 	if v, ok := raw["playing_mode"]; ok {
 		n, ok := jsonToInt(v)
 		if !ok {
@@ -462,15 +549,6 @@ func applyPutAllowlist(cfg *config.Device, raw map[string]any) error {
 			return fmt.Errorf("audio 类型非法")
 		}
 		if err := applyPutAudio(&cfg.Audio, m); err != nil {
-			return err
-		}
-	}
-	if v, ok := raw["server"]; ok {
-		m, ok := v.(map[string]any)
-		if !ok {
-			return fmt.Errorf("server 类型非法")
-		}
-		if err := applyPutServer(&cfg.Server, m); err != nil {
 			return err
 		}
 	}
@@ -562,20 +640,6 @@ func applyPutAudio(a *config.Audio, m map[string]any) error {
 			return fmt.Errorf("audio.max_payload_size 类型非法")
 		}
 		a.MaxPayloadSize = n
-	}
-	return nil
-}
-
-func applyPutServer(s *config.Server, m map[string]any) error {
-	if err := rejectUnknownKeys(m, map[string]bool{"url": true}); err != nil {
-		return err
-	}
-	if v, ok := m["url"]; ok {
-		u, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("server.url 类型非法")
-		}
-		s.URL = u
 	}
 	return nil
 }
@@ -832,6 +896,12 @@ func (s *Server) handlePostTemplate(w http.ResponseWriter, r *http.Request) {
 	if jsonHasKey(body.Device, "write_queue_depth") || jsonHasKey(body.Device, "write_drain_timeout_sec") {
 		writeErr(w, http.StatusBadRequest, "模板禁止 write_queue_*")
 		return
+	}
+	for _, k := range []string{"enterprise", "device_type", "server"} {
+		if jsonHasKey(body.Device, k) {
+			writeErr(w, http.StatusBadRequest, "模板禁止 "+k+"（挂靠由创建时的树引用决定）")
+			return
+		}
 	}
 	if err := config.ValidatePathComponent(body.TemplateID); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

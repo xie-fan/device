@@ -20,7 +20,7 @@ func TestJSONAckCreateDeviceAndOutbound(t *testing.T) {
 	body := e.deviceBody("sim_jsonack")
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_ack"] = map[string]any{"mode": "json", "sleep_ms": 500, "code": 1}
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("Phase 2 创建设备应允许 json ACK，得到 %d %s", code, raw)
 	}
@@ -68,7 +68,7 @@ func TestPhase2RecordingThreeLevelPaths(t *testing.T) {
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
 	beh["first_reply_timeout_sec"] = 2
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -145,7 +145,7 @@ func TestWaitLiveEventAfterRegister200Not504(t *testing.T) {
 	body := e.deviceBody("sim_wlive")
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -202,7 +202,7 @@ func TestLiveWSReceivesSubsequentTurnTerminalAndDeviceDeleted(t *testing.T) {
 	body := e.deviceBody("sim_wslive")
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -310,7 +310,7 @@ func TestScenarioExecutesBatchStartSpeakAssert(t *testing.T) {
 		beh, _ := body["behavior"].(map[string]any)
 		beh["downlink_idle_timeout_sec"] = 1
 		beh["first_reply_timeout_sec"] = 2
-		code, raw := e.post(t, "/devices", map[string]any{"device": body})
+		code, raw := e.post(t, "/devices", e.createBody(body))
 		if code != http.StatusCreated {
 			t.Fatalf("create %s %d %s", id, code, raw)
 		}

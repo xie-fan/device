@@ -63,6 +63,8 @@ manager:
 
 设备 YAML 禁止 write_queue_depth / write_drain_timeout_sec。Manager `write_queue_depth < 2` 或 `write_drain_timeout_sec <= 0` → 加载失败。
 
+配置树落盘在 `configs/registry.yaml`（`cmd/manager --registry` 可改路径），见 §6.10；文件损坏 → 启动失败。
+
 ## 6. API
 
 `{id}` = device_id。
@@ -81,21 +83,33 @@ Content-Type: multipart/form-data，字段名 `file`。仅 WAV。超 max_asset_b
 
 ### 6.2 设备
 
-`POST /devices` 单台 `{ "device": { "enterprise":"demo","device_type":"A3","device_id":"sim_001","playing_mode":1 } }`  
-或批量 `{ "template_id":"default_a3","count":3,"id_prefix":"sim" }`。ID 冲突整批 409。  
+设备创建**必须引用配置树**（§6.10）：`environment` 填环境名，`enterprise` / `device_type` 填**简称**。设备体内出现 `enterprise` / `device_type` / `server` → **400**（同 write_queue_* 门禁）；引用的树节点不存在 → **404**。
+
+`POST /devices` 单台：
+
+```json
+{ "environment":"本地", "enterprise":"demo", "device_type":"A3",
+  "device": { "device_id":"sim_001", "playing_mode":1 } }
+```
+
+或批量 `{ "environment":"本地","enterprise":"demo","device_type":"A3","template_id":"default_a3","count":3,"id_prefix":"sim" }`。ID 冲突整批 409。
 201：`{ "device_ids":["sim_1"], "instances":[ { "device_id":"sim_1","instance_id":"ins_..." } ] }`。
 
-`GET /devices` → `{ "devices":[ { "device_id","instance_id","instance_state","connection_state","conn_generation","last_activity","playing_mode","last_error","enterprise","device_type" } ] }`。  
-`GET /devices/{id}` 单台 live。已从 live 摘除 → **404**。TTL 内旧 `instance_id` 的 events/turns/audio 见 §6.7–§6.8。
+创建时解析：`cfg.enterprise=厂商简称`、`cfg.device_type=类型简称`、`cfg.server.url=环境 url 代入占位符`，随后走与原来相同的全量校验。start（含批量）前按环境名**重解析 url**：环境 url 更新后，重启的设备用新地址；Running 中的连接不受扰动。
+
+`GET /devices` → `{ "devices":[ { "device_id","instance_id","instance_state","connection_state","conn_generation","last_activity","playing_mode","last_error","environment","enterprise","device_type" } ] }`。  
+`GET /devices/{id}` 单台 live。已从 live 摘除 → **404**。TTL 内旧 `instance_id` 的 events/turns/audio 见 §6.7–§6.8。`GET /devices/{id}/config` 同样带 `environment`；`server.url` 为解析结果，只读展示。
 
 ### 6.3 模板
 
 `POST /templates`
 
 ```json
-{ "template_id": "default_a3", "device": { "enterprise": "demo", "device_type": "A3", "playing_mode": 1,
+{ "template_id": "default_a3", "device": { "playing_mode": 1,
   "audio": { "format": "pcm", "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "slice_ms": 100, "max_payload_size": 51200 } } }
 ```
+
+模板只含设备级属性：`enterprise` / `device_type` / `server` 出现 → 400（挂靠由创建时的树引用决定）。
 
 禁止 device_id 与 write_queue_*。201 `{ "template_id": "default_a3" }`。文件 `configs/templates/{template_id}.yaml`。  
 `GET /templates`、`GET /templates/{template_id}`、`DELETE /templates/{template_id}`（204）。
@@ -272,15 +286,16 @@ Content-Type: application/json。body **必填** `instance_id`（必须等于当
 
 | 字段 | Created/Stopped | Starting/Running/Stopping | Ready `POST /report` |
 |------|-----------------|---------------------------|----------------------|
-| enterprise, device_type | 200 | 409 | — |
+| environment / enterprise / device_type（树引用，重新挂靠；可部分给出，缺省沿用当前；引用缺失 404） | 200 | 409 | — |
 | playing_mode | 200（写入配置，下次 start） | 409 | 唯一热更 |
 | audio.* | 200 | 409 | — |
-| server.url, uuid.*, action, firmware, nic_* | 200 | 409 | — |
+| uuid.*, action, firmware, nic_* | 200 | 409 | — |
 | downlink_ack.* | 200 | 409 | — |
 | behavior 超时/keepalive/report_sequence_start | 200 | 409 | — |
 | auto_register / auto_report（省略或 true） | 200 | 409 | — |
 | auto_register / auto_report = false | **400** | **400** | — |
 | recording.* | 200 | 200 | — |
+| server | **400**（url 由环境派生，不可直设） | **400** | — |
 | write_queue_depth / write_drain_timeout_sec / device_id | 400 | 400 | — |
 
 ### 6.9 Scenario
@@ -309,6 +324,43 @@ Content-Type: application/json。body **必填** `instance_id`（必须等于当
 `GET /scenarios/runs/{run_id}`：`{ "run_id","status":"running|succeeded|failed","steps":[ { "index","status","instance_id","conn_generation","turn_id","seq_before","error" } ] }`。
 
 `batch_start` 默认 wait_ready。assert / wait 必须带 `after_event_seq`（通常 `$prev.seq_before`）。省略游标会从 oldest 回放，不要依赖「只等未来」。
+
+### 6.10 配置树 /registry
+
+层级：**环境 → 厂商（enterprise）→ 设备类型**；设备（§6.2）挂在类型下。落盘 `configs/registry.yaml`（临时文件 + rename 原子写，每次变更即写），Manager 重启保留。
+
+```yaml
+environments:
+  - name: 本地                  # 键，唯一，创建后不可改
+    url: ws://127.0.0.1:8089/   # 可含占位符
+    enterprises:
+      - name: 演示厂商
+        short_name: demo        # 键，环境内唯一，不可改；wire enterprise / url 占位符值
+        device_types:
+          - name: A3 音箱
+            short_name: A3      # 键，厂商内唯一，不可改；wire device_type 值
+```
+
+- 厂商与设备类型都有**名称 + 简称**：名称只做展示；**协议上线值与 url 占位符代入值都是简称**。设备只有名称（device_id）。
+- url 占位符仅允许 `{enterprise}`（厂商简称）、`{device_type}`（类型简称）、`{device_id}`；其余 `{...}` → 400。代入后必须是合法 `ws://` / `wss://`。
+- 键校验：环境名与两级简称走 device_id 同款路径校验（不得含 `/ \ ..` 等）；device_type 简称不得 `MH` 前缀。名称仅要求非空。
+
+| 方法 | 路径 | body | 状态 |
+|------|------|------|------|
+| GET | /registry | — | 200 整棵树 |
+| POST | /registry/environments | `{name,url}` | 201；重名 409；非法 400 |
+| PUT | /registry/environments/{env} | `{url}` | 200；Running 设备不受扰动，下次 start 生效 |
+| DELETE | /registry/environments/{env} | — | 204；有厂商或被设备引用 409 |
+| POST | /registry/environments/{env}/enterprises | `{name,short_name}` | 201 |
+| PUT | .../enterprises/{short} | `{name}` | 200 |
+| DELETE | .../enterprises/{short} | — | 204；有类型或被设备引用 409 |
+| POST | .../enterprises/{short}/device_types | `{name,short_name}` | 201 |
+| PUT | .../device_types/{short} | `{name}` | 200 |
+| DELETE | .../device_types/{short} | — | 204；被设备引用 409 |
+
+父节点不存在 → 404。键不可改：改键 = 删掉重建（有引用删不掉）。删除守卫覆盖所有 live 设备（含 Created/Stopped）；tombstone 不算引用。
+
+锁序：`manager_mu` → `registry_mu`（叶子锁）。节点删除的引用检查与设备创建/挂靠的解析都在 `manager_mu` 临界区内，保证互斥。
 
 ## 7. ACK
 
@@ -362,3 +414,5 @@ A/B/C：同一 **device_type** 且 DownlinkAck=true；三台不同 ID；status=1
 - [ ] 单一队列：数据 `len >= depth-1` 拒绝；Stage=3 `len >= depth` 拒绝；`depth >= 2`。无「其它 uuid 占用控制槽」第三条规则。`/interrupt` 在 backpressure 时仍 200 且有 `stage3_backpressure` 事件
 - [ ] `POST /devices/{id}/speak` 与 `POST /scenarios/run` 存在；超 max_stream_* 或 fmt 不符 → 400
 - [ ] Created stop/delete、join-wait、游标 0/oldest-1/oldest-2 仍通过
+- [ ] registry：CRUD 落盘重启保留；重名 409；父缺失 404；未知占位符/非法简称 400；删除有子节点或被引用 409
+- [ ] 设备树引用：device 体带 enterprise/device_type/server → 400；引用缺失 → 404；config 的 server.url 是占位符代入结果；环境 url 更新后重启用新地址；PUT 重新挂靠 Running → 409

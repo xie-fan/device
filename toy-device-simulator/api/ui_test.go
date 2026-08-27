@@ -78,7 +78,7 @@ func TestUIIndexAndAssets(t *testing.T) {
 
 func TestUIDoesNotShadowPhase2API(t *testing.T) {
 	e := newEnv(t)
-	code, body := e.post(t, "/devices", map[string]any{"device": e.deviceBody("sim_ui_1")})
+	code, body := e.post(t, "/devices", e.createBody(e.deviceBody("sim_ui_1")))
 	if code != http.StatusCreated {
 		t.Fatalf("POST /devices 应 201，得到 %d body=%s", code, body)
 	}

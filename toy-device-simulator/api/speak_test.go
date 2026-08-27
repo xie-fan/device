@@ -119,7 +119,7 @@ func TestSpeakAndWaitDefaultBudgetFollowsIdleNotHardcoded30s(t *testing.T) {
 	beh["non_audio_followup_sec"] = 0
 	beh["post_final_asr_silence_sec"] = 0
 	beh["wait_timeout_slack_sec"] = 0
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}

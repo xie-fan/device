@@ -14,7 +14,7 @@ go run ./cmd/speak
 go run ./cmd/manager --config configs/manager.yaml
 ```
 
-Manager 默认监听 `127.0.0.1:8090`。浏览器打开 `http://127.0.0.1:8090/` 即调试台。`POST /devices` 可用。模板目录若要用仓库内文件，加 `--templates configs/templates`。
+Manager 默认监听 `127.0.0.1:8090`。浏览器打开 `http://127.0.0.1:8090/` 即调试台。`POST /devices` 可用（引用配置树：环境 → 厂商 → 设备类型，见 `docs/toy-device-simulator/phase2.md` §6.10；树落盘 `configs/registry.yaml`，`--registry` 可改）。模板目录若要用仓库内文件，加 `--templates configs/templates`。
 
 ## 契约入口
 

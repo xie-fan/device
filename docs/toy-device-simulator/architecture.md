@@ -631,29 +631,34 @@ binary：`'4'`+28 字节。json：`'1'` + `.../downlink-ack/server`。
 
 A/B/C：同一 **device_type** 且 DownlinkAck=true；三台不同 ID；status=1；TTS≥2 片。A=binary/0，B=binary/500，C=json/500。
 
-### 4.11 PUT allowlist
+### 4.11 PUT allowlist 与配置树
+
+Phase 2 设备身份来自**配置树**（环境 → 厂商 → 设备类型，见 phase2.md §6.10）：厂商/类型有名称与简称，wire 上的 `enterprise` / `device_type` 与环境 url 占位符代入值都是**简称**；`server.url` 由环境 url 代入 `{enterprise}` / `{device_type}` / `{device_id}` 派生，start 前按环境名重解析。设备体（创建、模板、PUT）出现 `enterprise` / `device_type` / `server` → 400。
 
 `device_id` 创建后不可变（出现在 PUT body → 400）。Phase 2 设备配置禁止 `write_queue_depth` / `write_drain_timeout_sec`（400；这两项只在 Manager YAML）。
 
 | 字段 | Created/Stopped PUT | Starting/Running/Stopping PUT | Ready `POST /report` |
 |------|---------------------|-------------------------------|----------------------|
-| enterprise, device_type | 200 | **409** | — |
+| environment / enterprise / device_type（树引用，重新挂靠；引用缺失 404） | 200 | **409** | — |
 | playing_mode | 200（只写入配置，供下次 start） | **409** | **唯一热更路径** |
 | audio.*（format/rate/channels/sample_format/slice_ms/max_payload） | 200 | **409** | — |
-| server.url, uuid.*, action, firmware, nic_* | 200 | **409** | — |
+| uuid.*, action, firmware, nic_* | 200 | **409** | — |
 | downlink_ack.* | 200 | **409** | — |
 | behavior 超时 / keepalive / report_sequence_start | 200 | **409** | — |
 | auto_register / auto_report（省略或 true） | 200 | **409** | — |
 | auto_register / auto_report = false | **400** | **400** | — |
 | recording.* | 200 | 200 | — |
+| server | **400**（url 由环境派生） | **400** | — |
 | write_queue_depth / write_drain_timeout_sec | **400** | **400** | — |
 | device_id | **400** | **400** | — |
 
 PUT `playing_mode` 在 Running/Ready **不得** 200。热更必须 report，且仅 Ready。
 
+Phase 1 CLI（cmd/speak）仍用单机平铺 YAML，不走配置树。
+
 ### 4.12 锁、代际、finalizer、Created
 
-锁顺序：`manager_mu` → `device_mu` → `conn_mu` → `report_mu`。Phase A 与 CancelTurn 可在持 conn 时取 `writePump_mu`。泵协程不得取 manager/device/conn。持实例锁禁止 drain、关 socket、wait `finalize_done`、调用 `request_finalize`、唤醒 waiter。
+锁顺序：`manager_mu` → `device_mu` → `conn_mu` → `report_mu`。`registry_mu` 是 `manager_mu` 之后的叶子锁（registry 不回调 manager/设备）；配置树节点删除的引用检查与设备创建/挂靠的解析都在 `manager_mu` 临界区内。Phase A 与 CancelTurn 可在持 conn 时取 `writePump_mu`。泵协程不得取 manager/device/conn。持实例锁禁止 drain、关 socket、wait `finalize_done`、调用 `request_finalize`、唤醒 waiter。
 
 **start：** 仅 Created 或 Stopped，否则 409 且不 TryAcquire。Acquire 失败 429。成功：`conn_generation++`、`permit_held=true`、Starting、**新 writePump**、`finalize_started/committed=false`、新 `finalize_done`、清空 pending 与 early_downlink、`uplink_frozen=false`。槽非空不得 start。
 
@@ -743,7 +748,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 
 ## 9. 目录
 
-`protocol/` `core/` `cmd/speak|check|fixture|manager/` `api/` `ui/` `configs/example_device.yaml` `configs/manager.yaml` `configs/templates/` `testdata/` `data/assets/`
+`protocol/` `core/` `manager/` `cmd/speak|check|fixture|manager/` `api/` `ui/` `configs/example_device.yaml` `configs/manager.yaml` `configs/registry.yaml` `configs/templates/` `testdata/` `data/assets/`
 
 ## 10. 对齐基线
 

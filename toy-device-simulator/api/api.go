@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,10 +14,12 @@ import (
 
 // Options 测试与进程入口共用。
 type Options struct {
-	Config         manager.Config
-	Dial           core.DialFunc
-	TemplatesDir   string
-	RecordingsDir  string
+	Config        manager.Config
+	Dial          core.DialFunc
+	TemplatesDir  string
+	RecordingsDir string
+	// RegistryPath 配置树落盘路径；空则 configs/registry.yaml。
+	RegistryPath   string
 	AfterAssetStat func()
 	// TTL 测试覆盖 event log / 录音目录的过期时间；0 则用 Config.EventLogTTLHours。
 	TTL time.Duration
@@ -25,6 +28,7 @@ type Options struct {
 type Server struct {
 	opts Options
 	mux  *http.ServeMux
+	reg  *manager.Registry
 
 	mu        sync.Mutex
 	devices   map[string]*managedDevice
@@ -37,9 +41,18 @@ type Server struct {
 	assets  map[string]*assetObj
 }
 
-func New(opts Options) http.Handler {
+func New(opts Options) (http.Handler, error) {
+	regPath := opts.RegistryPath
+	if regPath == "" {
+		regPath = filepath.Join("configs", "registry.yaml")
+	}
+	reg, err := manager.LoadRegistry(regPath)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		opts:    opts,
+		reg:     reg,
 		devices: map[string]*managedDevice{},
 		tombs:   map[string]*tombstone{},
 		assets:  map[string]*assetObj{},
@@ -90,8 +103,19 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("POST /scenarios/run", s.handleScenarioRun)
 	mux.HandleFunc("GET /scenarios/runs/{id}", s.handleScenarioGet)
 
+	mux.HandleFunc("GET /registry", s.handleGetRegistry)
+	mux.HandleFunc("POST /registry/environments", s.handlePostEnvironment)
+	mux.HandleFunc("PUT /registry/environments/{env}", s.handlePutEnvironment)
+	mux.HandleFunc("DELETE /registry/environments/{env}", s.handleDeleteEnvironment)
+	mux.HandleFunc("POST /registry/environments/{env}/enterprises", s.handlePostEnterprise)
+	mux.HandleFunc("PUT /registry/environments/{env}/enterprises/{short}", s.handlePutEnterprise)
+	mux.HandleFunc("DELETE /registry/environments/{env}/enterprises/{short}", s.handleDeleteEnterprise)
+	mux.HandleFunc("POST /registry/environments/{env}/enterprises/{short}/device_types", s.handlePostDeviceType)
+	mux.HandleFunc("PUT /registry/environments/{env}/enterprises/{short}/device_types/{tshort}", s.handlePutDeviceType)
+	mux.HandleFunc("DELETE /registry/environments/{env}/enterprises/{short}/device_types/{tshort}", s.handleDeleteDeviceType)
+
 	s.mountUI()
-	return s
+	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

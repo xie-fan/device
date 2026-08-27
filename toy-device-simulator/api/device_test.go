@@ -11,7 +11,7 @@ import (
 
 func TestPostDeviceReturns201InstanceID(t *testing.T) {
 	e := newEnv(t)
-	code, body := e.post(t, "/devices", map[string]any{"device": e.deviceBody("sim_001")})
+	code, body := e.post(t, "/devices", e.createBody(e.deviceBody("sim_001")))
 	if code != http.StatusCreated {
 		t.Fatalf("POST /devices 应 201，得到 %d body=%s", code, body)
 	}
@@ -36,6 +36,9 @@ func TestPostDevicesBatchIDConflict409WholeBatch(t *testing.T) {
 	}
 	e.createDevice(t, "sim_cf_1")
 	code, body = e.post(t, "/devices", map[string]any{
+		"environment": "local",
+		"enterprise":  "demo",
+		"device_type": "A3",
 		"template_id": "default_a3",
 		"count":       2,
 		"id_prefix":   "sim_cf",
@@ -58,6 +61,9 @@ func TestPostDevicesBatchIDPrefixUsesUnderscore(t *testing.T) {
 		t.Fatalf("POST /templates 应 201，得到 %d body=%s", code, body)
 	}
 	code, body = e.post(t, "/devices", map[string]any{
+		"environment": "local",
+		"enterprise":  "demo",
+		"device_type": "A3",
 		"template_id": "default_a3",
 		"count":       1,
 		"id_prefix":   "sim",

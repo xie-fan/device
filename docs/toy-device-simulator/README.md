@@ -9,7 +9,9 @@
 未落地：Phase 4 speak backlog。  
 阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需（speak backlog ≠ outbound buffer）。
 
-在 `toy-device-simulator/` 下启动 Manager：`go run ./cmd/manager --config configs/manager.yaml`（默认 `127.0.0.1:8090`）。`POST /devices` 可用。
+设备身份走配置树（环境 → 厂商 → 设备类型 → 设备，`/registry`，落盘 `configs/registry.yaml`）：厂商/类型有名称与简称，wire 值与环境 url 占位符都用简称；设备创建引用树路径，不再平铺身份字段（phase2.md §6.10）。Phase 1 CLI 仍用单机平铺 YAML。
+
+在 `toy-device-simulator/` 下启动 Manager：`go run ./cmd/manager --config configs/manager.yaml`（默认 `127.0.0.1:8090`；`--registry` 可改树落盘路径）。`POST /devices` 可用。
 
 实现前须对声明的基线提交做 PCM/TTS 冒烟（不要混入该仓库未提交改动），并从 `AudioHeader` 生成 golden。基线见 `architecture.md` §10。
 

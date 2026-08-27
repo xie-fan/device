@@ -27,6 +27,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, "conn_permit")
 		return
 	}
+	s.refreshServerURLLocked(d)
 	d.gen++
 	d.state = stStarting
 	d.lastError = ""
@@ -46,6 +47,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		"instance_id":     ins,
 		"conn_generation": gen,
 	})
+}
+
+// refreshServerURLLocked 启动前按环境重解析 url：环境 url 更新后重启生效。
+// 删除有引用守卫，解析理论上不会失败；防御性保留旧值。调用方须持 s.mu。
+func (s *Server) refreshServerURLLocked(d *managedDevice) {
+	if u, err := s.reg.Resolve(d.envName, d.cfg.Enterprise, d.cfg.DeviceType, d.id); err == nil {
+		d.cfg.Server.URL = u
+	}
 }
 
 func (s *Server) spawnInstance(d *managedDevice) *core.DeviceInstance {
@@ -383,6 +392,7 @@ func (s *Server) startOne(id string) (code int, ins string, gen int, errMsg stri
 		s.mu.Unlock()
 		return http.StatusTooManyRequests, d.instanceID, d.gen, "conn_permit"
 	}
+	s.refreshServerURLLocked(d)
 	d.gen++
 	d.state = stStarting
 	d.permitHeld = true

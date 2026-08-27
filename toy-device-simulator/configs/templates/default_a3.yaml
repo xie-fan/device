@@ -1,6 +1,5 @@
+# 模板只含设备级属性；enterprise/device_type/server 由创建时的树引用派生。
 device:
-  enterprise: "demo"
-  device_type: "A3"
   action: "chatbot"
   firmware_version: "1.0.0"
   nic_type: "wifi"
@@ -29,7 +28,6 @@ device:
     expect_downlink_need_ack: false
     downlink_ack: { mode: binary, sleep_ms: 0, code: 0 }
   uuid: { min: 1, max: 2147483647 }
-  server: { url: "ws://127.0.0.1:8089/" }
   recording:
     enable_frame_log: true
     save_uplink_audio: true

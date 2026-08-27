@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -32,8 +33,10 @@ type testEnv struct {
 	cfg       manager.Config
 	templates string
 	recDir    string
+	registry  string
 	mu        sync.Mutex
 	conns     map[string]*fakeConn
+	dialURLs  map[string]string
 	auto      autoOpts
 	afterStat func()
 }
@@ -59,6 +62,7 @@ func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *tes
 		t:         t,
 		templates: t.TempDir(),
 		recDir:    t.TempDir(),
+		registry:  filepath.Join(t.TempDir(), "registry.yaml"),
 		conns:     map[string]*fakeConn{},
 		client:    &http.Client{Timeout: 8 * time.Second},
 		cfg: manager.Config{
@@ -84,11 +88,20 @@ func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *tes
 	if e.cfg.AssetsRoot == "" {
 		e.cfg.AssetsRoot = t.TempDir()
 	}
-	h := New(Options{
+	e.start(t, ttl)
+	e.seedRegistry(t)
+	return e
+}
+
+// start 用当前 Options 建 Server；restart 复用同一 registry 路径验证落盘。
+func (e *testEnv) start(t *testing.T, ttl time.Duration) {
+	t.Helper()
+	h, err := New(Options{
 		Config:        e.cfg,
 		Dial:          e.dial,
 		TemplatesDir:  e.templates,
 		RecordingsDir: e.recDir,
+		RegistryPath:  e.registry,
 		TTL:           ttl,
 		AfterAssetStat: func() {
 			if e.afterStat != nil {
@@ -96,6 +109,9 @@ func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *tes
 			}
 		},
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(func() {
 		if c, ok := h.(interface{ Close() error }); ok {
@@ -103,10 +119,29 @@ func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *tes
 		}
 		e.srv.Close()
 	})
-	return e
 }
 
-func (e *testEnv) dial(_ string, h http.Header) (core.Conn, error) {
+// seedRegistry 预置 本地 环境 + demo 厂商 + A3 类型，供 createDevice 引用。
+func (e *testEnv) seedRegistry(t *testing.T) {
+	t.Helper()
+	if code, body := e.post(t, "/registry/environments", map[string]any{
+		"name": "local", "url": "ws://127.0.0.1:1/",
+	}); code != http.StatusCreated {
+		t.Fatalf("seed env 应 201，得到 %d body=%s", code, body)
+	}
+	if code, body := e.post(t, "/registry/environments/local/enterprises", map[string]any{
+		"name": "演示厂商", "short_name": "demo",
+	}); code != http.StatusCreated {
+		t.Fatalf("seed enterprise 应 201，得到 %d body=%s", code, body)
+	}
+	if code, body := e.post(t, "/registry/environments/local/enterprises/demo/device_types", map[string]any{
+		"name": "A3 音箱", "short_name": "A3",
+	}); code != http.StatusCreated {
+		t.Fatalf("seed device_type 应 201，得到 %d body=%s", code, body)
+	}
+}
+
+func (e *testEnv) dial(url string, h http.Header) (core.Conn, error) {
 	c := newFakeConn()
 	if e.auto.hold {
 		c.writeGate = make(chan struct{})
@@ -115,8 +150,18 @@ func (e *testEnv) dial(_ string, h http.Header) (core.Conn, error) {
 	id := deviceIDFromHeader(h.Get("Device"))
 	e.mu.Lock()
 	e.conns[id] = c
+	if e.dialURLs == nil {
+		e.dialURLs = map[string]string{}
+	}
+	e.dialURLs[id] = url
 	e.mu.Unlock()
 	return c, nil
+}
+
+func (e *testEnv) dialURL(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dialURLs[id]
 }
 
 func (e *testEnv) conn(id string) *fakeConn {
@@ -281,10 +326,9 @@ func (e *testEnv) postAsset(t *testing.T, filename string, data []byte) (int, []
 	return resp.StatusCode, b
 }
 
+// deviceBody 只含设备级属性：enterprise/device_type/server 由树引用派生。
 func (e *testEnv) deviceBody(id string) map[string]any {
 	return map[string]any{
-		"enterprise":       "demo",
-		"device_type":      "A3",
 		"device_id":        id,
 		"action":           "chatbot",
 		"playing_mode":     1,
@@ -307,14 +351,23 @@ func (e *testEnv) deviceBody(id string) map[string]any {
 			"downlink_ack":           map[string]any{"mode": "binary", "sleep_ms": 0, "code": 0},
 		},
 		"uuid":      map[string]any{"min": 1, "max": 2147483647},
-		"server":    map[string]any{"url": "ws://127.0.0.1:1/"},
 		"recording": map[string]any{"enable_frame_log": true, "save_uplink_audio": true, "save_downlink_audio": true, "output_dir": e.recDir},
+	}
+}
+
+// createBody 给设备体包上 seed 的树引用（local/demo/A3）。
+func (e *testEnv) createBody(dev map[string]any) map[string]any {
+	return map[string]any{
+		"environment": "local",
+		"enterprise":  "demo",
+		"device_type": "A3",
+		"device":      dev,
 	}
 }
 
 func (e *testEnv) createDevice(t *testing.T, id string) (instanceID string) {
 	t.Helper()
-	code, body := e.post(t, "/devices", map[string]any{"device": e.deviceBody(id)})
+	code, body := e.post(t, "/devices", e.createBody(e.deviceBody(id)))
 	if code != http.StatusCreated {
 		t.Fatalf("POST /devices 应 201，得到 %d body=%s", code, body)
 	}

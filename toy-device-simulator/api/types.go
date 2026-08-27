@@ -18,6 +18,7 @@ const (
 type managedDevice struct {
 	id           string
 	instanceID   string
+	envName      string // 配置树环境名；enterprise/device_type 简称在 cfg 里
 	cfg          config.Device
 	state        string
 	gen          int
@@ -112,6 +113,7 @@ func deviceView(d *managedDevice) map[string]any {
 		"last_activity":    d.lastActivity.UTC().Format(time.RFC3339Nano),
 		"playing_mode":     d.playingMode,
 		"last_error":       d.lastError,
+		"environment":      d.envName,
 		"enterprise":       d.cfg.Enterprise,
 		"device_type":      d.cfg.DeviceType,
 	}

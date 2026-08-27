@@ -21,8 +21,11 @@
     assetId: null,
     wavName: "",
     templates: [],
+    registry: [],
+    regSel: { env: "", ent: "", typ: "" },
     busy: false,
     deleteArmed: false,
+    filterEnv: "",
     filterEnterprise: "",
     filterType: "",
     rosterQ: "",
@@ -231,14 +234,89 @@
   function filteredDevices() {
     const q = state.rosterQ;
     return state.devices.filter((d) => {
+      if (state.filterEnv && (d.environment || "") !== state.filterEnv) return false;
       if (state.filterEnterprise && (d.enterprise || "") !== state.filterEnterprise) return false;
       if (state.filterType && (d.device_type || "") !== state.filterType) return false;
       if (q) {
-        const hay = [d.device_id, d.enterprise, d.device_type, d.instance_id].join(" ").toLowerCase();
+        const hay = [d.device_id, d.environment, d.enterprise, d.device_type, d.instance_id].join(" ").toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
+  }
+
+  // ——— 配置树（环境 → 厂商 → 设备类型） ———
+
+  function regEnv() {
+    return state.registry.find((e) => e.name === state.regSel.env) || null;
+  }
+
+  function regEnts() {
+    const env = regEnv();
+    return (env && env.enterprises) || [];
+  }
+
+  function regEnt() {
+    return regEnts().find((x) => x.short_name === state.regSel.ent) || null;
+  }
+
+  function regTypes() {
+    const ent = regEnt();
+    return (ent && ent.device_types) || [];
+  }
+
+  async function loadRegistry() {
+    try {
+      const data = await api("GET", "/registry");
+      state.registry = data.environments || [];
+    } catch {
+      state.registry = [];
+    }
+    // 选中项失效则回落到第一项，保证三选级联始终指向真实节点。
+    if (!regEnv()) state.regSel.env = state.registry[0] ? state.registry[0].name : "";
+    if (!regEnt()) state.regSel.ent = regEnts()[0] ? regEnts()[0].short_name : "";
+    if (!regTypes().some((x) => x.short_name === state.regSel.typ)) {
+      state.regSel.typ = regTypes()[0] ? regTypes()[0].short_name : "";
+    }
+    renderAttach();
+    renderConfigForm();
+  }
+
+  function optionsHTML(rows, value, label) {
+    return rows.map((r) => `<option value="${esc(value(r))}">${esc(label(r))}</option>`).join("");
+  }
+
+  function renderAttach() {
+    const selEnv = $("sel-env");
+    if (!selEnv) return;
+    const selEnt = $("sel-ent");
+    const selTyp = $("sel-typ");
+    selEnv.innerHTML = state.registry.length
+      ? optionsHTML(state.registry, (r) => r.name, (r) => `${r.name} · ${r.url}`)
+      : `<option value="">（先添加环境）</option>`;
+    selEnv.value = state.regSel.env;
+    const ents = regEnts();
+    selEnt.innerHTML = ents.length
+      ? optionsHTML(ents, (r) => r.short_name, (r) => `${r.name}（${r.short_name}）`)
+      : `<option value="">（先添加厂商）</option>`;
+    selEnt.value = state.regSel.ent;
+    const typs = regTypes();
+    selTyp.innerHTML = typs.length
+      ? optionsHTML(typs, (r) => r.short_name, (r) => `${r.name}（${r.short_name}）`)
+      : `<option value="">（先添加类型）</option>`;
+    selTyp.value = state.regSel.typ;
+    const hint = $("attach-hint");
+    const missing = !state.regSel.env || !state.regSel.ent || !state.regSel.typ;
+    hint.hidden = !missing;
+    if (missing) setText(hint, "挂靠不完整：环境 / 厂商 / 设备类型三级都选好才能创建设备。");
+  }
+
+  function attachRefs() {
+    return {
+      environment: state.regSel.env,
+      enterprise: state.regSel.ent,
+      device_type: state.regSel.typ,
+    };
   }
 
   async function loadTemplates() {
@@ -277,19 +355,32 @@
   }
 
   function renderFilters() {
+    const envSel = $("filter-env");
     const entSel = $("filter-enterprise");
     const typeSel = $("filter-type");
-    if (!entSel || !typeSel) return;
-    const enterprises = uniqueSorted(state.devices.map((d) => d.enterprise));
-    const typeSrc = state.filterEnterprise
-      ? state.devices.filter((d) => (d.enterprise || "") === state.filterEnterprise)
+    if (!envSel || !entSel || !typeSel) return;
+    const envs = uniqueSorted(state.devices.map((d) => d.environment));
+    if (state.filterEnv && !envs.includes(state.filterEnv)) state.filterEnv = "";
+    const entSrc = state.filterEnv
+      ? state.devices.filter((d) => (d.environment || "") === state.filterEnv)
       : state.devices;
+    const enterprises = uniqueSorted(entSrc.map((d) => d.enterprise));
+    if (state.filterEnterprise && !enterprises.includes(state.filterEnterprise)) state.filterEnterprise = "";
+    const typeSrc = state.filterEnterprise
+      ? entSrc.filter((d) => (d.enterprise || "") === state.filterEnterprise)
+      : entSrc;
     const types = uniqueSorted(typeSrc.map((d) => d.device_type));
     if (state.filterType && !types.includes(state.filterType)) state.filterType = "";
+    const envHTML = `<option value="">全部环境</option>` +
+      envs.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
     const entHTML = `<option value="">全部厂商</option>` +
       enterprises.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
     const typeHTML = `<option value="">全部类型</option>` +
       types.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    if (envSel.dataset.sig !== envHTML) {
+      envSel.innerHTML = envHTML;
+      envSel.dataset.sig = envHTML;
+    }
     if (entSel.dataset.sig !== entHTML) {
       entSel.innerHTML = entHTML;
       entSel.dataset.sig = entHTML;
@@ -298,6 +389,7 @@
       typeSel.innerHTML = typeHTML;
       typeSel.dataset.sig = typeHTML;
     }
+    if (document.activeElement !== envSel) envSel.value = state.filterEnv;
     if (document.activeElement !== entSel) entSel.value = state.filterEnterprise;
     if (document.activeElement !== typeSel) typeSel.value = state.filterType;
   }
@@ -322,7 +414,7 @@
       const err = d.last_error ? `<span class="stamp stamp--err" title="${esc(d.last_error)}">error</span>` : "";
       const st = String(d.instance_state || "created");
       const tip = [shortId(d.instance_id), fmtTime(d.last_activity)].filter(Boolean).join(" · ");
-      const meta = [d.enterprise, d.device_type].filter(Boolean).join(" · ");
+      const meta = [d.environment, d.enterprise, d.device_type].filter(Boolean).join(" · ");
       const seen = fmtHMS(d.last_activity);
       return `<li class="device${on ? " is-on" : ""}" data-id="${esc(d.device_id)}" title="${esc(tip)}">
         <span class="led led--${esc(st)}" aria-hidden="true"></span>
@@ -422,23 +514,49 @@
     const beh = cfg.behavior || {};
     const rec = cfg.recording || {};
     const uuid = cfg.uuid || {};
-    // 签名只由 state.config 与锁态决定，所以用户手打的值不会被事件流冲掉。
+    // 挂靠三选来自配置树；当前值可能已不在树上（节点被删不掉——有引用；
+    // 这里仍兜底把当前值补进选项，避免显示空白）。
+    const withCurrent = (rows, val, mk) => {
+      if (val && !rows.some((r) => mk(r) === val)) return rows.concat([{ __cur: val }]);
+      return rows;
+    };
+    const envRows = withCurrent(state.registry, cfg.environment || "", (r) => r.__cur || r.name);
+    const envOpts = envRows.map((r) => {
+      const v = r.__cur || r.name;
+      return `<option value="${esc(v)}"${v === (cfg.environment || "") ? " selected" : ""}>${esc(r.__cur ? v : `${r.name} · ${r.url}`)}</option>`;
+    }).join("");
+    const curEnv = state.registry.find((x) => x.name === (cfg.environment || ""));
+    const entRows = withCurrent((curEnv && curEnv.enterprises) || [], cfg.enterprise || "", (r) => r.__cur || r.short_name);
+    const entOpts = entRows.map((r) => {
+      const v = r.__cur || r.short_name;
+      return `<option value="${esc(v)}"${v === (cfg.enterprise || "") ? " selected" : ""}>${esc(r.__cur ? v : `${r.name}（${r.short_name}）`)}</option>`;
+    }).join("");
+    const curEnt = ((curEnv && curEnv.enterprises) || []).find((x) => x.short_name === (cfg.enterprise || ""));
+    const typRows = withCurrent((curEnt && curEnt.device_types) || [], cfg.device_type || "", (r) => r.__cur || r.short_name);
+    const typOpts = typRows.map((r) => {
+      const v = r.__cur || r.short_name;
+      return `<option value="${esc(v)}"${v === (cfg.device_type || "") ? " selected" : ""}>${esc(r.__cur ? v : `${r.name}（${r.short_name}）`)}</option>`;
+    }).join("");
+    // 签名只由 state.config、registry 与锁态决定，所以用户手打的值不会被事件流冲掉。
     const fresh = setHTML(form, `
       <fieldset ${lock ? "disabled" : ""}>
-        <legend>身份 / 音频 / 连接（仅 Created、Stopped）</legend>
+        <legend>挂靠 / 音频 / 身份（仅 Created、Stopped）</legend>
         <label>device_id（不可改）
           <input value="${esc(cfg.device_id)}" disabled>
         </label>
+        <label>环境<select name="environment" data-cascade="env">${envOpts}</select></label>
         <div class="split">
-          <label>enterprise<input name="enterprise" value="${esc(cfg.enterprise || "")}"></label>
-          <label>device_type<input name="device_type" value="${esc(cfg.device_type || "")}"></label>
+          <label>厂商<select name="enterprise" data-cascade="ent">${entOpts}</select></label>
+          <label>设备类型<select name="device_type">${typOpts}</select></label>
         </div>
         <div class="split">
           <label>firmware_version<input name="firmware_version" value="${esc(cfg.firmware_version || "")}"></label>
           <label>nic_type<input name="nic_type" value="${esc(cfg.nic_type || "")}"></label>
         </div>
         <label>nic_iccid<input name="nic_iccid" value="${esc(cfg.nic_iccid || "")}"></label>
-        <label>server.url<input name="server_url" value="${esc(server.url || "")}" spellcheck="false"></label>
+        <label>server.url（由环境派生，start 时重解析）
+          <input value="${esc(server.url || "")}" disabled>
+        </label>
         <div class="split">
           <label>playing_mode<input name="playing_mode" type="number" min="1" max="3" value="${esc(cfg.playing_mode ?? 1)}"></label>
           <label>sample_rate<input name="sample_rate" type="number" value="${esc(audio.sample_rate ?? 16000)}"></label>
@@ -483,6 +601,7 @@
     };
     if (!identityEditable()) return { recording: rec };
     return {
+      environment: fd.get("environment"),
       enterprise: fd.get("enterprise"),
       device_type: fd.get("device_type"),
       firmware_version: fd.get("firmware_version"),
@@ -497,7 +616,6 @@
         slice_ms: Number(fd.get("slice_ms")),
         max_payload_size: Number(fd.get("max_payload_size")),
       },
-      server: { url: fd.get("server_url") },
       uuid: { min: Number(fd.get("uuid_min")), max: Number(fd.get("uuid_max")) },
       behavior: {
         keepalive_interval_sec: Number(fd.get("keepalive_interval_sec")),
@@ -505,6 +623,27 @@
       },
       recording: rec,
     };
+  }
+
+  // 配置表单里换环境/厂商时就地重建下游选项（不整块重渲，保住手打的值）。
+  function updateConfigCascade(changed) {
+    const form = $("form-config");
+    const envSel = form.querySelector('[name="environment"]');
+    const entSel = form.querySelector('[name="enterprise"]');
+    const typSel = form.querySelector('[name="device_type"]');
+    if (!envSel || !entSel || !typSel) return;
+    const env = state.registry.find((x) => x.name === envSel.value);
+    if (changed === "env") {
+      const ents = (env && env.enterprises) || [];
+      entSel.innerHTML = ents.length
+        ? optionsHTML(ents, (r) => r.short_name, (r) => `${r.name}（${r.short_name}）`)
+        : `<option value="">（该环境下无厂商）</option>`;
+    }
+    const ent = ((env && env.enterprises) || []).find((x) => x.short_name === entSel.value);
+    const typs = (ent && ent.device_types) || [];
+    typSel.innerHTML = typs.length
+      ? optionsHTML(typs, (r) => r.short_name, (r) => `${r.name}（${r.short_name}）`)
+      : `<option value="">（该厂商下无类型）</option>`;
   }
 
   function downlinkHref(turnId) {
@@ -1098,10 +1237,9 @@
     }
   }
 
-  function defaultDevice(id, serverURL, extra) {
+  // 设备体只含设备级属性；enterprise/device_type/server 由树引用派生。
+  function defaultDevice(id, extra) {
     return {
-      enterprise: extra.enterprise || "demo",
-      device_type: extra.device_type || "A3",
       device_id: id,
       action: "chatbot",
       firmware_version: extra.firmware_version || "1.0.0",
@@ -1135,7 +1273,6 @@
         downlink_ack: { mode: "binary", sleep_ms: 0, code: 0 },
       },
       uuid: { min: 1, max: 2147483647 },
-      server: { url: serverURL },
       recording: {
         enable_frame_log: true,
         save_uplink_audio: true,
@@ -1145,16 +1282,25 @@
     };
   }
 
+  function requireAttach() {
+    const refs = attachRefs();
+    if (!refs.environment || !refs.enterprise || !refs.device_type) {
+      flash("先在上方选好 环境 / 厂商 / 设备类型", "err");
+      return null;
+    }
+    return refs;
+  }
+
   async function createDevice(ev) {
     ev.preventDefault();
-    const f = ev.currentTarget;
-    const fd = new FormData(f);
+    const refs = requireAttach();
+    if (!refs) return;
+    const fd = new FormData(ev.currentTarget);
     const id = String(fd.get("device_id") || "").trim();
     try {
       await api("POST", "/devices", {
-        device: defaultDevice(id, String(fd.get("server_url") || "").trim(), {
-          enterprise: String(fd.get("enterprise") || "").trim(),
-          device_type: String(fd.get("device_type") || "").trim(),
+        ...refs,
+        device: defaultDevice(id, {
           firmware_version: String(fd.get("firmware_version") || "").trim(),
           nic_type: String(fd.get("nic_type") || "").trim(),
           nic_iccid: String(fd.get("nic_iccid") || "").trim(),
@@ -1173,6 +1319,8 @@
 
   async function createFromTemplate(ev) {
     ev.preventDefault();
+    const refs = requireAttach();
+    if (!refs) return;
     const fd = new FormData(ev.currentTarget);
     const template_id = String(fd.get("template_id") || "");
     if (!template_id) {
@@ -1181,6 +1329,7 @@
     }
     try {
       const data = await api("POST", "/devices", {
+        ...refs,
         template_id,
         count: Number(fd.get("count")),
         id_prefix: String(fd.get("id_prefix") || "sim"),
@@ -1500,10 +1649,15 @@
       state.rosterQ = $("roster-q").value.trim().toLowerCase();
       renderRoster();
     }, 120));
+    $("filter-env").addEventListener("change", () => {
+      state.filterEnv = $("filter-env").value;
+      renderRoster();
+    });
     $("filter-enterprise").addEventListener("change", () => {
       state.filterEnterprise = $("filter-enterprise").value;
       renderRoster();
     });
+    bindAttach();
     $("filter-type").addEventListener("change", () => {
       state.filterType = $("filter-type").value;
       renderRoster();
@@ -1612,10 +1766,110 @@
     });
   }
 
+  // 挂靠区（新建面板）：三选级联 + 内联快速添加节点。
+  function bindAttach() {
+    $("sel-env").addEventListener("change", () => {
+      state.regSel.env = $("sel-env").value;
+      state.regSel.ent = regEnts()[0] ? regEnts()[0].short_name : "";
+      state.regSel.typ = regTypes()[0] ? regTypes()[0].short_name : "";
+      renderAttach();
+    });
+    $("sel-ent").addEventListener("change", () => {
+      state.regSel.ent = $("sel-ent").value;
+      state.regSel.typ = regTypes()[0] ? regTypes()[0].short_name : "";
+      renderAttach();
+    });
+    $("sel-typ").addEventListener("change", () => {
+      state.regSel.typ = $("sel-typ").value;
+      renderAttach();
+    });
+    const toggles = [
+      ["btn-add-env", "form-add-env"],
+      ["btn-add-ent", "form-add-ent"],
+      ["btn-add-typ", "form-add-typ"],
+    ];
+    for (const [btn, form] of toggles) {
+      $(btn).addEventListener("click", () => {
+        const f = $(form);
+        f.hidden = !f.hidden;
+        $(btn).setAttribute("aria-expanded", String(!f.hidden));
+        if (!f.hidden) f.querySelector("input").focus();
+      });
+    }
+    $("form-add-env").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fd = new FormData(ev.currentTarget);
+      const name = String(fd.get("name") || "").trim();
+      try {
+        await api("POST", "/registry/environments", { name, url: String(fd.get("url") || "").trim() });
+        state.regSel = { env: name, ent: "", typ: "" };
+        ev.target.reset();
+        $("form-add-env").hidden = true;
+        await loadRegistry();
+        flash("已添加环境 " + name, "ok");
+      } catch (err) {
+        flash(err.status + " " + err.message, "err");
+      }
+    });
+    $("form-add-ent").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (!state.regSel.env) {
+        flash("先选环境", "err");
+        return;
+      }
+      const fd = new FormData(ev.currentTarget);
+      const short = String(fd.get("short_name") || "").trim();
+      try {
+        await api("POST", `/registry/environments/${encodeURIComponent(state.regSel.env)}/enterprises`, {
+          name: String(fd.get("name") || "").trim(),
+          short_name: short,
+        });
+        state.regSel.ent = short;
+        state.regSel.typ = "";
+        ev.target.reset();
+        $("form-add-ent").hidden = true;
+        await loadRegistry();
+        flash("已添加厂商 " + short, "ok");
+      } catch (err) {
+        flash(err.status + " " + err.message, "err");
+      }
+    });
+    $("form-add-typ").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (!state.regSel.env || !state.regSel.ent) {
+        flash("先选环境与厂商", "err");
+        return;
+      }
+      const fd = new FormData(ev.currentTarget);
+      const short = String(fd.get("short_name") || "").trim();
+      try {
+        await api(
+          "POST",
+          `/registry/environments/${encodeURIComponent(state.regSel.env)}/enterprises/${encodeURIComponent(state.regSel.ent)}/device_types`,
+          { name: String(fd.get("name") || "").trim(), short_name: short },
+        );
+        state.regSel.typ = short;
+        ev.target.reset();
+        $("form-add-typ").hidden = true;
+        await loadRegistry();
+        flash("已添加类型 " + short, "ok");
+      } catch (err) {
+        flash(err.status + " " + err.message, "err");
+      }
+    });
+    // 配置表单的挂靠级联（事件委托：表单会被整块重渲）。
+    $("form-config").addEventListener("change", (ev) => {
+      const t = ev.target;
+      if (t && t.name === "environment") updateConfigCascade("env");
+      else if (t && t.name === "enterprise") updateConfigCascade("ent");
+    });
+  }
+
   async function init() {
     applyTheme(readTheme());
     bind();
     setFollow(true);
+    await loadRegistry();
     await loadTemplates();
     await loadSamples();
     try {

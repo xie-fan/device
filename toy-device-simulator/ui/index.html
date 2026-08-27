@@ -55,6 +55,11 @@
       </div>
       <input type="search" id="roster-q" class="roster-q" placeholder="搜索 device_id ⁄ 按 /" aria-label="搜索设备" autocomplete="off" spellcheck="false">
       <div class="roster-filters" id="roster-filters">
+        <label>环境
+          <select id="filter-env" aria-label="按环境筛选">
+            <option value="">全部环境</option>
+          </select>
+        </label>
         <label>厂商
           <select id="filter-enterprise" aria-label="按厂商筛选">
             <option value="">全部厂商</option>
@@ -70,21 +75,54 @@
       <p class="empty" id="roster-empty">还没有设备。底部新建后启动，再送 WAV。</p>
       <details class="create" id="create-box">
         <summary>新建</summary>
+        <!-- 挂靠：环境 → 厂商 → 设备类型（配置树，POST /registry/...）。
+             两张创建表单共用；server.url / enterprise / device_type 均由树派生。 -->
+        <div class="stack stack--tight" id="attach-box">
+          <div class="withadd">
+            <label>环境
+              <select id="sel-env" aria-label="选择环境"></select>
+            </label>
+            <button type="button" class="btn btn--ghost btn--sm" id="btn-add-env" aria-expanded="false" title="新增环境">＋</button>
+          </div>
+          <form id="form-add-env" class="stack stack--tight" hidden>
+            <label>环境名<input name="name" required autocomplete="off"></label>
+            <label>url（可含 {enterprise} 等占位符）
+              <input name="url" required value="ws://127.0.0.1:8089/" spellcheck="false">
+            </label>
+            <button type="submit" class="btn btn--sm">添加环境</button>
+          </form>
+          <div class="withadd">
+            <label>厂商
+              <select id="sel-ent" aria-label="选择厂商"></select>
+            </label>
+            <button type="button" class="btn btn--ghost btn--sm" id="btn-add-ent" aria-expanded="false" title="新增厂商">＋</button>
+          </div>
+          <form id="form-add-ent" class="stack stack--tight" hidden>
+            <div class="split">
+              <label>名称<input name="name" required autocomplete="off"></label>
+              <label>简称（wire 值）<input name="short_name" required autocomplete="off" spellcheck="false"></label>
+            </div>
+            <button type="submit" class="btn btn--sm">添加厂商</button>
+          </form>
+          <div class="withadd">
+            <label>设备类型
+              <select id="sel-typ" aria-label="选择设备类型"></select>
+            </label>
+            <button type="button" class="btn btn--ghost btn--sm" id="btn-add-typ" aria-expanded="false" title="新增设备类型">＋</button>
+          </div>
+          <form id="form-add-typ" class="stack stack--tight" hidden>
+            <div class="split">
+              <label>名称<input name="name" required autocomplete="off"></label>
+              <label>简称（wire 值）<input name="short_name" required autocomplete="off" spellcheck="false"></label>
+            </div>
+            <button type="submit" class="btn btn--sm">添加类型</button>
+          </form>
+          <p class="hint" id="attach-hint" hidden></p>
+        </div>
         <form id="form-create" class="stack">
           <label>device_id
             <input name="device_id" required autocomplete="off" value="sim_0001" maxlength="64">
           </label>
-          <label>server.url
-            <input name="server_url" required value="ws://127.0.0.1:8089/" spellcheck="false">
-          </label>
-          <div class="split">
-            <label>enterprise
-              <input name="enterprise" value="demo" required>
-            </label>
-            <label>device_type
-              <input name="device_type" value="A3" required>
-            </label>
-          </div>
           <label>firmware_version
             <input name="firmware_version" value="1.0.0">
           </label>
@@ -107,7 +145,7 @@
           <button type="submit" class="btn btn--primary">创建</button>
         </form>
         <form id="form-template" class="stack stack--tight">
-          <p class="hint">模板批量创建，ID 冲突整批失败。</p>
+          <p class="hint">模板批量创建（挂靠取上方三选），ID 冲突整批失败。</p>
           <label>模板
             <select name="template_id" id="template-select">
               <option value="">选择模板</option>

@@ -99,6 +99,15 @@ func TestTrackedConfigYAMLsHaveNoMHAndLoopbackOnly(t *testing.T) {
 		case base == "manager.yaml":
 			// manager.yaml 由 manager 包 LoadFile 校验，避免 config 测试 import 循环。
 			continue
+		case base == "registry.yaml":
+			// 配置树由 manager 包 LoadRegistry 校验（import 循环，不在这测）；
+			// 这里只做门禁：环境 url loopback、简称不带 MH 前缀。
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Errorf("%s: %v", rel, err)
+				continue
+			}
+			assertRegistryNoMHAndLoopback(t, rel, raw)
 		case strings.Contains(slash, "/templates/"):
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -113,14 +122,20 @@ func TestTrackedConfigYAMLsHaveNoMHAndLoopbackOnly(t *testing.T) {
 				t.Errorf("%s: 模板禁止 write_queue_*", rel)
 				continue
 			}
-			filled, err := fillTemplateDeviceID(raw, "sim_gate")
+			for _, k := range []string{"enterprise", "device_type", "server"} {
+				if yamlHasKey(raw, k) {
+					t.Errorf("%s: 模板禁止 %s（挂靠由配置树引用决定）", rel, k)
+				}
+			}
+			// 模拟运行时从配置树注入身份后再整体校验。
+			filled, err := fillTemplateIdentity(raw, "sim_gate")
 			if err != nil {
 				t.Errorf("%s: %v", rel, err)
 				continue
 			}
 			d, err := LoadPhase2(filled)
 			if err != nil {
-				t.Errorf("%s: 填 ID 后 LoadPhase2: %v", rel, err)
+				t.Errorf("%s: 注入身份后 LoadPhase2: %v", rel, err)
 				continue
 			}
 			assertNoMHAndLoopback(t, rel, d)
@@ -155,7 +170,7 @@ func assertNoMHAndLoopback(t *testing.T, rel string, d Device) {
 	}
 }
 
-func fillTemplateDeviceID(raw []byte, id string) ([]byte, error) {
+func fillTemplateIdentity(raw []byte, id string) ([]byte, error) {
 	var root map[string]any
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return nil, err
@@ -165,6 +180,9 @@ func fillTemplateDeviceID(raw []byte, id string) ([]byte, error) {
 		return nil, fmt.Errorf("缺 device")
 	}
 	dev["device_id"] = id
+	dev["enterprise"] = "demo"
+	dev["device_type"] = "A3"
+	dev["server"] = map[string]any{"url": "ws://127.0.0.1:1/"}
 	beh, _ := dev["behavior"].(map[string]any)
 	if beh == nil {
 		beh = map[string]any{}
@@ -173,6 +191,45 @@ func fillTemplateDeviceID(raw []byte, id string) ([]byte, error) {
 	beh["write_queue_depth"] = 256
 	beh["write_drain_timeout_sec"] = 2
 	return yaml.Marshal(root)
+}
+
+// assertRegistryNoMHAndLoopback 用轻量解析扫配置树门禁项。
+func assertRegistryNoMHAndLoopback(t *testing.T, rel string, raw []byte) {
+	t.Helper()
+	var tree struct {
+		Environments []struct {
+			Name        string `yaml:"name"`
+			URL         string `yaml:"url"`
+			Enterprises []struct {
+				ShortName   string `yaml:"short_name"`
+				DeviceTypes []struct {
+					ShortName string `yaml:"short_name"`
+				} `yaml:"device_types"`
+			} `yaml:"enterprises"`
+		} `yaml:"environments"`
+	}
+	if err := yaml.Unmarshal(raw, &tree); err != nil {
+		t.Errorf("%s: %v", rel, err)
+		return
+	}
+	for _, env := range tree.Environments {
+		u, err := url.Parse(env.URL)
+		if err != nil {
+			t.Errorf("%s: 环境 %s url 解析: %v", rel, env.Name, err)
+			continue
+		}
+		host := u.Hostname()
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+			t.Errorf("%s: 环境 %s url 必须是 loopback", rel, env.Name)
+		}
+		for _, ent := range env.Enterprises {
+			for _, typ := range ent.DeviceTypes {
+				if strings.HasPrefix(typ.ShortName, "MH") {
+					t.Errorf("%s: 类型简称 %s 不得以 MH 开头", rel, typ.ShortName)
+				}
+			}
+		}
+	}
 }
 
 func yamlHasKey(raw []byte, key string) bool {

@@ -100,7 +100,7 @@ func TestSpeakPermitReleasedOnTurnTerminal(t *testing.T) {
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
 	beh["first_reply_timeout_sec"] = 2
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -121,7 +121,24 @@ func TestSpeakPermitReleasedOnTurnTerminal(t *testing.T) {
 
 func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 	e := newEnv(t)
+	// PUT 的树引用重新挂靠要求 (env, ent, type) 三级都在树上。
+	if code, body := e.post(t, "/registry/environments/local/enterprises", map[string]any{
+		"name": "acme 厂", "short_name": "acme",
+	}); code != http.StatusCreated {
+		t.Fatalf("建 acme 厂商应 201，得到 %d %s", code, body)
+	}
+	if code, body := e.post(t, "/registry/environments/local/enterprises/acme/device_types", map[string]any{
+		"name": "A3 音箱", "short_name": "A3",
+	}); code != http.StatusCreated {
+		t.Fatalf("建 acme/A3 类型应 201，得到 %d %s", code, body)
+	}
 	e.createDevice(t, "sim_putw")
+	// server 已出 allowlist：url 由环境派生，直设 → 400。
+	if code, body := e.put(t, "/devices/sim_putw/config", map[string]any{
+		"server": map[string]any{"url": "ws://127.0.0.1:9/"},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("PUT server 应 400，得到 %d %s", code, body)
+	}
 	code, body := e.put(t, "/devices/sim_putw/config", map[string]any{
 		"enterprise":       "acme",
 		"device_type":      "A3",
@@ -131,7 +148,6 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 		"nic_type":         "4g",
 		"nic_iccid":        "89860000",
 		"audio":            map[string]any{"slice_ms": 50},
-		"server":           map[string]any{"url": "ws://127.0.0.1:9/"},
 		"uuid":             map[string]any{"min": 10, "max": 20},
 		"downlink_ack":     map[string]any{"mode": "json", "sleep_ms": 500, "code": 1},
 		"behavior":         map[string]any{"keepalive_interval_sec": 15, "first_reply_timeout_sec": 7},
@@ -148,6 +164,9 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 	if strField(m, "enterprise") != "acme" || intField(m, "playing_mode") != 2 {
 		t.Fatalf("enterprise/playing_mode 未写入: %s", gbody)
 	}
+	if strField(m, "environment") != "local" {
+		t.Fatalf("config 应含 environment: %s", gbody)
+	}
 	if strField(m, "firmware_version") != "9.9.9" || strField(m, "nic_type") != "4g" {
 		t.Fatalf("firmware/nic 未写入: %s", gbody)
 	}
@@ -156,8 +175,8 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 		t.Fatalf("audio.slice_ms 未写入: %s", gbody)
 	}
 	server, _ := m["server"].(map[string]any)
-	if strField(server, "url") != "ws://127.0.0.1:9/" {
-		t.Fatalf("server.url 未写入: %s", gbody)
+	if strField(server, "url") != "ws://127.0.0.1:1/" {
+		t.Fatalf("server.url 应为环境派生结果: %s", gbody)
 	}
 	uuid, _ := m["uuid"].(map[string]any)
 	if intField(uuid, "min") != 10 || intField(uuid, "max") != 20 {
@@ -219,7 +238,7 @@ func TestPOSTDeviceAutoRegisterFalse400(t *testing.T) {
 	dev := e.deviceBody("sim_arfp")
 	beh, _ := dev["behavior"].(map[string]any)
 	beh["auto_register"] = false
-	code, body := e.post(t, "/devices", map[string]any{"device": dev})
+	code, body := e.post(t, "/devices", e.createBody(dev))
 	if code != http.StatusBadRequest {
 		t.Fatalf("POST /devices auto_register=false 应 400，得到 %d %s", code, body)
 	}
@@ -278,7 +297,7 @@ func TestUplinkGETMatchesSentNotDouble(t *testing.T) {
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
 	beh["first_reply_timeout_sec"] = 2
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -413,7 +432,7 @@ func TestSpeakAndWaitBoundToOwnTurn(t *testing.T) {
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
 	beh["first_reply_timeout_sec"] = 2
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -501,7 +520,7 @@ func TestAsyncSpeakGETTurnHasTerminalFields(t *testing.T) {
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
 	beh["first_reply_timeout_sec"] = 2
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
@@ -538,7 +557,7 @@ func TestGETFramesUsesTurnOutputDirAfterPUT(t *testing.T) {
 	beh, _ := body["behavior"].(map[string]any)
 	beh["downlink_idle_timeout_sec"] = 1
 	beh["first_reply_timeout_sec"] = 2
-	code, raw := e.post(t, "/devices", map[string]any{"device": body})
+	code, raw := e.post(t, "/devices", e.createBody(body))
 	if code != http.StatusCreated {
 		t.Fatalf("create %d %s", code, raw)
 	}
