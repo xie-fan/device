@@ -112,7 +112,7 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	ins := d.instanceID
 	s.mu.Unlock()
 
-	turnID, uuid, seqBefore, err := inst.SpeakPermit(pcm, s.tryAcquireSpeak)
+	res, err := inst.SpeakPermit(pcm, s.tryAcquireSpeak)
 	if err != nil {
 		if errors.Is(err, core.ErrSpeakPermit) {
 			writeErr(w, http.StatusTooManyRequests, "speak_permit")
@@ -121,6 +121,7 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
+	turnID := res.TurnID
 
 	s.mu.Lock()
 	if dd, ok := s.devices[id]; ok {
@@ -130,17 +131,27 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 			dd.turns[turnID] = tr
 		}
 		tr.InstanceID = ins
-		tr.UplinkUUID = uuid
-		tr.SeqBefore = seqBefore
 		tr.SampleRate = sr
 		tr.Channels = ch
 		tr.OutputDir = inst.Config().Recording.OutputDir
+		if !res.Queued {
+			// 排队项的 uuid/seq_before 由 OnTurnStarted 出队时补。
+			tr.UplinkUUID = res.UUID
+			tr.SeqBefore = res.SeqBefore
+		}
 		dd.lastActivity = time.Now()
 	}
 	s.mu.Unlock()
 
 	resp := map[string]any{
-		"turn_id": turnID, "uplink_uuid": uuid, "seq_before": seqBefore, "instance_id": ins,
+		"turn_id": turnID, "instance_id": ins,
+	}
+	if res.Queued {
+		resp["queued"] = true
+		resp["queue_position"] = res.QueuePos
+	} else {
+		resp["uplink_uuid"] = res.UUID
+		resp["seq_before"] = res.SeqBefore
 	}
 	if !wait {
 		writeJSON(w, http.StatusAccepted, resp)

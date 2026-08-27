@@ -57,7 +57,7 @@ func TestSpeakPermitFailDoesNotOccupy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = d.SpeakPermit(pcm.Samples, func() bool { return false })
+	_, err = d.SpeakPermit(pcm.Samples, func() bool { return false })
 	if !errors.Is(err, ErrSpeakPermit) {
 		t.Fatalf("permit 失败应 ErrSpeakPermit，得到 %v", err)
 	}

@@ -132,6 +132,11 @@ func (d *DeviceInstance) phaseC() {
 		tn = d.terminalLocked(EndConnectionLost, "", uplinkIfEmpty, true)
 		acc = append(acc, eventNotifyOf(tn))
 	}
+	// Phase 4：收口清空 speak backlog，逐项作废并唤醒 waiter。
+	for _, q := range d.speakBacklog {
+		acc = append(acc, d.dropQueuedLocked(q, "finalize"))
+	}
+	d.speakBacklog = nil
 	d.connMu.Lock()
 	d.connState = ConnDisconnected
 	d.connMu.Unlock()

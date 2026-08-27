@@ -70,6 +70,9 @@ func (s *Server) spawnInstance(d *managedDevice) *core.DeviceInstance {
 		OnTurnTerminal: func(turnID string, ev core.Event) {
 			s.onTurnTerminal(id, turnID, ev)
 		},
+		OnTurnStarted: func(turnID string, uuid uint32, seqBefore int) {
+			s.onTurnStarted(id, turnID, uuid, seqBefore)
+		},
 		OnActivity: func() {
 			s.touchActivity(id)
 		},

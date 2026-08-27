@@ -10,14 +10,30 @@ import (
 	"toy-device-simulator/protocol"
 )
 
+// SpeakResult：Queued=true 时只有 TurnID / QueuePos 有效（uuid、seq 在出队执行时才产生）。
+type SpeakResult struct {
+	TurnID    string
+	UUID      uint32
+	SeqBefore int
+	Queued    bool
+	QueuePos  int
+}
+
+type queuedSpeak struct {
+	turnID     string
+	pcm        []byte
+	tryAcquire func() bool
+}
+
 func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err error) {
-	turnID, uuid, _, err = d.SpeakPermit(pcm, nil)
-	return turnID, uuid, err
+	res, err := d.SpeakPermit(pcm, nil)
+	return res.TurnID, res.UUID, err
 }
 
 // SpeakPermit occupy 成功后再 tryAcquire；seqBefore 在 occupy 成功之后取样。
 // tryAcquire 为 nil 时不占 speak_permit（Phase 1 CLI）。失败不得留下占用槽。
-func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (turnID string, uuid uint32, seqBefore int, err error) {
+// Phase 4：槽占用且 speak_backlog_depth>0 时入队（Queued=true），终态后自动出队。
+func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (SpeakResult, error) {
 	copied := append([]byte(nil), pcm...)
 
 	d.deviceMu.Lock()
@@ -26,19 +42,60 @@ func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (turnID
 	d.connMu.Unlock()
 	if d.finalizeStarted {
 		d.deviceMu.Unlock()
-		return "", 0, 0, fmt.Errorf("正在收口，不可 speak")
+		return SpeakResult{}, fmt.Errorf("正在收口，不可 speak")
 	}
 	if !Speakable(st, d.fault) {
 		d.deviceMu.Unlock()
-		return "", 0, 0, fmt.Errorf("当前连接状态不可 speak（conn=%v fault=%s）", st, d.fault)
+		return SpeakResult{}, fmt.Errorf("当前连接状态不可 speak（conn=%v fault=%s）", st, d.fault)
 	}
 	if d.slot.Occupied() {
+		depth := d.cfg.Behavior.SpeakBacklogDepth
+		if depth <= 0 {
+			d.deviceMu.Unlock()
+			return SpeakResult{}, ErrSlotOccupied
+		}
+		if len(d.speakBacklog) >= depth {
+			d.deviceMu.Unlock()
+			return SpeakResult{}, ErrBacklogFull
+		}
+		turnID := d.allocTurnIDLocked()
+		d.turnDone[turnID] = make(chan Event, 1)
+		d.speakBacklog = append(d.speakBacklog, queuedSpeak{turnID: turnID, pcm: copied, tryAcquire: tryAcquire})
+		pos := len(d.speakBacklog)
+		_, en := d.appendEventLocked("speak_queued", turnID, fmt.Sprintf("pos=%d", pos), "", "", "")
 		d.deviceMu.Unlock()
-		return "", 0, 0, ErrSlotOccupied
+		en.NotifyHTTP()
+		// 兜底：排队判定与 terminal 竞态时（dispatch 已跑完）自己再触发一次。
+		go d.dispatchBacklog()
+		return SpeakResult{TurnID: turnID, Queued: true, QueuePos: pos}, nil
 	}
 
+	turnID := d.allocTurnIDLocked()
+	uuid, seqBefore, launch, err := d.startTurnLocked(turnID, copied, tryAcquire)
+	if err != nil {
+		d.deviceMu.Unlock()
+		return SpeakResult{}, err
+	}
+	d.deviceMu.Unlock()
+	launch()
+	return SpeakResult{TurnID: turnID, UUID: uuid, SeqBefore: seqBefore}, nil
+}
+
+// allocTurnIDLocked 纳秒时间戳 + 防撞（同纳秒连续分配时）。
+func (d *DeviceInstance) allocTurnIDLocked() string {
+	id := fmt.Sprintf("turn_%d", time.Now().UnixNano())
+	for {
+		if _, exists := d.turnDone[id]; !exists {
+			return id
+		}
+		id += "x"
+	}
+}
+
+// startTurnLocked 占槽并构造 turnRuntime；调用方必须持 deviceMu 且已确认槽空闲。
+// 返回的 launch 必须在解锁后调用（建录音文件、起上行协程）。失败不留占用槽。
+func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, tryAcquire func() bool) (uuid uint32, seqBefore int, launch func(), err error) {
 	uuid = d.allocUUIDLocked()
-	turnID = fmt.Sprintf("turn_%d", time.Now().UnixNano())
 	var framesPath, upPath, downPath, turnPath string
 	if d.phase2Recording {
 		framesPath, upPath, downPath, turnPath, err = RecordingPathsPhase2(d.cfg.Recording.OutputDir, d.cfg.DeviceID, d.instanceID, turnID)
@@ -46,20 +103,21 @@ func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (turnID
 		framesPath, upPath, downPath, turnPath, err = RecordingPaths(d.cfg.Recording.OutputDir, d.cfg.DeviceID, turnID)
 	}
 	if err != nil {
-		d.deviceMu.Unlock()
-		return "", 0, 0, err
+		return 0, 0, nil, err
 	}
 	if err := d.slot.Occupy(turnID, uuid, copied); err != nil {
-		d.deviceMu.Unlock()
-		return "", 0, 0, err
+		return 0, 0, nil, err
 	}
 	if tryAcquire != nil && !tryAcquire() {
 		d.slot.Vacate()
-		d.deviceMu.Unlock()
-		return "", 0, 0, ErrSpeakPermit
+		return 0, 0, nil, ErrSpeakPermit
 	}
 	seqBefore = d.events.Seq()
-	done := make(chan Event, 1)
+	done := d.turnDone[turnID]
+	if done == nil {
+		done = make(chan Event, 1)
+		d.turnDone[turnID] = done
+	}
 	tr := &turnRuntime{
 		id:         turnID,
 		uuid:       uuid,
@@ -75,21 +133,82 @@ func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (turnID
 	}
 	d.turn = tr
 	d.completionCh = done
-	d.turnDone[turnID] = done
 	pcmCopy := append([]byte(nil), d.slot.PCM()...)
 	saveUp := d.cfg.Recording.SaveUplinkAudio
-	d.deviceMu.Unlock()
+	launch = func() {
+		if saveUp {
+			// 解锁后只建空文件，不写整段 PCM；内容由 onWritten → recorder 追加实际发出的帧。
+			_ = os.MkdirAll(filepath.Dir(upPath), 0o755)
+			if f, err := os.OpenFile(upPath, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				_ = f.Close()
+			}
+		}
+		go d.uplinkTurn(turnID, uuid, pcmCopy)
+	}
+	return uuid, seqBefore, launch, nil
+}
 
-	if saveUp {
-		// 解锁后只建空文件，不写整段 PCM；内容由 onWritten → recorder 追加实际发出的帧。
-		_ = os.MkdirAll(filepath.Dir(upPath), 0o755)
-		if f, err := os.OpenFile(upPath, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-			_ = f.Close()
+// dispatchBacklog 终态后（finishCritical）异步出队。队首启动失败则记
+// speak_backlog_dropped 并继续尝试下一项；成功启动即返回，等下一次终态。
+func (d *DeviceInstance) dispatchBacklog() {
+	for {
+		d.deviceMu.Lock()
+		if d.finalizeStarted || len(d.speakBacklog) == 0 || d.slot.Occupied() {
+			d.deviceMu.Unlock()
+			return
+		}
+		q := d.speakBacklog[0]
+		d.speakBacklog = d.speakBacklog[1:]
+		d.connMu.Lock()
+		st := d.connState
+		d.connMu.Unlock()
+		if !Speakable(st, d.fault) {
+			en := d.dropQueuedLocked(q, "not_speakable")
+			d.deviceMu.Unlock()
+			en.NotifyHTTP()
+			continue
+		}
+		uuid, seqBefore, launch, err := d.startTurnLocked(q.turnID, q.pcm, q.tryAcquire)
+		if err != nil {
+			reason := "error"
+			if err == ErrSpeakPermit {
+				reason = "speak_permit"
+			}
+			en := d.dropQueuedLocked(q, reason)
+			d.deviceMu.Unlock()
+			en.NotifyHTTP()
+			continue
+		}
+		_, en := d.appendEventLocked("speak_dequeued", q.turnID, "", "", "", "")
+		onStarted := d.onTurnStarted
+		d.deviceMu.Unlock()
+		en.NotifyHTTP()
+		if onStarted != nil {
+			onStarted(q.turnID, uuid, seqBefore)
+		}
+		launch()
+		return
+	}
+}
+
+// dropQueuedLocked 排队项作废：写事件、登记 turnTerm、唤醒 done waiter。持 deviceMu。
+func (d *DeviceInstance) dropQueuedLocked(q queuedSpeak, reason string) EventNotify {
+	ev, en := d.appendEventLocked("speak_backlog_dropped", q.turnID, reason, "", "", "")
+	d.turnTerm[q.turnID] = ev
+	if ch := d.turnDone[q.turnID]; ch != nil {
+		select {
+		case ch <- ev:
+		default:
 		}
 	}
+	return en
+}
 
-	go d.uplinkTurn(turnID, uuid, pcmCopy)
-	return turnID, uuid, seqBefore, nil
+// BacklogLen 当前排队数（供 GET /devices/{id}）。
+func (d *DeviceInstance) BacklogLen() int {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	return len(d.speakBacklog)
 }
 
 // testBeforeUplinkEnqueue 仅测试：frozen/Terminal 检查已通过、即将 enqueueData。
@@ -227,9 +346,14 @@ func (d *DeviceInstance) enterWaitingReplyLocked() {
 	}
 }
 
+// isTurnFinal：turn_terminal 与排队作废（speak_backlog_dropped）都算 Turn 的收梢。
+func isTurnFinal(ev Event) bool {
+	return ev.Type == "turn_terminal" || ev.Type == "speak_backlog_dropped"
+}
+
 func (d *DeviceInstance) WaitTurn(turnID string, timeout time.Duration) (Event, error) {
 	d.deviceMu.Lock()
-	if ev, ok := d.turnTerm[turnID]; ok && ev.Type == "turn_terminal" {
+	if ev, ok := d.turnTerm[turnID]; ok && isTurnFinal(ev) {
 		d.deviceMu.Unlock()
 		return ev, nil
 	}
@@ -259,7 +383,7 @@ func (d *DeviceInstance) WaitTurn(turnID string, timeout time.Duration) (Event, 
 	case <-d.finalizeDone:
 		d.deviceMu.Lock()
 		defer d.deviceMu.Unlock()
-		if ev, ok := d.turnTerm[turnID]; ok && ev.Type == "turn_terminal" {
+		if ev, ok := d.turnTerm[turnID]; ok && isTurnFinal(ev) {
 			return ev, nil
 		}
 		if d.lastTerminal.Type == "turn_terminal" && d.lastTerminal.TurnID == turnID {

@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrSlotOccupied = errors.New("槽已占用")
 	ErrSpeakPermit  = errors.New("speak_permit")
+	ErrBacklogFull  = errors.New("speak_backlog_full")
 )
 
 type TurnState int

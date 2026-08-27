@@ -33,7 +33,9 @@ type Options struct {
 	EventLogMaxEntries int
 	Phase2Recording    bool
 	OnTurnTerminal     func(turnID string, ev Event)
-	OnActivity         func()
+	// OnTurnStarted：backlog 出队真正启动时回调（补 uuid/seq_before）。解锁后调用。
+	OnTurnStarted func(turnID string, uuid uint32, seqBefore int)
+	OnActivity    func()
 }
 
 type pendingMeta struct {
@@ -128,11 +130,13 @@ type DeviceInstance struct {
 	lastTerminal Event
 	turnDone     map[string]chan Event
 	turnTerm     map[string]Event
+	speakBacklog []queuedSpeak // Phase 4 Turn 排队；deviceMu 保护
 
 	drainTimeout time.Duration
 	sampleRate   uint32
 
 	onTurnTerminal func(turnID string, ev Event)
+	onTurnStarted  func(turnID string, uuid uint32, seqBefore int)
 	onActivity     func()
 	deleted        bool
 
@@ -182,6 +186,7 @@ func NewDevice(cfg config.Device, opts Options) *DeviceInstance {
 		sampleRate:      uint32(cfg.Audio.SampleRate),
 		phase2Recording: opts.Phase2Recording,
 		onTurnTerminal:  opts.OnTurnTerminal,
+		onTurnStarted:   opts.OnTurnStarted,
 		onActivity:      opts.OnActivity,
 		turnDone:        map[string]chan Event{},
 		turnTerm:        map[string]Event{},
@@ -370,6 +375,8 @@ func (d *DeviceInstance) finishCritical(acc []EventNotify, tn TerminalNotify) {
 		if d.onTurnTerminal != nil {
 			d.onTurnTerminal(tn.Event.TurnID, tn.Event)
 		}
+		// Phase 4：槽已空，异步出队下一个排队 speak（协程内自持 deviceMu）。
+		go d.dispatchBacklog()
 	}
 	eventNotifyOf(tn).NotifyHTTP()
 	for _, n := range acc {

@@ -1,6 +1,6 @@
 ﻿# 玩具设备模拟器 — 整体架构设计文档
 
-下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario 与 Phase 3 调试 UI。Phase 4 speak backlog 仍未落地。
+下文含 Phase 2+ 设计；当前 HEAD 已落地 Phase 1 CLI、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI 与 Phase 4 speak backlog（契约见 phase4.md）。
 
 ## 1. 背景与目标
 

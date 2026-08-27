@@ -324,6 +324,7 @@ func configPublic(cfg config.Device, envName string) map[string]any {
 			"post_final_asr_silence_sec": cfg.Behavior.PostFinalASRSilenceSec,
 			"wait_timeout_slack_sec":     cfg.Behavior.WaitTimeoutSlackSec,
 			"expect_downlink_need_ack":   cfg.Behavior.ExpectDownlinkNeedAck,
+			"speak_backlog_depth":        cfg.Behavior.SpeakBacklogDepth,
 			"downlink_ack": map[string]any{
 				"mode": ack.Mode, "sleep_ms": ack.SleepMs, "code": ack.Code,
 			},
@@ -702,8 +703,12 @@ func applyPutBehavior(b *config.Behavior, m map[string]any) error {
 		"downlink_idle_timeout_sec": true, "non_audio_followup_sec": true,
 		"post_final_asr_silence_sec": true, "wait_timeout_slack_sec": true,
 		"expect_downlink_need_ack": true, "downlink_ack": true,
+		"speak_backlog_depth": true,
 	}
 	if err := rejectUnknownKeys(m, allowed); err != nil {
+		return err
+	}
+	if err := setBehaviorInt(m, "speak_backlog_depth", &b.SpeakBacklogDepth); err != nil {
 		return err
 	}
 	if v, ok := m["auto_register"]; ok {
@@ -1054,4 +1059,22 @@ func (s *Server) onTurnTerminal(deviceID, turnID string, ev core.Event) {
 	}
 	s.mu.Unlock()
 	s.releaseSpeak()
+}
+
+// onTurnStarted：speak backlog 出队真正启动时补 turnRec 的 uuid/seq_before。
+func (s *Server) onTurnStarted(deviceID, turnID string, uuid uint32, seqBefore int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.devices[deviceID]
+	if !ok {
+		return
+	}
+	tr := d.turns[turnID]
+	if tr == nil {
+		tr = &turnRec{TurnID: turnID, InstanceID: d.instanceID}
+		d.turns[turnID] = tr
+	}
+	tr.UplinkUUID = uuid
+	tr.SeqBefore = seqBefore
+	d.lastActivity = time.Now()
 }

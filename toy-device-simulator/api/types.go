@@ -104,17 +104,22 @@ func (d *managedDevice) connState() string {
 
 func deviceView(d *managedDevice) map[string]any {
 	d.syncRunning()
+	backlog := 0
+	if d.inst != nil {
+		backlog = d.inst.BacklogLen()
+	}
 	return map[string]any{
-		"device_id":        d.id,
-		"instance_id":      d.instanceID,
-		"instance_state":   d.state,
-		"connection_state": d.connState(),
-		"conn_generation":  d.gen,
-		"last_activity":    d.lastActivity.UTC().Format(time.RFC3339Nano),
-		"playing_mode":     d.playingMode,
-		"last_error":       d.lastError,
-		"environment":      d.envName,
-		"enterprise":       d.cfg.Enterprise,
-		"device_type":      d.cfg.DeviceType,
+		"device_id":         d.id,
+		"instance_id":       d.instanceID,
+		"instance_state":    d.state,
+		"connection_state":  d.connState(),
+		"conn_generation":   d.gen,
+		"last_activity":     d.lastActivity.UTC().Format(time.RFC3339Nano),
+		"playing_mode":      d.playingMode,
+		"last_error":        d.lastError,
+		"environment":       d.envName,
+		"enterprise":        d.cfg.Enterprise,
+		"device_type":       d.cfg.DeviceType,
+		"speak_backlog_len": backlog,
 	}
 }

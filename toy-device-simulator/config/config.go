@@ -57,6 +57,9 @@ type Behavior struct {
 	WriteDrainTimeoutSec   int         `yaml:"write_drain_timeout_sec"`
 	ExpectDownlinkNeedAck  bool        `yaml:"expect_downlink_need_ack"`
 	DownlinkAck            DownlinkAck `yaml:"downlink_ack"`
+	// Phase 4 speak backlog：Turn 排队深度，0=关闭（槽占用仍 409）。
+	// 与 writePump 的 outbound buffer（write_queue_depth）不是同一功能。
+	SpeakBacklogDepth int `yaml:"speak_backlog_depth"`
 }
 
 type DownlinkAck struct {
@@ -134,6 +137,9 @@ func Validate(d Device) error {
 	if d.Behavior.DownlinkAck.SleepMs != 0 {
 		return fmt.Errorf("Phase 1 要求 sleep_ms=0")
 	}
+	if d.Behavior.SpeakBacklogDepth != 0 {
+		return fmt.Errorf("speak_backlog_depth 是 Phase 4 Manager 设备功能，Phase 1 CLI 拒绝")
+	}
 	return nil
 }
 
@@ -148,6 +154,9 @@ func ValidatePhase2(d Device) error {
 	}
 	if d.Behavior.DownlinkAck.SleepMs < 0 {
 		return fmt.Errorf("sleep_ms 不得为负")
+	}
+	if d.Behavior.SpeakBacklogDepth < 0 || d.Behavior.SpeakBacklogDepth > 64 {
+		return fmt.Errorf("speak_backlog_depth 必须在 0..64（0=关闭）")
 	}
 	return nil
 }
