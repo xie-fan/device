@@ -698,9 +698,9 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 
 ### 4.16 HTTP 媒体、stream、Turn 世系
 
-禁止 HTTP 读任意服务器路径。禁止 raw PCM 上传。
+禁止 HTTP 读任意服务器路径。raw PCM 上传属 Phase 4（fmt 三项全给、服务端包 WAV 头，契约见 phase4.md）；Phase 2 语义不变。
 
-- `POST /assets`：仅 WAV（RIFF PCM fmt）。超 `max_asset_bytes` 或 duration 超 `max_asset_duration_sec` → 400。
+- `POST /assets`：WAV（RIFF PCM fmt），或 Phase 4 raw PCM。超 `max_asset_bytes` 或 duration 超 `max_asset_duration_sec` → 400。
 - `POST /devices/{id}/speak`：WAV 的 sample_rate/channels/sample_format 必须等于设备当前 `audio_*`，否则 400。
 - `stream`：元素个数 ≤ `max_stream_entries`（默认 16）。各 audio 段 duration 与各 `silence.duration_ms` 之和 ≤ `max_stream_duration_sec * 1000`（默认 60s），否则 400。`silence` 为内部全零 PCM，格式同 `audio_fp`，禁止拼接 RIFF。
 - 下载：`Content-Type: audio/wav`。CLI `--audio` 仅 Phase 1。

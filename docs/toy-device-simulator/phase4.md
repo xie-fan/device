@@ -20,10 +20,15 @@
 - 结果事件 `silence_probe`（turn_id=原 turn）：echo 正常 → reason=`echo_ok`（链路仍活，倾向服务端「静默成功」）；echo 超时 → reason=`echo_timeout`（倾向上行被 drop）。伴随常规 `report_echo`/`report_timeout` 事件。
 - 不改终态语义、不动完成矩阵；有过任何下行包的 timeout（如仅 interim）不触发。
 
+### HTTP 上传 raw PCM
+
+- `POST /assets` multipart 携带 `sample_rate`/`channels`/`sample_format` 三项全给才按 raw PCM 收；只给一部分 → 400；全不给 → 现有 WAV 路径不变。
+- 校验：`sample_format` 仅 `s16le`；`sample_rate`/`channels` 正整数；内容不得以 RIFF 开头（防误传 WAV）；长度须为帧大小（channels×2 字节）整数倍。
+- 服务端 `EncodeWAV` 包头后与普通上传走同一管线（`max_asset_bytes`、`max_asset_duration_sec`、epoch、speak 时设备 audio 指纹校验）。响应 `container=wav`。
+
 ## 按需清单（未落地）
 
 - 线上 mp3/wav 推流：整段 PCM 只编码一次再切流
-- HTTP 上传 raw PCM（须带完整 fmt；Phase 2 不做）
 - 跨设备全局事件总线（当前 event_seq 为 instance 级）
 - 可选 Mongo 预检 / 清 Redis deviceMemory
 - 断开即 interrupt（默认关；若开启仍走 CancelTurn 而非 BeginClose，除非同时要拆连接）

@@ -299,6 +299,12 @@ func wavPCM(sampleRate int) []byte {
 
 func (e *testEnv) postAsset(t *testing.T, filename string, data []byte) (int, []byte) {
 	t.Helper()
+	return e.postAssetFields(t, filename, data, nil)
+}
+
+// postAssetFields 额外携带表单字段（raw PCM 的 fmt 三项等）。
+func (e *testEnv) postAssetFields(t *testing.T, filename string, data []byte, fields map[string]string) (int, []byte) {
+	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 	fw, err := w.CreateFormFile("file", filename)
@@ -307,6 +313,11 @@ func (e *testEnv) postAsset(t *testing.T, filename string, data []byte) (int, []
 	}
 	if _, err := fw.Write(data); err != nil {
 		t.Fatal(err)
+	}
+	for k, v := range fields {
+		if err := w.WriteField(k, v); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
