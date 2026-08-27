@@ -26,10 +26,15 @@
 - 校验：`sample_format` 仅 `s16le`；`sample_rate`/`channels` 正整数；内容不得以 RIFF 开头（防误传 WAV）；长度须为帧大小（channels×2 字节）整数倍。
 - 服务端 `EncodeWAV` 包头后与普通上传走同一管线（`max_asset_bytes`、`max_asset_duration_sec`、epoch、speak 时设备 audio 指纹校验）。响应 `container=wav`。
 
+### 跨设备全局事件总线
+
+- manager 级总线：各设备 EventLog 追加事件时镜像投递（`SetMirror`，回调在 EventLog 临界区内、总线锁是叶子锁，禁止回调设备锁），统一分配 `global_seq`（严格递增）。环形容量沿用 `event_log_max_entries`。
+- `GET /ws/events/global?after_global_seq=N`：回放 + live，条目为事件 wire 格式外加 `global_seq`（`device_id`/`instance_id` 事件本身已带）。`after < evicted_through` → 410 `global_seq_expired`；参数非法 → 400。
+- 慢订阅：inbox（256）满即摘除并关连接（abort），不阻塞事件产生方。instance 级 `event_seq`/`GET /ws/events` 语义不变。
+
 ## 按需清单（未落地）
 
 - 线上 mp3/wav 推流：整段 PCM 只编码一次再切流
-- 跨设备全局事件总线（当前 event_seq 为 instance 级）
 - 可选 Mongo 预检 / 清 Redis deviceMemory
 - 断开即 interrupt（默认关；若开启仍走 CancelTurn 而非 BeginClose，除非同时要拆连接）
 - 不查 DownlinkAck；不提供 device_id 重键

@@ -29,6 +29,7 @@ type Server struct {
 	opts Options
 	mux  *http.ServeMux
 	reg  *manager.Registry
+	bus  *globalBus
 
 	mu        sync.Mutex
 	devices   map[string]*managedDevice
@@ -53,6 +54,7 @@ func New(opts Options) (http.Handler, error) {
 	s := &Server{
 		opts:    opts,
 		reg:     reg,
+		bus:     newGlobalBus(opts.Config.EventLogMaxEntries),
 		devices: map[string]*managedDevice{},
 		tombs:   map[string]*tombstone{},
 		assets:  map[string]*assetObj{},
@@ -99,6 +101,7 @@ func New(opts Options) (http.Handler, error) {
 
 	mux.HandleFunc("POST /wait", s.handleWait)
 	mux.HandleFunc("GET /ws/events", s.handleWSEvents)
+	mux.HandleFunc("GET /ws/events/global", s.handleWSGlobalEvents)
 
 	mux.HandleFunc("POST /scenarios/run", s.handleScenarioRun)
 	mux.HandleFunc("GET /scenarios/runs/{id}", s.handleScenarioGet)

@@ -98,6 +98,18 @@ type EventLog struct {
 	hubSubs        map[int]*WSSub
 	hubNext        int
 	connGeneration int
+	mirror         func(Event)
+}
+
+// SetMirror 登记全局总线镜像（Phase 4d）。fn 在 l.mu 临界区内被调，
+// 只允许拿叶子锁（总线自身锁），禁止回调任何设备/manager 锁。
+func (l *EventLog) SetMirror(fn func(Event)) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.mirror = fn
 }
 
 func NewEventLog(deviceID, instanceID string) *EventLog {
@@ -215,6 +227,9 @@ func (l *EventLog) appendLocked(typ, turnID, reason, endReason, uplinkReason, re
 	}
 	l.waiters = rest
 	n.SlowSubs += l.deliverHubLocked(ev)
+	if l.mirror != nil {
+		l.mirror(ev)
+	}
 	return ev, n
 }
 

@@ -233,6 +233,7 @@ func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 	ins := newInstanceID()
 	log := core.NewEventLog(cfg.DeviceID, ins)
 	log.SetMaxEntries(s.opts.Config.EventLogMaxEntries)
+	log.SetMirror(s.bus.Publish)
 	return &managedDevice{
 		id:           cfg.DeviceID,
 		instanceID:   ins,
