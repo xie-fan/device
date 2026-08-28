@@ -50,9 +50,13 @@ speak 受理在 Phase 2 合同（architecture.md §4.1 受理顺序）之上叠�
 - speak 区「从库选择」下拉 + 送出所选：任意格式资产喂当前设备。上传送出改带 `device_id`（入库即转码）。
 - 设备配置表单：`audio.format` 下拉含 mp3/amr/aac，压缩格式露出 `bitrate_kbps`。
 
-## 真实服务端实测（5g）
+## 真实服务端实测（5g，2026-08-28）
 
-- pcm 基线不回归；mp3/amr 设备对真实服务端的注册、上行推流、下行回复行为记录于验收笔记（服务端对压缩格式的支持程度以实测为准，模拟器侧不做假设）。
+同一真实身份（A3 类型）分别以 mp3 与 amr-wb 配置连真实服务端，库内 mp3 资产送出：
+
+- **mp3 设备**（16 kHz / 64 kbps）：注册 Ready；资产规格一致走 `-c copy` 限速直通推流；终态 `idle / stage2 / tts`。**服务端对 mp3 设备回 mp3 TTS**（raw 回放 `audio/mpeg`，帧同步字 `FF F3`，52 KB），默认回放经 ffmpeg 解码 WAV 正常。
+- **amr-wb 设备**（16 kHz / 23.85 kbps）：注册 Ready；mp3 资产自动转码 amr-wb 派生副本后推流；终态 `idle / stage2 / tts`。**服务端对 amr 设备回 AMR TTS**（raw 回放 `audio/amr`，magic `#!AMR-`，9.8 KB），解码回放正常。
+- 结论：下发格式跟随上行格式（需求预期成立）；turn.json `down_format` 记录、`?raw=1` 与默认解码回放全链路在真实服务端验证通过。注册对固件版本/ICCID 有校验（占位值 → ACK code=2003），实测须用真实身份三元组。生产身份与真实环境 URL 不落盘入库（实测后即从配置树删除）。
 
 ## 边界（本阶段不做）
 
