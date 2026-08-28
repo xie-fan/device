@@ -50,16 +50,23 @@ func FormatBytes(s string) [10]byte {
 	return out
 }
 
-func NewPCMHeader(stage, seq, uuid, payloadLen, sampleRate uint32) AudioHeader {
+// NewAudioHeader 构造指定线上格式的音频帧头（format 写入 10 字节格式字段，
+// 如 pcm/wav/mp3/amr/aac）。
+func NewAudioHeader(format string, stage, seq, uuid, payloadLen, sampleRate uint32) AudioHeader {
 	return AudioHeader{
 		Head:            HeadMagic,
 		Stage:           stage,
 		SequenceNumber:  seq,
 		UUID:            uuid,
-		AudioFormat:     FormatBytes("pcm"),
+		AudioFormat:     FormatBytes(format),
 		SamplingRate:    sampleRate,
 		AudioPayloadLen: payloadLen,
 	}
+}
+
+// NewPCMHeader 兼容包装：format=pcm。
+func NewPCMHeader(stage, seq, uuid, payloadLen, sampleRate uint32) AudioHeader {
+	return NewAudioHeader("pcm", stage, seq, uuid, payloadLen, sampleRate)
 }
 
 func EncodeHeader(h AudioHeader) ([]byte, error) {

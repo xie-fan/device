@@ -310,6 +310,7 @@ func configPublic(cfg config.Device, envName string) map[string]any {
 			"format": cfg.Audio.Format, "sample_rate": cfg.Audio.SampleRate,
 			"channels": cfg.Audio.Channels, "sample_format": cfg.Audio.SampleFormat,
 			"slice_ms": cfg.Audio.SliceMs, "max_payload_size": cfg.Audio.MaxPayloadSize,
+			"bitrate_kbps": cfg.Audio.BitrateKbps,
 		},
 		"server": map[string]any{"url": cfg.Server.URL},
 		"uuid":   map[string]any{"min": cfg.UUID.Min, "max": cfg.UUID.Max},
@@ -601,9 +602,17 @@ func applyPutAudio(a *config.Audio, m map[string]any) error {
 	allowed := map[string]bool{
 		"format": true, "sample_rate": true, "channels": true,
 		"sample_format": true, "slice_ms": true, "max_payload_size": true,
+		"bitrate_kbps": true,
 	}
 	if err := rejectUnknownKeys(m, allowed); err != nil {
 		return err
+	}
+	if v, ok := m["bitrate_kbps"]; ok {
+		n, ok := v.(float64)
+		if !ok {
+			return fmt.Errorf("audio.bitrate_kbps 类型非法")
+		}
+		a.BitrateKbps = n
 	}
 	if v, ok := m["format"]; ok {
 		s, ok := v.(string)

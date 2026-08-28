@@ -353,9 +353,63 @@ func TestValidatePhase2AllowsWavFormat(t *testing.T) {
 	if err := ValidatePhase2(d); err != nil {
 		t.Fatalf("ValidatePhase2 应允许 format=wav: %v", err)
 	}
-	d.Audio.Format = "mp3"
+}
+
+func TestValidatePhase2CompressedFormats(t *testing.T) {
+	base := func() Device {
+		d, err := Load(exampleYAML(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	// Phase 5：压缩格式在 Phase 2 合法（Phase 1 仍 pcm-only）。
+	for _, f := range []string{"mp3", "aac"} {
+		d := base()
+		d.Audio.Format = f
+		if err := ValidatePhase2(d); err != nil {
+			t.Fatalf("ValidatePhase2 应允许 format=%s: %v", f, err)
+		}
+		if err := Validate(d); err == nil {
+			t.Fatalf("Phase 1 必须拒绝 format=%s", f)
+		}
+		d.Audio.BitrateKbps = 64
+		if err := ValidatePhase2(d); err != nil {
+			t.Fatalf("压缩格式应允许 bitrate_kbps: %v", err)
+		}
+	}
+	// amr 采样率约束。
+	d := base()
+	d.Audio.Format = "amr"
+	d.Audio.SampleRate = 8000
+	if err := ValidatePhase2(d); err != nil {
+		t.Fatalf("amr 8000 应合法: %v", err)
+	}
+	d.Audio.SampleRate = 16000
+	if err := ValidatePhase2(d); err != nil {
+		t.Fatalf("amr 16000 应合法: %v", err)
+	}
+	d.Audio.SampleRate = 44100
 	if err := ValidatePhase2(d); err == nil {
-		t.Fatal("ValidatePhase2 必须拒绝 format=mp3")
+		t.Fatal("amr 44100 必须拒绝")
+	}
+	// 未知格式仍拒绝。
+	d = base()
+	d.Audio.Format = "flac"
+	if err := ValidatePhase2(d); err == nil {
+		t.Fatal("format=flac 必须拒绝")
+	}
+	// bitrate 校验：pcm/wav 不可设、负值拒绝。
+	d = base()
+	d.Audio.BitrateKbps = 128
+	if err := ValidatePhase2(d); err == nil {
+		t.Fatal("pcm 设 bitrate_kbps 必须拒绝")
+	}
+	d = base()
+	d.Audio.Format = "mp3"
+	d.Audio.BitrateKbps = -1
+	if err := ValidatePhase2(d); err == nil {
+		t.Fatal("bitrate_kbps 负值必须拒绝")
 	}
 }
 

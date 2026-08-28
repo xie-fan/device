@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"toy-device-simulator/media"
 )
 
 type File struct {
@@ -31,12 +33,16 @@ type Device struct {
 }
 
 type Audio struct {
-	Format         string `yaml:"format"`
-	SampleRate     int    `yaml:"sample_rate"`
-	Channels       int    `yaml:"channels"`
-	SampleFormat   string `yaml:"sample_format"`
-	SliceMs        int    `yaml:"slice_ms"`
-	MaxPayloadSize int    `yaml:"max_payload_size"`
+	Format       string `yaml:"format"`
+	SampleRate   int    `yaml:"sample_rate"`
+	Channels     int    `yaml:"channels"`
+	SampleFormat string `yaml:"sample_format"`
+	SliceMs      int    `yaml:"slice_ms"`
+	// BitrateKbps 压缩格式（mp3/amr/aac）的编码码率；0=格式默认
+	// （mp3=128 aac=96 amr-nb=12.2 amr-wb=23.85），amr 会就近合法档位。
+	// pcm/wav 必须为 0。
+	BitrateKbps    float64 `yaml:"bitrate_kbps"`
+	MaxPayloadSize int     `yaml:"max_payload_size"`
 }
 
 type Behavior struct {
@@ -193,9 +199,18 @@ func validateCommon(d Device) error {
 	if d.PlayingMode < 1 || d.PlayingMode > 3 {
 		return fmt.Errorf("非法 playing_mode=%d", d.PlayingMode)
 	}
-	// Phase 4f：wav 推流（线上流整段加一次 RIFF 头）；除 pcm/wav 外拒绝。
-	if d.Audio.Format != "pcm" && d.Audio.Format != "wav" {
-		return fmt.Errorf("format 仅支持 pcm/wav，得到 %q", d.Audio.Format)
+	// Phase 5：格式白名单 pcm/wav/mp3/amr/aac（压缩格式经 ffmpeg 转码/推流）。
+	if !media.IsTargetFormat(d.Audio.Format) {
+		return fmt.Errorf("format 仅支持 %s，得到 %q", strings.Join(media.TargetFormats, "/"), d.Audio.Format)
+	}
+	if d.Audio.Format == media.FormatAMR && d.Audio.SampleRate != 8000 && d.Audio.SampleRate != 16000 {
+		return fmt.Errorf("amr 采样率仅支持 8000（NB）/16000（WB），得到 %d", d.Audio.SampleRate)
+	}
+	if d.Audio.BitrateKbps < 0 {
+		return fmt.Errorf("bitrate_kbps 不得为负")
+	}
+	if d.Audio.BitrateKbps != 0 && !media.Compressed(d.Audio.Format) {
+		return fmt.Errorf("bitrate_kbps 仅压缩格式（mp3/amr/aac）可设，format=%s", d.Audio.Format)
 	}
 	if d.Audio.Channels != 1 {
 		return fmt.Errorf("Phase 1 仅允许 channels=1，得到 %d", d.Audio.Channels)

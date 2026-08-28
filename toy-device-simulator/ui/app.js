@@ -587,13 +587,18 @@
           <label>slice_ms<input name="slice_ms" type="number" value="${esc(audio.slice_ms ?? 100)}"></label>
           <label>max_payload_size<input name="max_payload_size" type="number" value="${esc(audio.max_payload_size ?? 51200)}"></label>
         </div>
-        <label>线上格式（wav=整段一次加头再切流）
-          <select name="audio_format">
-            <option value="pcm"${(audio.format || "pcm") === "pcm" ? " selected" : ""}>pcm</option>
-            <option value="wav"${audio.format === "wav" ? " selected" : ""}>wav</option>
-          </select>
-        </label>
-        <p class="hint">channels=${esc(audio.channels)} · sample_format=${esc(audio.sample_format)}</p>
+        <div class="split">
+          <label>线上格式（压缩格式经 ffmpeg 转码/限速）
+            <select name="audio_format">
+              ${["pcm", "wav", "mp3", "amr", "aac"].map((f) =>
+                `<option value="${f}"${(audio.format || "pcm") === f ? " selected" : ""}>${f}</option>`).join("")}
+            </select>
+          </label>
+          <label>bitrate_kbps（0=默认；仅压缩格式）
+            <input name="bitrate_kbps" type="number" min="0" step="0.05" value="${esc(audio.bitrate_kbps ?? 0)}">
+          </label>
+        </div>
+        <p class="hint">channels=${esc(audio.channels)} · sample_format=${esc(audio.sample_format)} · amr 采样率仅 8000/16000</p>
         <div class="split">
           <label>uuid.min<input name="uuid_min" type="number" value="${esc(uuid.min ?? 1)}"></label>
           <label>uuid.max<input name="uuid_max" type="number" value="${esc(uuid.max ?? 2147483647)}"></label>
@@ -648,6 +653,7 @@
         sample_format: "s16le",
         slice_ms: Number(fd.get("slice_ms")),
         max_payload_size: Number(fd.get("max_payload_size")),
+        bitrate_kbps: Number(fd.get("bitrate_kbps")) || 0,
       },
       uuid: { min: Number(fd.get("uuid_min")), max: Number(fd.get("uuid_max")) },
       behavior: {
