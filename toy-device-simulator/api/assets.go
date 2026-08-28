@@ -503,14 +503,21 @@ func (s *Server) handleGetAssetContent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "asset 不存在")
 		return
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "文件不存在")
 		return
 	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	// ServeContent 支持 Range：浏览器媒体栈探测 mp3 等格式时长要 seek
+	// 文件尾，纯 200 全量会让 <audio> 卡在加载。
 	w.Header().Set("Content-Type", mimeByFormat(format))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b)
+	http.ServeContent(w, r, "", st.ModTime(), f)
 }
 
 func (s *Server) handleDeleteAsset(w http.ResponseWriter, r *http.Request) {

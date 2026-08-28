@@ -162,6 +162,40 @@
           <button type="submit" class="btn">按模板创建</button>
         </form>
       </details>
+      <!-- Phase 5f 音频库：全局资产（导入/筛选/编辑/删除/试听），设备送出时可直接选用。 -->
+      <details class="create" id="library-box">
+        <summary>音频库<span class="count" id="lib-count" hidden></span></summary>
+        <div class="stack stack--tight">
+          <div class="split">
+            <label>格式
+              <select id="lib-filter-format">
+                <option value="">全部格式</option>
+                <option>pcm</option>
+                <option>wav</option>
+                <option>mp3</option>
+                <option>amr</option>
+                <option>aac</option>
+              </select>
+            </label>
+            <label>语言
+              <input id="lib-filter-lang" placeholder="如 zh" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+          <ul class="lib" id="lib-list"></ul>
+          <p class="empty" id="lib-empty" hidden>库是空的，先导入一条。</p>
+          <form id="form-lib-import" class="stack stack--tight">
+            <label class="file file--sm">
+              <span id="lib-file-label">选择音频文件（wav ⁄ mp3 ⁄ amr ⁄ aac）</span>
+              <input type="file" id="lib-file" accept=".wav,.mp3,.amr,.aac,audio/*">
+            </label>
+            <div class="split">
+              <label>名称<input name="name" autocomplete="off"></label>
+              <label>语言<input name="language" placeholder="zh" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <button type="submit" class="btn btn--sm" id="btn-lib-import">导入</button>
+          </form>
+        </div>
+      </details>
     </aside>
 
     <main class="talk" id="talk">
@@ -195,6 +229,14 @@
               <button type="button" class="btn" id="btn-sample">选用夹具</button>
               <button type="submit" class="btn btn--accent" id="btn-speak">送出</button>
               <button type="button" class="btn" id="btn-interrupt">打断</button>
+            </div>
+            <div class="speak__row">
+              <label class="speak__fixture">音频库
+                <select id="library-select">
+                  <option value="">（从库选择，格式不符自动转码）</option>
+                </select>
+              </label>
+              <button type="button" class="btn" id="btn-lib-speak">送出所选</button>
             </div>
             <label class="file" id="drop-zone">
               <span>或选文件（也可把 WAV 拖进来）</span>

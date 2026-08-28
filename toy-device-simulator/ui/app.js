@@ -43,6 +43,8 @@
     globalWs: null,
     globalEvents: [],
     globalNewest: 0,
+    // Phase 5f 音频库：全局资产列表 + 筛选 + 行内编辑/两击删除状态。
+    lib: { rows: [], format: "", language: "", editingId: null, armedId: null },
   };
 
   // 全局带最多留这么多条；调试面板不是归档，翻更早的去 /ws/events/global 拿回放。
@@ -1155,15 +1157,20 @@
     playHref(downlinkHref(ev.turn_id), ev.turn_id);
   }
 
-  function playHref(href, turnId) {
+  // playHref 播放一段音频。opts 传字符串按 turn 下行处理，传对象可自定义
+  // 标签与下载名（Phase 5f 音频库试听复用同一个播放器）。
+  function playHref(href, opts) {
+    const o = typeof opts === "string"
+      ? { label: "下行 · " + opts, download: opts + "-downlink.wav" }
+      : (opts || {});
     const audio = $("downlink-audio");
     const box = $("player-box");
     box.hidden = false;
-    setText($("player-label"), "下行 · " + turnId);
+    setText($("player-label"), o.label || "播放");
     const dl = $("player-dl");
     dl.hidden = false;
     dl.href = href;
-    dl.setAttribute("download", turnId + "-downlink.wav");
+    dl.setAttribute("download", o.download || "audio.wav");
     audio.src = href;
     const p = audio.play();
     if (p && p.catch) p.catch(() => {});
@@ -1514,6 +1521,177 @@
     }
   }
 
+  // ——— Phase 5f 音频库 ———
+  // 浏览器 <audio> 大多能直接播的库格式；pcm 裸流与 amr 用不了原生试听。
+  const LIB_PLAYABLE = { wav: true, mp3: true, aac: true };
+
+  function fmtDurMs(ms) {
+    const v = Number(ms) || 0;
+    if (v < 1000) return v + " ms";
+    return (v / 1000).toFixed(1) + " s";
+  }
+
+  // 连改筛选时多个请求在飞，旧响应后到会覆盖新结果：只认最新一次。
+  let libReqSeq = 0;
+
+  async function loadLibrary() {
+    const seq = ++libReqSeq;
+    const q = new URLSearchParams();
+    if (state.lib.format) q.set("format", state.lib.format);
+    if (state.lib.language) q.set("language", state.lib.language);
+    const qs = q.toString();
+    let rows = [];
+    try {
+      const data = await api("GET", "/assets" + (qs ? "?" + qs : ""));
+      rows = data.assets || [];
+    } catch {
+      rows = [];
+    }
+    if (seq !== libReqSeq) return;
+    state.lib.rows = rows;
+    renderLibrary();
+    fillLibrarySelect();
+  }
+
+  function renderLibrary() {
+    const ul = $("lib-list");
+    const rows = state.lib.rows;
+    setCount($("lib-count"), rows.length);
+    $("lib-empty").hidden = rows.length > 0;
+    setHTML(ul, rows.map((a) => {
+      const meta = [
+        a.format,
+        a.sample_rate ? a.sample_rate + " Hz" : "",
+        a.bitrate_kbps ? a.bitrate_kbps + " kbps" : "",
+        fmtDurMs(a.duration_ms),
+        a.language || "—",
+      ].filter(Boolean).join(" · ");
+      if (state.lib.editingId === a.asset_id) {
+        return `<li class="lib__row" data-id="${esc(a.asset_id)}">
+          <div class="split">
+            <label>名称<input data-edit="name" value="${esc(a.name)}"></label>
+            <label>语言<input data-edit="language" value="${esc(a.language || "")}"></label>
+          </div>
+          <span class="lib__acts">
+            <button type="button" class="btn btn--sm" data-act="save">保存</button>
+            <button type="button" class="btn btn--ghost btn--sm" data-act="cancel">取消</button>
+          </span>
+        </li>`;
+      }
+      const canPlay = !!LIB_PLAYABLE[a.format];
+      const armed = state.lib.armedId === a.asset_id;
+      return `<li class="lib__row" data-id="${esc(a.asset_id)}">
+        <strong title="${esc(a.asset_id)}">${esc(a.name)}</strong>
+        <span class="mono">${esc(meta)}</span>
+        <span class="lib__acts">
+          <button type="button" class="btn btn--ghost btn--sm" data-act="play"${canPlay ? "" : ` disabled title="浏览器不支持直接播 ${esc(a.format)}"`}>试听</button>
+          <button type="button" class="btn btn--ghost btn--sm" data-act="edit">改</button>
+          <button type="button" class="btn btn--ghost btn--sm${armed ? " btn--danger" : ""}" data-act="del">${armed ? "确认删除" : "删"}</button>
+        </span>
+      </li>`;
+    }).join(""));
+  }
+
+  function fillLibrarySelect() {
+    const sel = $("library-select");
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">（从库选择，格式不符自动转码）</option>` +
+      state.lib.rows.map((a) =>
+        `<option value="${esc(a.asset_id)}">${esc(a.name)} · ${esc(a.format)}${a.language ? " · " + esc(a.language) : ""} · ${esc(fmtDurMs(a.duration_ms))}</option>`,
+      ).join("");
+    if (cur && state.lib.rows.some((a) => a.asset_id === cur)) sel.value = cur;
+  }
+
+  async function importAsset(ev) {
+    ev.preventDefault();
+    const file = $("lib-file").files[0];
+    if (!file) {
+      flash("先选择要导入的音频文件", "err");
+      return;
+    }
+    const form = ev.target;
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    const name = form.elements.name.value.trim();
+    const lang = form.elements.language.value.trim();
+    if (name) fd.append("name", name);
+    if (lang) fd.append("language", lang);
+    try {
+      const a = await api("POST", "/assets", fd);
+      flash(`已导入 ${a.name}（${a.format} · ${fmtDurMs(a.duration_ms)}）`, "ok");
+      form.reset();
+      setText($("lib-file-label"), "选择音频文件（wav ⁄ mp3 ⁄ amr ⁄ aac）");
+      await loadLibrary();
+    } catch (err) {
+      flash(err.status + " " + err.message, "err");
+    }
+  }
+
+  async function onLibListClick(e) {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const row = btn.closest("[data-id]");
+    const id = row && row.dataset.id;
+    if (!id) return;
+    const act = btn.dataset.act;
+    const asset = state.lib.rows.find((a) => a.asset_id === id);
+    if (act === "play") {
+      playHref(`/assets/${encodeURIComponent(id)}/content`, {
+        label: "试听 · " + (asset ? asset.name : id),
+        download: (asset ? asset.name : id) + "." + (asset ? asset.format : "bin"),
+      });
+      return;
+    }
+    if (act === "edit") {
+      state.lib.editingId = id;
+      state.lib.armedId = null;
+      renderLibrary();
+      return;
+    }
+    if (act === "cancel") {
+      state.lib.editingId = null;
+      renderLibrary();
+      return;
+    }
+    if (act === "save") {
+      const name = row.querySelector('[data-edit="name"]').value.trim();
+      const language = row.querySelector('[data-edit="language"]').value.trim();
+      try {
+        await api("PATCH", `/assets/${encodeURIComponent(id)}`, { name, language });
+        state.lib.editingId = null;
+        flash("已保存", "ok");
+        await loadLibrary();
+      } catch (err) {
+        flash(err.status + " " + err.message, "err");
+      }
+      return;
+    }
+    if (act === "del") {
+      // 两击确认，与设备删除同款交互。
+      if (state.lib.armedId !== id) {
+        state.lib.armedId = id;
+        renderLibrary();
+        setTimeout(() => {
+          if (state.lib.armedId === id) {
+            state.lib.armedId = null;
+            renderLibrary();
+          }
+        }, 2500);
+        return;
+      }
+      state.lib.armedId = null;
+      try {
+        await api("DELETE", `/assets/${encodeURIComponent(id)}`);
+        flash("已删除", "ok");
+        await loadLibrary();
+      } catch (err) {
+        flash(err.status + " " + err.message, "err");
+        renderLibrary();
+      }
+    }
+  }
+
   function attachFile(file) {
     const dt = new DataTransfer();
     dt.items.add(file);
@@ -1544,6 +1722,22 @@
     }
   }
 
+  // speakAsset 送出一个已入库的资产（上传送出与库选送出共用受理后流程）。
+  async function speakAsset(assetId) {
+    const spoken = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/speak`, {
+      asset_id: assetId,
+    });
+    if (spoken.queued) {
+      // Phase 4 backlog：槽占用时进队列，终态后自动出队。
+      flash(`已排队 ${spoken.turn_id} · 位置 ${spoken.queue_position} · 终态后自动出队`, "ok");
+    } else {
+      state.occupiedTurnId = spoken.turn_id;
+      setFollow(true);
+      startFramePoll(spoken.turn_id);
+      flash("已受理 " + spoken.turn_id + " · 等 turn_terminal", "ok");
+    }
+  }
+
   async function speak(ev) {
     ev.preventDefault();
     if (!speakableUI()) {
@@ -1560,27 +1754,42 @@
     try {
       const fd = new FormData();
       fd.append("file", file, file.name);
+      // 带 device_id：入库时即按设备音频规格转码（Phase 5c）。
+      if (state.selectedId) fd.append("device_id", state.selectedId);
       const asset = await api("POST", "/assets", fd);
       state.assetId = asset.asset_id;
       setText($("wav-meta"), `${file.name} · ${asset.sample_rate} Hz · ${asset.duration_ms} ms · ${asset.asset_id}`);
-      const spoken = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/speak`, {
-        asset_id: asset.asset_id,
-      });
-      if (spoken.queued) {
-        // Phase 4 backlog：槽占用时进队列，终态后自动出队。
-        flash(`已排队 ${spoken.turn_id} · 位置 ${spoken.queue_position} · 终态后自动出队`, "ok");
-      } else {
-        state.occupiedTurnId = spoken.turn_id;
-        setFollow(true);
-        startFramePoll(spoken.turn_id);
-        flash("已受理 " + spoken.turn_id + " · 等 turn_terminal", "ok");
-      }
+      await speakAsset(asset.asset_id);
+      loadLibrary().catch(() => {});
       renderTalk();
     } catch (err) {
       const extra = err.data && err.data.instance_state
         ? ` (${err.data.instance_state}/${err.data.connection_state})`
         : "";
       flash(err.status + " " + err.message + extra, "err");
+    } finally {
+      state.busy = false;
+      renderTalk();
+    }
+  }
+
+  async function libSpeak() {
+    if (!speakableUI()) {
+      flash("现在不能说话（Starting、未 Ready、或槽占用）", "err");
+      return;
+    }
+    const id = $("library-select").value;
+    if (!id) {
+      flash("先从音频库选一条", "err");
+      return;
+    }
+    state.busy = true;
+    renderTalk();
+    try {
+      await speakAsset(id);
+      renderTalk();
+    } catch (err) {
+      flash(err.status + " " + err.message, "err");
     } finally {
       state.busy = false;
       renderTalk();
@@ -1762,7 +1971,24 @@
     $("btn-delete").addEventListener("click", deleteDevice);
     $("form-speak").addEventListener("submit", speak);
     $("btn-sample").addEventListener("click", useSample);
+    $("btn-lib-speak").addEventListener("click", libSpeak);
     $("btn-interrupt").addEventListener("click", interrupt);
+
+    // 音频库：筛选、导入、行内操作。
+    $("lib-filter-format").addEventListener("change", () => {
+      state.lib.format = $("lib-filter-format").value;
+      loadLibrary().catch(() => {});
+    });
+    $("lib-filter-lang").addEventListener("input", debounce(() => {
+      state.lib.language = $("lib-filter-lang").value.trim();
+      loadLibrary().catch(() => {});
+    }, 200));
+    $("form-lib-import").addEventListener("submit", importAsset);
+    $("lib-list").addEventListener("click", (e) => { onLibListClick(e).catch(() => {}); });
+    $("lib-file").addEventListener("change", () => {
+      const f = $("lib-file").files[0];
+      setText($("lib-file-label"), f ? `${f.name} · ${fmtBytes(f.size)}` : "选择音频文件（wav ⁄ mp3 ⁄ amr ⁄ aac）");
+    });
     $("form-config").addEventListener("submit", saveConfig);
     $("form-report").addEventListener("submit", reportMode);
     $("btn-theme").addEventListener("click", cycleTheme);
@@ -1996,6 +2222,7 @@
     await loadRegistry();
     await loadTemplates();
     await loadSamples();
+    await loadLibrary();
     try {
       await refreshList();
     } catch (err) {

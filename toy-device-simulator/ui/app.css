@@ -1345,6 +1345,47 @@ legend {
   font-size: 0.78rem;
 }
 
+/* ——— Phase 5f 音频库 ——— */
+.lib {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.lib__row {
+  padding: 0.5rem 0.15rem;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.lib__row:last-child {
+  border-bottom: 0;
+}
+
+.lib__row .mono {
+  font-size: 0.72rem;
+}
+
+.lib__acts {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.lib__acts .btn {
+  min-height: 1.8rem;
+  font-size: 0.74rem;
+}
+
+.file--sm span {
+  font-size: 0.78rem;
+}
+
 .turns a.btn {
   text-decoration: none;
   display: inline-flex;
