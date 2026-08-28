@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -65,24 +66,59 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	snapIns := d.instanceID
 	sr, ch, sf := d.cfg.Audio.SampleRate, d.cfg.Audio.Channels, d.cfg.Audio.SampleFormat
 	devFormat := d.cfg.Audio.Format
+	devBitrate := d.cfg.Audio.BitrateKbps
+	devSliceMs := d.cfg.Audio.SliceMs
 	s.mu.Unlock()
 
-	// Phase 5d 接通压缩格式上行前的临时闸：资产/库层已就绪，发送管线未接。
+	// Phase 5d：压缩格式设备（mp3/amr/aac）走 ffmpeg -re 流式上行；
+	// pcm/wav 保持原有预构建帧管线。
+	var (
+		pcm        []byte
+		durMs      int
+		streamOpen core.StreamOpen
+		chunkBytes int
+	)
 	if media.Compressed(devFormat) {
-		writeErr(w, http.StatusNotImplemented, "压缩格式设备的上行推流将在 phase5d 接通")
-		return
-	}
-
-	pcm, durMs, errCode, errMsg := s.buildSpeakPCM(r.Context(), body, sr, ch, sf)
-	if errCode != 0 {
-		writeErr(w, errCode, errMsg)
-		return
-	}
-	if hasStream {
-		maxDur := s.opts.Config.MaxStreamDurationSec
-		if maxDur > 0 && durMs > maxDur*1000 {
-			writeErr(w, http.StatusBadRequest, "stream 总时长超 max_stream_duration_sec")
+		if hasStream {
+			writeErr(w, http.StatusBadRequest, "压缩格式设备暂不支持 stream 拼接，请用 asset_id")
 			return
+		}
+		if s.opts.Media == nil {
+			writeErr(w, http.StatusBadRequest, "压缩格式上行需要 ffmpeg（未检测到）")
+			return
+		}
+		// 归一化码率：0 → 格式默认，amr 就近合法档位（与转码规格指纹一致）。
+		bitrate := media.NormalizeBitrate(devFormat, sr, devBitrate)
+		spec := media.Spec{Format: devFormat, SampleRate: sr, Channels: ch, BitrateKbps: bitrate}
+		path, dur, code, msg := s.resolveAssetFile(r.Context(), body.AssetID, spec)
+		if code != 0 {
+			writeErr(w, code, msg)
+			return
+		}
+		durMs = dur
+		tc := s.opts.Media
+		// 资产已满足设备规格（resolveAssetFile 保证）→ -c copy 仅限速直通。
+		streamOpen = func(ctx context.Context) (io.ReadCloser, error) {
+			return tc.StreamRealtime(ctx, path, spec, true)
+		}
+		if devSliceMs <= 0 {
+			devSliceMs = 100
+		}
+		chunkBytes = int(bitrate * 1000 / 8 * float64(devSliceMs) / 1000)
+	} else {
+		var errCode int
+		var errMsg string
+		pcm, durMs, errCode, errMsg = s.buildSpeakPCM(r.Context(), body, sr, ch, sf)
+		if errCode != 0 {
+			writeErr(w, errCode, errMsg)
+			return
+		}
+		if hasStream {
+			maxDur := s.opts.Config.MaxStreamDurationSec
+			if maxDur > 0 && durMs > maxDur*1000 {
+				writeErr(w, http.StatusBadRequest, "stream 总时长超 max_stream_duration_sec")
+				return
+			}
 		}
 	}
 
@@ -121,7 +157,13 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	ins := d.instanceID
 	s.mu.Unlock()
 
-	res, err := inst.SpeakPermit(pcm, s.tryAcquireSpeak)
+	var res core.SpeakResult
+	var err error
+	if streamOpen != nil {
+		res, err = inst.SpeakStreamPermit(streamOpen, durMs, chunkBytes, s.tryAcquireSpeak)
+	} else {
+		res, err = inst.SpeakPermit(pcm, s.tryAcquireSpeak)
+	}
 	if err != nil {
 		if errors.Is(err, core.ErrSpeakPermit) {
 			writeErr(w, http.StatusTooManyRequests, "speak_permit")
@@ -167,6 +209,9 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 		return
 	}
 	timeout := inst.WaitBudgetFor(len(pcm))
+	if streamOpen != nil {
+		timeout = inst.WaitBudgetForDuration(durMs)
+	}
 	if body.TimeoutSec != nil {
 		timeout = time.Duration(*body.TimeoutSec * float64(time.Second))
 	}

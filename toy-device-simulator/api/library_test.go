@@ -14,6 +14,12 @@ import (
 // makeMP3 用共享工具链生成 100ms mono mp3；无 ffmpeg / 缺编码器则 skip。
 func makeMP3(t *testing.T, sr int) []byte {
 	t.Helper()
+	return makeMP3Dur(t, sr, 100)
+}
+
+// makeMP3Dur 指定时长（ms）的 mono mp3（64kbps）。
+func makeMP3Dur(t *testing.T, sr, ms int) []byte {
+	t.Helper()
 	tc := sharedToolchain()
 	if tc == nil {
 		t.Skip("跳过（无 ffmpeg）")
@@ -23,7 +29,7 @@ func makeMP3(t *testing.T, sr int) []byte {
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.wav")
-	if err := os.WriteFile(src, wavPCM(sr), 0o644); err != nil {
+	if err := os.WriteFile(src, wavPCMDur(sr, ms), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(dir, "out.mp3")

@@ -302,7 +302,11 @@ func intField(m map[string]any, k string) int {
 }
 
 func wavPCM(sampleRate int) []byte {
-	n := sampleRate / 10 * 2 // 100ms s16le mono
+	return wavPCMDur(sampleRate, 100)
+}
+
+func wavPCMDur(sampleRate, ms int) []byte {
+	n := sampleRate * ms / 1000 * 2 // s16le mono
 	return core.EncodeWAV(core.PCM{
 		Samples:       bytes.Repeat([]byte{1, 0}, n/2),
 		SampleRate:    sampleRate,

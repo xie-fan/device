@@ -22,6 +22,7 @@ type SpeakResult struct {
 type queuedSpeak struct {
 	turnID     string
 	pcm        []byte
+	sp         *streamSpec // 非 nil = 压缩格式流式上行（Phase 5d）
 	tryAcquire func() bool
 }
 
@@ -34,8 +35,16 @@ func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err erro
 // tryAcquire 为 nil 时不占 speak_permit（Phase 1 CLI）。失败不得留下占用槽。
 // Phase 4：槽占用且 speak_backlog_depth>0 时入队（Queued=true），终态后自动出队。
 func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (SpeakResult, error) {
-	copied := append([]byte(nil), pcm...)
+	return d.speakPermit(append([]byte(nil), pcm...), nil, tryAcquire)
+}
 
+// SpeakStreamPermit Phase 5d：压缩格式上行。open 的实时流（ffmpeg -re）按
+// chunkBytes 聚合帧化发送；占槽/permit/backlog 语义与 SpeakPermit 一致。
+func (d *DeviceInstance) SpeakStreamPermit(open StreamOpen, durMs, chunkBytes int, tryAcquire func() bool) (SpeakResult, error) {
+	return d.speakPermit(nil, &streamSpec{open: open, durMs: durMs, chunk: chunkBytes}, tryAcquire)
+}
+
+func (d *DeviceInstance) speakPermit(copied []byte, sp *streamSpec, tryAcquire func() bool) (SpeakResult, error) {
 	d.deviceMu.Lock()
 	d.connMu.Lock()
 	st := d.connState
@@ -60,7 +69,7 @@ func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (SpeakR
 		}
 		turnID := d.allocTurnIDLocked()
 		d.turnDone[turnID] = make(chan Event, 1)
-		d.speakBacklog = append(d.speakBacklog, queuedSpeak{turnID: turnID, pcm: copied, tryAcquire: tryAcquire})
+		d.speakBacklog = append(d.speakBacklog, queuedSpeak{turnID: turnID, pcm: copied, sp: sp, tryAcquire: tryAcquire})
 		pos := len(d.speakBacklog)
 		_, en := d.appendEventLocked("speak_queued", turnID, fmt.Sprintf("pos=%d", pos), "", "", "")
 		d.deviceMu.Unlock()
@@ -71,7 +80,7 @@ func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (SpeakR
 	}
 
 	turnID := d.allocTurnIDLocked()
-	uuid, seqBefore, launch, err := d.startTurnLocked(turnID, copied, tryAcquire)
+	uuid, seqBefore, launch, err := d.startTurnLocked(turnID, copied, sp, tryAcquire)
 	if err != nil {
 		d.deviceMu.Unlock()
 		return SpeakResult{}, err
@@ -94,7 +103,8 @@ func (d *DeviceInstance) allocTurnIDLocked() string {
 
 // startTurnLocked 占槽并构造 turnRuntime；调用方必须持 deviceMu 且已确认槽空闲。
 // 返回的 launch 必须在解锁后调用（建录音文件、起上行协程）。失败不留占用槽。
-func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, tryAcquire func() bool) (uuid uint32, seqBefore int, launch func(), err error) {
+// sp 非 nil 时走流式上行（copied 应为 nil）。
+func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, sp *streamSpec, tryAcquire func() bool) (uuid uint32, seqBefore int, launch func(), err error) {
 	uuid = d.allocUUIDLocked()
 	var framesPath, upPath, downPath, turnPath string
 	if d.phase2Recording {
@@ -104,6 +114,10 @@ func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, tryAcquir
 	}
 	if err != nil {
 		return 0, 0, nil, err
+	}
+	if sp != nil && copied == nil {
+		// 流式上行无预置 PCM；空切片满足 Occupy 的「已拷贝」保护语义。
+		copied = []byte{}
 	}
 	if err := d.slot.Occupy(turnID, uuid, copied); err != nil {
 		return 0, 0, nil, err
@@ -143,6 +157,10 @@ func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, tryAcquir
 				_ = f.Close()
 			}
 		}
+		if sp != nil {
+			go d.uplinkTurnStream(turnID, uuid, *sp)
+			return
+		}
 		go d.uplinkTurn(turnID, uuid, pcmCopy)
 	}
 	return uuid, seqBefore, launch, nil
@@ -168,7 +186,7 @@ func (d *DeviceInstance) dispatchBacklog() {
 			en.NotifyHTTP()
 			continue
 		}
-		uuid, seqBefore, launch, err := d.startTurnLocked(q.turnID, q.pcm, q.tryAcquire)
+		uuid, seqBefore, launch, err := d.startTurnLocked(q.turnID, q.pcm, q.sp, q.tryAcquire)
 		if err != nil {
 			reason := "error"
 			if err == ErrSpeakPermit {
@@ -416,6 +434,19 @@ func (d *DeviceInstance) WaitBudgetFor(pcmBytes int) time.Duration {
 	upload := UploadDuration(pcmBytes, cfg.Audio.SampleRate, cfg.Audio.Channels, 2, cfg.Audio.SliceMs)
 	return WaitBudget(
 		upload,
+		seconds(cfg.Behavior.FirstReplyTimeoutSec),
+		seconds(cfg.Behavior.DownlinkIdleTimeoutSec),
+		seconds(cfg.Behavior.NonAudioFollowupSec),
+		seconds(cfg.Behavior.PostFinalASRSilenceSec),
+		seconds(cfg.Behavior.WaitTimeoutSlackSec),
+	)
+}
+
+// WaitBudgetForDuration 流式上行（压缩格式）：上行耗时由音频实际时长给出。
+func (d *DeviceInstance) WaitBudgetForDuration(durMs int) time.Duration {
+	cfg := d.Config()
+	return WaitBudget(
+		time.Duration(durMs)*time.Millisecond,
 		seconds(cfg.Behavior.FirstReplyTimeoutSec),
 		seconds(cfg.Behavior.DownlinkIdleTimeoutSec),
 		seconds(cfg.Behavior.NonAudioFollowupSec),
