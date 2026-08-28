@@ -16,6 +16,7 @@
     seenSeq: new Set(),
     newestSeq: 0,
     occupiedTurnId: null,
+    myTurns: new Set(),
     ws: null,
     wsKey: "",
     assetId: null,
@@ -1044,6 +1045,7 @@
 
   function resetTapeAux() {
     stopFramePoll();
+    state.myTurns = new Set();
     state.tapeOpen = new Set();
     state.framesByTurn = {};
     state.needFrames = new Set();
@@ -1154,7 +1156,19 @@
   function maybePlayDownlink(ev) {
     const kind = ev.reply_kind || "";
     if (!kind.includes("tts") || !ev.turn_id || !state.instanceId || !state.selectedId) return;
+    // 只自动播本页面会话发起的 turn：切换设备后 WS 从 oldest 回放的
+    // 历史 turn_terminal（含回放期间的 speak_dequeued）一律不自动播。
+    if (!state.myTurns.has(ev.turn_id)) return;
+    state.myTurns.delete(ev.turn_id);
     playHref(downlinkHref(ev.turn_id), ev.turn_id);
+  }
+
+  // resetPlayer 停止并隐藏播放器，切换设备/实例时旧音频不残留不续播。
+  function resetPlayer() {
+    const audio = $("downlink-audio");
+    try { audio.pause(); } catch { /* ignore */ }
+    audio.removeAttribute("src");
+    $("player-box").hidden = true;
   }
 
   // playHref 播放一段音频。opts 传字符串按 turn 下行处理，传对象可自定义
@@ -1278,6 +1292,7 @@
       state.seenSeq = new Set();
       state.newestSeq = 0;
       resetTapeAux();
+      resetPlayer();
       closeWS(false);
       setFollow(true);
       renderTape();
@@ -1727,6 +1742,8 @@
     const spoken = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/speak`, {
       asset_id: assetId,
     });
+    // 登记为本会话发起的 turn：终态时才允许自动播放下行。
+    if (spoken.turn_id) state.myTurns.add(spoken.turn_id);
     if (spoken.queued) {
       // Phase 4 backlog：槽占用时进队列，终态后自动出队。
       flash(`已排队 ${spoken.turn_id} · 位置 ${spoken.queue_position} · 终态后自动出队`, "ok");
