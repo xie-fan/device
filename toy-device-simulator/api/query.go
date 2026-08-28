@@ -1,12 +1,17 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"toy-device-simulator/core"
+	"toy-device-simulator/media"
 )
 
 func (s *Server) requireInstance(r *http.Request) (string, bool) {
@@ -201,8 +206,14 @@ func (s *Server) serveAudio(w http.ResponseWriter, r *http.Request, uplink bool)
 			outDir = tr.OutputDir
 		}
 	}
+	devFormat := ""
+	if live != nil {
+		devFormat = live.cfg.Audio.Format
+	} else {
+		devFormat = tomb.cfg.Audio.Format
+	}
 	s.mu.Unlock()
-	_, up, down, _, err := core.RecordingPathsPhase2(outDir, id, ins, turnID)
+	_, up, down, turnPath, err := core.RecordingPathsPhase2(outDir, id, ins, turnID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -211,15 +222,103 @@ func (s *Server) serveAudio(w http.ResponseWriter, r *http.Request, uplink bool)
 	if !uplink {
 		path = down
 	}
-	pcm, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "录音文件不存在")
 		return
 	}
-	wav := core.EncodeWAV(core.PCM{Samples: pcm, SampleRate: sr, Channels: ch, BitsPerSample: 16})
-	w.Header().Set("Content-Type", "audio/wav")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(wav)
+
+	// Phase 5e 格式判定：上行内容=发出的帧 payload 拼接 → 格式即设备 format；
+	// 下行以 turn.json 记录的首帧头格式为准，缺省按设备 format 推断
+	// （压缩设备→设备格式；pcm/wav 设备的下行历史均为裸 PCM）。
+	format := devFormat
+	if !uplink {
+		df, dsr := readTurnDownMeta(turnPath)
+		switch {
+		case df != "":
+			format = df
+			if dsr > 0 {
+				sr = dsr
+			}
+		case media.Compressed(devFormat):
+			format = devFormat
+		default:
+			format = media.FormatPCM
+		}
+	}
+	rawMode := r.URL.Query().Get("raw") == "1"
+	switch {
+	case format == media.FormatPCM || format == "":
+		if rawMode {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		wav := core.EncodeWAV(core.PCM{Samples: data, SampleRate: sr, Channels: ch, BitsPerSample: 16})
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(wav)
+	case format == media.FormatWAV:
+		// wav 设备的上行流本身就是完整 RIFF 文件，原样即可播。
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	default:
+		if rawMode {
+			w.Header().Set("Content-Type", mimeByFormat(format))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		if s.opts.Media == nil {
+			writeErr(w, http.StatusBadRequest, "压缩格式试听需要 ffmpeg；可用 ?raw=1 取原始字节")
+			return
+		}
+		wav, terr := s.transcodeBytesToWAV(r.Context(), data, format)
+		if terr != nil {
+			writeErr(w, http.StatusInternalServerError, "解码失败："+terr.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(wav)
+	}
+}
+
+// readTurnDownMeta 读 turn.json（JSONL，取最后一行）的下行格式记录。
+func readTurnDownMeta(turnPath string) (format string, sampleRate int) {
+	raw, err := os.ReadFile(turnPath)
+	if err != nil {
+		return "", 0
+	}
+	var row struct {
+		DownFormat     string `json:"down_format"`
+		DownSampleRate int    `json:"down_sample_rate"`
+	}
+	lines := bytes.Split(bytes.TrimSpace(raw), []byte("\n"))
+	if len(lines) == 0 {
+		return "", 0
+	}
+	if err := json.Unmarshal(lines[len(lines)-1], &row); err != nil {
+		return "", 0
+	}
+	return row.DownFormat, row.DownSampleRate
+}
+
+// transcodeBytesToWAV 压缩字节 → wav（试听用；不重采样，保留源参数）。
+func (s *Server) transcodeBytesToWAV(ctx context.Context, data []byte, format string) ([]byte, error) {
+	src := filepath.Join(os.TempDir(), "tds-play-"+newAssetID()[4:]+extByFormat(format))
+	if err := os.WriteFile(src, data, 0o644); err != nil {
+		return nil, err
+	}
+	defer os.Remove(src)
+	dst := src + ".wav"
+	defer os.Remove(dst)
+	if err := s.opts.Media.TranscodeFile(ctx, src, dst, media.Spec{Format: media.FormatWAV}); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(dst)
 }
 
 func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {

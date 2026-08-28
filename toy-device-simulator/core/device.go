@@ -59,6 +59,11 @@ type turnRuntime struct {
 	hasFinal bool
 	hasInter bool
 
+	// Phase 5e：下行格式感知——首个 TTS 帧头的 AudioFormat/SamplingRate，
+	// 落进 turn.json 供回放 API 按实际格式处理。
+	downFormat     string
+	downSampleRate int
+
 	early EarlyBuf
 
 	firstReply *time.Timer
@@ -356,6 +361,8 @@ func (d *DeviceInstance) submitTurnFileLocked(ev Event) {
 		SeqBefore:       d.turn.seqBefore,
 		StartedAt:       recording.FormatTS(d.turn.startedAt),
 		EndedAt:         recording.FormatTS(ev.At),
+		DownFormat:      d.turn.downFormat,
+		DownSampleRate:  d.turn.downSampleRate,
 	})
 }
 

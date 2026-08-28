@@ -41,6 +41,9 @@ type TurnRow struct {
 	SeqBefore       int    `json:"seq_before"`
 	StartedAt       string `json:"started_at"`
 	EndedAt         string `json:"ended_at"`
+	// Phase 5e：下行实际格式（首个 TTS 帧头），回放 API 据此处理；空=无下行音频。
+	DownFormat     string `json:"down_format,omitempty"`
+	DownSampleRate int    `json:"down_sample_rate,omitempty"`
 }
 
 type job struct {

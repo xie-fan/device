@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"toy-device-simulator/protocol"
@@ -79,6 +80,11 @@ func (d *DeviceInstance) handleAudioDownlink(raw []byte) {
 		acc = append(acc, n)
 		if d.turn != nil {
 			d.turn.hasTTS = true
+			// Phase 5e：按首帧头记录下行实际格式（不再假定 PCM）。
+			if d.turn.downFormat == "" {
+				d.turn.downFormat = strings.TrimRight(string(h.AudioFormat[:]), "\x00")
+				d.turn.downSampleRate = int(h.SamplingRate)
+			}
 			d.recorder.SubmitPCM(d.turn.downPath, view.Payload, false)
 		}
 		if h.NeedAck == 1 {

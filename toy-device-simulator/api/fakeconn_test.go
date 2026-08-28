@@ -158,15 +158,27 @@ func startAuto(c *fakeConn, opts autoOpts) {
 						c.Push([]byte(`{"RequestID":"r1","Code":1,"CodeMsg":"音频处理失败，请稍后重试","Data":null}`))
 						continue
 					}
-					if opts.replyTTS && !sentTTS {
-						sentTTS = true
-						h := protocol.NewPCMHeader(protocol.StageUploading, 0, view.Header.UUID, 4, 16000)
-						if opts.needAck {
-							h.NeedAck = 1
-						}
-						frame, _ := protocol.EncodeAudioFrame(h, []byte{0x01, 0x02, 0x03, 0x04})
-						c.Push(frame)
+				if opts.replyTTS && !sentTTS {
+					sentTTS = true
+					format := opts.ttsFormat
+					if format == "" {
+						format = "pcm"
 					}
+					sr := opts.ttsSampleRate
+					if sr == 0 {
+						sr = 16000
+					}
+					payload := opts.ttsPayload
+					if payload == nil {
+						payload = []byte{0x01, 0x02, 0x03, 0x04}
+					}
+					h := protocol.NewAudioHeader(format, protocol.StageUploading, 0, view.Header.UUID, uint32(len(payload)), uint32(sr))
+					if opts.needAck {
+						h.NeedAck = 1
+					}
+					frame, _ := protocol.EncodeAudioFrame(h, payload)
+					c.Push(frame)
+				}
 				}
 			case <-c.closed:
 				return

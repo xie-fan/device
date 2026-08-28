@@ -27,6 +27,10 @@ type autoOpts struct {
 	silent   bool
 	// echoLimit>0 时只回显前 N 个 report echo（用于探针 echo 超时用例）。
 	echoLimit int
+	// Phase 5e：定制 TTS 回复的帧头格式 / 采样率 / 内容（缺省 pcm/16000/{1,2,3,4}）。
+	ttsFormat     string
+	ttsSampleRate int
+	ttsPayload    []byte
 }
 
 type testEnv struct {
