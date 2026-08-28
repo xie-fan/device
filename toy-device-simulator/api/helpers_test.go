@@ -15,6 +15,7 @@ import (
 
 	"toy-device-simulator/core"
 	"toy-device-simulator/manager"
+	"toy-device-simulator/media"
 	"toy-device-simulator/protocol"
 )
 
@@ -95,6 +96,18 @@ func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *tes
 	return e
 }
 
+// sharedToolchain 测试共享的 ffmpeg 工具链：探测一次；无 ffmpeg 环境返回 nil，
+// 依赖转码的用例自行 skip。
+var (
+	tcOnce   sync.Once
+	sharedTC *media.Toolchain
+)
+
+func sharedToolchain() *media.Toolchain {
+	tcOnce.Do(func() { sharedTC, _ = media.Detect("") })
+	return sharedTC
+}
+
 // start 用当前 Options 建 Server；restart 复用同一 registry 路径验证落盘。
 func (e *testEnv) start(t *testing.T, ttl time.Duration) {
 	t.Helper()
@@ -105,6 +118,7 @@ func (e *testEnv) start(t *testing.T, ttl time.Duration) {
 		RecordingsDir: e.recDir,
 		RegistryPath:  e.registry,
 		TTL:           ttl,
+		Media:         sharedToolchain(),
 		AfterAssetStat: func() {
 			if e.afterStat != nil {
 				e.afterStat()

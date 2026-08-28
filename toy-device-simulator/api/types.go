@@ -56,17 +56,6 @@ type tombstone struct {
 	gen        int
 }
 
-type assetObj struct {
-	id           string
-	path         string
-	epoch        int
-	bytes        int
-	durationMs   int
-	sampleRate   int
-	channels     int
-	sampleFormat string
-}
-
 type scenarioRun struct {
 	ID     string       `json:"run_id"`
 	Status string       `json:"status"`

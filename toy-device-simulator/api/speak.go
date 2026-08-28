@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"toy-device-simulator/core"
+	"toy-device-simulator/media"
 )
 
 type speakBody struct {
@@ -62,9 +64,16 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	snapInst := d.inst
 	snapIns := d.instanceID
 	sr, ch, sf := d.cfg.Audio.SampleRate, d.cfg.Audio.Channels, d.cfg.Audio.SampleFormat
+	devFormat := d.cfg.Audio.Format
 	s.mu.Unlock()
 
-	pcm, durMs, errCode, errMsg := s.buildSpeakPCM(body, sr, ch, sf)
+	// Phase 5d 接通压缩格式上行前的临时闸：资产/库层已就绪，发送管线未接。
+	if media.Compressed(devFormat) {
+		writeErr(w, http.StatusNotImplemented, "压缩格式设备的上行推流将在 phase5d 接通")
+		return
+	}
+
+	pcm, durMs, errCode, errMsg := s.buildSpeakPCM(r.Context(), body, sr, ch, sf)
 	if errCode != 0 {
 		writeErr(w, errCode, errMsg)
 		return
@@ -187,39 +196,28 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) buildSpeakPCM(body speakBody, sr, ch int, sf string) (pcm []byte, durMs, code int, msg string) {
+// buildSpeakPCM 组装上行 PCM。Phase 5c：资产格式与设备不符时经 ffmpeg
+// 转码派生副本（缓存复用），任意入库格式均可喂 pcm/wav 设备。
+func (s *Server) buildSpeakPCM(ctx context.Context, body speakBody, sr, ch int, sf string) (pcm []byte, durMs, code int, msg string) {
+	_ = sf // 设备 sample_format 固定 s16le，解析统一产出 s16le
 	if body.AssetID != "" {
-		raw, _, err := s.copyAsset(body.AssetID)
-		if err != nil {
-			return nil, 0, http.StatusNotFound, "asset 不存在或 epoch 已变"
+		p, dur, errCode, errMsg := s.resolveAssetWAV(ctx, body.AssetID, sr, ch)
+		if errCode != 0 {
+			return nil, 0, errCode, errMsg
 		}
-		p, err := core.DecodeWAV(raw)
-		if err != nil {
-			return nil, 0, http.StatusBadRequest, "非 WAV"
-		}
-		if err := p.Match(sr, ch, sf); err != nil {
-			return nil, 0, http.StatusBadRequest, "WAV fmt 与设备 audio_* 不符"
-		}
-		return p.Samples, wavDurationMs(p), 0, ""
+		return p.Samples, dur, 0, ""
 	}
 	var out []byte
 	total := 0
 	for _, e := range body.Stream {
 		switch e.Type {
 		case "audio":
-			raw, _, err := s.copyAsset(e.AssetID)
-			if err != nil {
-				return nil, 0, http.StatusNotFound, "asset 不存在或 epoch 已变"
-			}
-			p, err := core.DecodeWAV(raw)
-			if err != nil {
-				return nil, 0, http.StatusBadRequest, "非 WAV"
-			}
-			if err := p.Match(sr, ch, sf); err != nil {
-				return nil, 0, http.StatusBadRequest, "WAV fmt 与设备 audio_* 不符"
+			p, dur, errCode, errMsg := s.resolveAssetWAV(ctx, e.AssetID, sr, ch)
+			if errCode != 0 {
+				return nil, 0, errCode, errMsg
 			}
 			out = append(out, p.Samples...)
-			total += wavDurationMs(p)
+			total += dur
 		case "silence":
 			n := sr * ch * 2 * e.DurationMs / 1000
 			if n < 0 {

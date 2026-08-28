@@ -32,8 +32,10 @@ func main() {
 		os.Exit(1)
 	}
 	// ffmpeg 缺失只降级不拦截：pcm/wav 全路径不依赖它。
-	if tc, err := media.Detect(cfg.FFmpegPath); err != nil {
+	tc, err := media.Detect(cfg.FFmpegPath)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "ffmpeg 不可用（多格式音频功能受限）：%v\n", err)
+		tc = nil
 	} else {
 		fmt.Fprintf(os.Stderr, "ffmpeg: %s\n编码能力: %s\n", tc.FFmpeg, tc.Capabilities())
 	}
@@ -42,6 +44,7 @@ func main() {
 		TemplatesDir:  *templates,
 		RecordingsDir: *recordings,
 		RegistryPath:  *registry,
+		Media:         tc,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "registry 拒绝:", err)

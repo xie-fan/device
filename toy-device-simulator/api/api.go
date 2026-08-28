@@ -10,6 +10,7 @@ import (
 
 	"toy-device-simulator/core"
 	"toy-device-simulator/manager"
+	"toy-device-simulator/media"
 )
 
 // Options 测试与进程入口共用。
@@ -23,6 +24,8 @@ type Options struct {
 	AfterAssetStat func()
 	// TTL 测试覆盖 event log / 录音目录的过期时间；0 则用 Config.EventLogTTLHours。
 	TTL time.Duration
+	// Media ffmpeg 工具链；nil = 无 ffmpeg（多格式上传/转码报 4xx，pcm/wav 照常）。
+	Media *media.Toolchain
 }
 
 type Server struct {
@@ -60,10 +63,13 @@ func New(opts Options) (http.Handler, error) {
 		assets:  map[string]*assetObj{},
 		runs:    map[string]*scenarioRun{},
 	}
+	s.loadAssetIndex()
 	mux := http.NewServeMux()
 	s.mux = mux
 	mux.HandleFunc("POST /assets", s.handlePostAsset)
+	mux.HandleFunc("GET /assets", s.handleListAssets)
 	mux.HandleFunc("GET /assets/{id}", s.handleGetAsset)
+	mux.HandleFunc("PATCH /assets/{id}", s.handlePatchAsset)
 	mux.HandleFunc("GET /assets/{id}/content", s.handleGetAssetContent)
 	mux.HandleFunc("DELETE /assets/{id}", s.handleDeleteAsset)
 

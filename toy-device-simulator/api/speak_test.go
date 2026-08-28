@@ -48,7 +48,9 @@ func TestSpeakStreamDurationExceedsMax400(t *testing.T) {
 	}
 }
 
-func TestSpeakWAVFmtMismatch400(t *testing.T) {
+// Phase 5c：采样率不符的资产不再直接 400——有 ffmpeg 时自动重采样转码
+// （派生副本缓存），无 ffmpeg 时保持 400。
+func TestSpeakWAVFmtMismatchAutoTranscodes(t *testing.T) {
 	e := newEnv(t)
 	e.createStartReady(t, "sim_fmt")
 	code, body := e.postAsset(t, "8k.wav", wavPCM(8000))
@@ -57,8 +59,14 @@ func TestSpeakWAVFmtMismatch400(t *testing.T) {
 	}
 	assetID := strField(decodeMap(t, body), "asset_id")
 	code, body = e.post(t, "/devices/sim_fmt/speak", map[string]any{"asset_id": assetID})
+	if sharedToolchain() != nil {
+		if code != http.StatusAccepted {
+			t.Fatalf("有 ffmpeg 时 fmt 不符应自动转码并 202，得到 %d body=%s", code, body)
+		}
+		return
+	}
 	if code != http.StatusBadRequest {
-		t.Fatalf("WAV fmt 与设备 audio_* 不符应 400，得到 %d body=%s", code, body)
+		t.Fatalf("无 ffmpeg 时 fmt 不符应 400，得到 %d body=%s", code, body)
 	}
 }
 
