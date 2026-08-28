@@ -9,6 +9,7 @@ import (
 
 	"toy-device-simulator/api"
 	"toy-device-simulator/manager"
+	"toy-device-simulator/media"
 )
 
 func main() {
@@ -29,6 +30,12 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "配置拒绝:", err)
 		os.Exit(1)
+	}
+	// ffmpeg 缺失只降级不拦截：pcm/wav 全路径不依赖它。
+	if tc, err := media.Detect(cfg.FFmpegPath); err != nil {
+		fmt.Fprintf(os.Stderr, "ffmpeg 不可用（多格式音频功能受限）：%v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "ffmpeg: %s\n编码能力: %s\n", tc.FFmpeg, tc.Capabilities())
 	}
 	h, err := api.New(api.Options{
 		Config:        cfg,

@@ -13,3 +13,6 @@ manager:
   max_stream_entries: 16
   max_stream_duration_sec: 60
   wait_ready_timeout_sec: 30
+  # ffmpeg 可执行文件路径；留空则查 PATH。amr 编码需要 full build
+  # （essentials build 缺 libopencore_amrnb/libvo_amrwbenc）。
+  ffmpeg_path: ""

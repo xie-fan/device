@@ -23,6 +23,9 @@ type Config struct {
 	MaxStreamEntries      int    `yaml:"max_stream_entries"`
 	MaxStreamDurationSec  int    `yaml:"max_stream_duration_sec"`
 	WaitReadyTimeoutSec   int    `yaml:"wait_ready_timeout_sec"`
+	// FFmpegPath ffmpeg 可执行文件路径；空 = 查 PATH。
+	// ffprobe 要求与 ffmpeg 同目录（显式指定时）。
+	FFmpegPath string `yaml:"ffmpeg_path"`
 }
 
 type file struct {
