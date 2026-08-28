@@ -47,7 +47,9 @@ DeviceInstance:
 protocol: AudioHeader / '1' / '4' / '{'
 recordings/{device_id}/{instance_id}/{turn_id}/     # Phase 2
 recordings/{device_id}/{turn_id}/                   # Phase 1 单进程
-assets/{asset_id}.wav + epoch
+assets/index.json + {asset_id}.{ext} + epoch        # Phase 5 持久库（原格式保存）
+assets/{asset_id}.v.{fp}.{ext}                      # 选用时转码派生副本缓存（不进 index）
+media: ffmpeg/ffprobe（Probe / TranscodeFile / StreamRealtime -re）
 ```
 
 ## 4. 核心抽象
@@ -95,7 +97,7 @@ Starting / Stopping / Created / Stopped 均不可 speak。409 body 含 `instance
    - 持 `asset_mu`：不存在 → 404；记下 `path`、`epoch0`；**立即解锁**。
    - **无锁**按 `path` 读全部字节。打开/读失败 → 404。
    - 再持 `asset_mu`：不存在 **或** `epoch != epoch0` → 404（拷贝窗口内 DELETE 已发生）；否则解锁。
-   - WAV fmt 必须等于步骤 2 的 `audio_fp`，否则 400。
+   - WAV fmt 等于步骤 2 的 `audio_fp` → 直通。Phase 5 起不符不再 400：经 ffmpeg 转派生副本后按副本走（无 ffmpeg 仍 400）；压缩格式设备的流式受理与预算见 phase5.md。转码在占槽前完成，不改变本受理顺序的锁纪律。
 4. `silence`：内部生成全零 PCM，格式同 `audio_fp`，禁止拼接 RIFF。
 5. 持 `device_mu`：`audio_fp` 已变 → 409 `audio_config_changed`；`snap_gen != 0` 且不等于当前 generation → 409 `generation_changed`；再检查 speakable → CAS Reserved → 成功路径内 TryAcquire speak_permit。失败则丢弃 PCM，409/429，**不得**留下 Reserved。
 6. 同锁登记 `seq_before`、挂 PCM、speak_and_wait waiter。解锁后由上行协程经 outbound buffer 发送。
@@ -700,10 +702,10 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 
 禁止 HTTP 读任意服务器路径。raw PCM 上传属 Phase 4（fmt 三项全给、服务端包 WAV 头，契约见 phase4.md）；Phase 2 语义不变。
 
-- `POST /assets`：WAV（RIFF PCM fmt），或 Phase 4 raw PCM。超 `max_asset_bytes` 或 duration 超 `max_asset_duration_sec` → 400。
-- `POST /devices/{id}/speak`：WAV 的 sample_rate/channels/sample_format 必须等于设备当前 `audio_*`，否则 400。
-- `stream`：元素个数 ≤ `max_stream_entries`（默认 16）。各 audio 段 duration 与各 `silence.duration_ms` 之和 ≤ `max_stream_duration_sec * 1000`（默认 60s），否则 400。`silence` 为内部全零 PCM，格式同 `audio_fp`，禁止拼接 RIFF。
-- 下载：`Content-Type: audio/wav`。CLI `--audio` 仅 Phase 1。
+- `POST /assets`：WAV（RIFF PCM fmt）、Phase 4 raw PCM；有 ffmpeg 时任意 ffprobe 可识别音频（Phase 5 库语义、`name`/`language`/`device_id` 字段见 phase5.md）。超 `max_asset_bytes` 或 duration 超 `max_asset_duration_sec` → 400。
+- `POST /devices/{id}/speak`：资产规格与设备 `audio_*` 不符时经 ffmpeg 派生副本自动转码（无 ffmpeg → 400）；压缩格式设备见 phase5.md。
+- `stream`：元素个数 ≤ `max_stream_entries`（默认 16）。各 audio 段 duration 与各 `silence.duration_ms` 之和 ≤ `max_stream_duration_sec * 1000`（默认 60s），否则 400。`silence` 为内部全零 PCM，格式同 `audio_fp`，禁止拼接 RIFF。压缩格式设备不支持 `stream` → 400。
+- 下载：默认解码为 `audio/wav` 试听；`?raw=1` 原始字节 + 实际格式 Content-Type（Phase 5 格式感知，含 turn.json `down_format`）。CLI `--audio` 仅 Phase 1。
 - **Turn / frames / audio：** 查询参数 **必填** `instance_id`。路由 §4.2。缺 → 400。只返回该 instance 的 Turn。tombstone TTL 内且文件仍在 → 200；文件缺失 → 404。禁止只凭 `device_id`+`turn_id` 在多个 instance 目录里搜索。
 
 ## 5. 硬约束
