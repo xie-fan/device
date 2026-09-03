@@ -1,5 +1,7 @@
 // echosrv 是本地验收用的极简协议服务端：注册即 ack、report 原样回显、
-// 收到上行首帧后回一段可听见的 440Hz TTS（PCM 分帧慢推，模拟真实下行节奏）。
+// 收到上行首帧后回一段可听见的 440Hz TTS（慢推，模拟真实下行节奏）。
+// 下行格式跟随该轮上行格式，分包形态照抄真实服务端（见 downlink.go）；
+// 无 ffmpeg 或转不出目标格式时退回 PCM。
 // 不发结束标志——设备靠 downlink_idle_timeout_sec 自行终态，这与真实服务端
 // 静默收尾的行为一致。仅供 UI/联调，无任何生产语义。
 package main
@@ -9,7 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
+
 	"net/http"
 	"os"
 	"strings"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"toy-device-simulator/media"
 	"toy-device-simulator/protocol"
 )
 
@@ -32,19 +35,25 @@ func main() {
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(1)
 	}
+	tc, terr := media.Detect("")
+	if terr != nil {
+		fmt.Fprintf(os.Stderr, "echosrv: 未找到 ffmpeg，下行一律回 pcm：%v\n", terr)
+	} else {
+		fmt.Fprintf(os.Stderr, "echosrv: ffmpeg 编码能力 %s\n", tc.Capabilities())
+	}
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		c, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		log.Printf("连接 %s path=%s", r.RemoteAddr, r.URL.Path)
-		go serve(c, *ttsMs)
+		go serve(c, tc, *ttsMs)
 	})
 	fmt.Fprintf(os.Stderr, "echosrv listening on %s\n", *addr)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-func serve(c *websocket.Conn, ttsMs int) {
+func serve(c *websocket.Conn, tc *media.Toolchain, ttsMs int) {
 	defer c.Close()
 	var wmu sync.Mutex
 	send := func(b []byte) error {
@@ -93,39 +102,50 @@ func serve(c *websocket.Conn, ttsMs int) {
 				continue
 			}
 			replied[uuid] = true
-			go streamTTS(send, uuid, ttsMs)
+			format := strings.TrimRight(string(view.Header.AudioFormat[:]), "\x00")
+			go streamTTS(send, tc, uuid, format, int(view.Header.SamplingRate), ttsMs)
 		}
 	}
 }
 
-// streamTTS 按 100ms 一帧慢推正弦音，贴近真实服务端的下行节奏，
+// streamTTS 慢推一段正弦音，贴近真实服务端的下行节奏，
 // 给「TTS 播放期间再送一条 → 排队」的验收留出操作窗口。
-func streamTTS(send func([]byte) error, uuid uint32, totalMs int) {
-	const rate = 16000
-	frames := totalMs / 100
-	if frames < 1 {
-		frames = 1
+// 格式与分包见 downlink.go；节奏按各包字节占比分摊 totalMs——
+// 20 KB 的 AAC 包本就对应一秒多音频，固定 100ms 一帧会失真。
+func streamTTS(send func([]byte) error, tc *media.Toolchain, uuid uint32, upFormat string, upRate int, totalMs int) {
+	rate := upRate
+	if rate <= 0 {
+		rate = 16000
 	}
-	samplesPerFrame := rate / 10
-	seq := uint32(0)
-	for f := 0; f < frames; f++ {
-		payload := make([]byte, samplesPerFrame*2)
-		for i := 0; i < samplesPerFrame; i++ {
-			t := float64(f*samplesPerFrame+i) / rate
-			v := int16(8000 * math.Sin(2*math.Pi*440*t))
-			payload[2*i] = byte(v)
-			payload[2*i+1] = byte(v >> 8)
-		}
-		h := protocol.NewPCMHeader(protocol.StageUploading, seq, uuid, 0, rate)
-		frame, err := protocol.EncodeAudioFrame(h, payload)
+	if upFormat == "" {
+		upFormat = media.FormatPCM
+	}
+	packets, format := buildDownlink(tc, upFormat, rate, totalMs)
+	if len(packets) == 0 {
+		return
+	}
+	total := 0
+	for _, p := range packets {
+		total += len(p)
+	}
+	for seq, p := range packets {
+		h := protocol.NewAudioHeader(format, protocol.StageUploading, uint32(seq), uuid, 0, uint32(rate))
+		frame, err := protocol.EncodeAudioFrame(h, p)
 		if err != nil {
 			return
 		}
 		if send(frame) != nil {
 			return
 		}
-		seq++
-		time.Sleep(100 * time.Millisecond)
+		// 包间隔按字节占比分摊，但封顶 1s：20 KB 的包对应一秒多音频，
+		// 照字节占比等出来的间隔会超过设备的 downlink_idle_timeout_sec，
+		// turn 在第一包后就 idle 收尾、后面的包全丢（实测过）。
+		gap := time.Duration(totalMs) * time.Millisecond * time.Duration(len(p)) / time.Duration(total)
+		if gap > time.Second {
+			gap = time.Second
+		}
+		time.Sleep(gap)
 	}
-	log.Printf("TTS 完成 uuid=%d frames=%d", uuid, frames)
+	log.Printf("TTS 完成 uuid=%d format=%s(上行 %s) rate=%d packets=%d bytes=%d",
+		uuid, format, upFormat, rate, len(packets), total)
 }

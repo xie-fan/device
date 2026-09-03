@@ -733,7 +733,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 
 ## 6. 音频管线
 
-源 WAV 解 RIFF → 内部 PCM → silence=全零 → 按 slice_ms 切 pcm 字节。禁止逐片封装 WAV。Phase 4 `audio.format=wav` 时整段只加一次 RIFF 头再切流（契约见 phase4.md）；mp3 未落地。
+源 WAV 解 RIFF → 内部 PCM → silence=全零 → 按 slice_ms 切 pcm 字节。禁止逐片封装 WAV。Phase 4 `audio.format=wav` 时整段只加一次 RIFF 头再切流（契约见 phase4.md）。压缩格式（mp3/amr/aac）走 ffmpeg：转码到设备规格后 `-re` 限速推流，节奏由 ffmpeg 给出（phase5.md）；mp3 产物为裸 MPEG 帧流，不带 ID3/Xing（phase6.md）。
 
 ## 7. 技术选型
 
@@ -747,6 +747,8 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 | Phase 2 | 批量+API+Scenario；playingMode 热更新；JSON ACK；WAV |
 | Phase 3 | UI 只消费 Phase 2 |
 | Phase 4 | speak backlog、静默探针、raw PCM、全局总线、断开打断、wav 推流 |
+| Phase 5 | 多格式音频：设备可配 mp3/amr/aac、音频库、ffmpeg 转码与 `-re` 推流、下行格式感知 |
+| Phase 6 | 多格式的本地闭环：echosrv 按上行格式回 TTS（分包拟真）、音频库解码试听、mp3 去 ID3 |
 
 ## 9. 目录
 

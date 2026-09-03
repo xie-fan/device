@@ -247,6 +247,12 @@ func (s *Server) serveAudio(w http.ResponseWriter, r *http.Request, uplink bool)
 		}
 	}
 	rawMode := r.URL.Query().Get("raw") == "1"
+	// 真实服务端的 AMR 下行是「每包一个独立文件」——包首都带存储头，原样追加
+	// 落盘后文件里就有多个头。解码前把后续的头剥掉（ffmpeg 会把它们当成坏帧
+	// 吃进去，每个多出约 20ms 杂音）。落盘契约不变，raw 仍给真实字节。
+	if !uplink && !rawMode && format == media.FormatAMR {
+		data = stripRepeatedAMRHeaders(data)
+	}
 	switch {
 	case format == media.FormatPCM || format == "":
 		if rawMode {
@@ -360,4 +366,26 @@ func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": log.After(after)})
+}
+
+// AMR 存储头（RFC 4867 §5）；下行按包重复出现，合并回一个文件时只留第一个。
+var amrStorageHeaders = [][]byte{[]byte("#!AMR-WB\n"), []byte("#!AMR\n")}
+
+// stripRepeatedAMRHeaders 保留首个存储头，删掉其余所有出现。
+func stripRepeatedAMRHeaders(data []byte) []byte {
+	var hdr []byte
+	for _, h := range amrStorageHeaders {
+		if bytes.HasPrefix(data, h) {
+			hdr = h
+			break
+		}
+	}
+	if hdr == nil {
+		return data
+	}
+	body := data[len(hdr):]
+	if !bytes.Contains(body, hdr) {
+		return data
+	}
+	return append(append([]byte(nil), hdr...), bytes.ReplaceAll(body, hdr, nil)...)
 }

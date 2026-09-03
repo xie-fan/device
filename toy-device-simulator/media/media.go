@@ -226,6 +226,16 @@ func NormalizeBitrate(format string, sampleRate int, kbps float64) float64 {
 	return kbps
 }
 
+// muxerArgs 容器层参数，与编码参数分开：`-c:a copy` 直通时编码参数被整体替换，
+// 混在里面会一起丢掉（Phase 6 实测：直通推流的 mp3 又长回了 ID3 头）。
+// mp3 muxer 默认写 ID3v2 与 Xing/LAME 帧，真实设备固件不会，带上就不忠实。
+func muxerArgs(format string) []string {
+	if format == FormatMP3 {
+		return []string{"-id3v2_version", "0", "-write_xing", "0"}
+	}
+	return nil
+}
+
 // encodeArgs 目标规格 → (编码参数, 容器/裸流 mux 名)。
 func encodeArgs(spec Spec) (codecArgs []string, mux string, err error) {
 	kbps := NormalizeBitrate(spec.Format, spec.SampleRate, spec.BitrateKbps)

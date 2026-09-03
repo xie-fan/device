@@ -1290,7 +1290,8 @@
     setText($("player-label"), o.label || "播放");
     const dl = $("player-dl");
     dl.hidden = false;
-    dl.href = href;
+    // 试听可能是服务端解码出来的 wav，下载按钮仍给原始文件（dlHref）。
+    dl.href = o.dlHref || href;
     dl.setAttribute("download", o.download || "audio.wav");
     audio.src = href;
     const p = audio.play();
@@ -1705,12 +1706,8 @@
   }
 
   // ——— 音频库 ———
-  // 浏览器 <audio> 大多能直接播的库格式；pcm 裸流与 amr 用不了原生试听。
-  const LIB_PLAYABLE = { wav: true, mp3: true, aac: true };
-  const LIB_NOPLAY_WHY = {
-    pcm: "pcm 是裸流，浏览器放不了；下载后用 ffplay 听",
-    amr: "amr 浏览器不支持解码；下载后用 ffplay 听",
-  };
+  // 试听一律走 ?decode=1，服务端解码成 wav 再给 <audio>：浏览器放不了 amr
+  // 与裸 pcm，而 manager 有现成的 ffmpeg 解码能力（Phase 6）。
 
   // 连改筛选时多个请求在飞，旧响应后到会覆盖新结果：只认最新一次。
   let libReqSeq = 0;
@@ -2036,8 +2033,6 @@
       <p class="hint">POST /assets（multipart）· wav / mp3 / amr / aac · 上限 10 MB / 60 秒</p>
       <div class="list">
         ${rows.length ? rows.map((a) => {
-          const noPlay = !LIB_PLAYABLE[a.format];
-          const why = LIB_NOPLAY_WHY[a.format] || `浏览器不支持直接播 ${a.format}`;
           const armed = state.lib.armedId === a.asset_id;
           const editing = state.lib.editingId === a.asset_id;
           if (editing) {
@@ -2056,9 +2051,9 @@
           return `<div class="row" data-id="${esc(a.asset_id)}">
             <div class="row__top">
               <span class="row__name" title="${esc(a.asset_id)}">${esc(a.name)}</span>
-              <span class="${tagCls(noPlay ? "mute" : "acc")}">${esc(a.format)}</span>
+              <span class="${tagCls("acc")}">${esc(a.format)}</span>
               <span class="grow"></span>
-              <button type="button" class="btn ${noPlay ? "btn--icon" : "btn--ok"} btn--tiny" data-asset="play"${noPlay ? ` disabled title="${esc(why)}"` : ""}>▶</button>
+              <button type="button" class="btn btn--ok btn--tiny" data-asset="play" title="试听（服务端解码为 wav）">▶</button>
               <button type="button" class="btn btn--ghost" data-asset="edit">改名</button>
               <button type="button" class="btn btn--danger btn--ghost" data-asset="del">${armed ? "再点一次" : "删除"}</button>
             </div>
@@ -2068,7 +2063,6 @@
               <span>${esc(fmtDurMs(a.duration_ms))}</span><span class="sep">|</span>
               <span>${esc(a.language || "—")}</span>
             </div>
-            ${noPlay ? `<div class="row__note">${esc(why)}</div>` : ""}
           </div>`;
         }).join("") : `<p class="blank--drawer">库是空的，先导入一条</p>`}
       </div>
@@ -2473,8 +2467,9 @@
     const body = $("drawer-body");
     const asset = state.lib.rows.find((a) => a.asset_id === id);
     if (act === "play") {
-      playHref(`/assets/${encodeURIComponent(id)}/content`, {
+      playHref(`/assets/${encodeURIComponent(id)}/content?decode=1`, {
         label: "试听 · " + (asset ? asset.name : id),
+        dlHref: `/assets/${encodeURIComponent(id)}/content`,
         download: (asset ? asset.name : id),
       });
       return;

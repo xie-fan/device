@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -514,6 +515,27 @@ func (s *Server) handleGetAssetContent(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "文件不存在")
 		return
 	}
+	// decode=1：解码成 wav 再给浏览器。amr 与裸 pcm 的原始字节 <audio> 放不出来，
+	// 而 manager 在 turn 回放那条路上早就有同一套 ffmpeg 解码能力（Phase 6）。
+	if r.URL.Query().Get("decode") == "1" && format != media.FormatWAV && format != media.FormatPCM {
+		if s.opts.Media == nil {
+			writeErr(w, http.StatusBadRequest, "解码试听需要 ffmpeg；去掉 decode 取原始字节")
+			return
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			writeErr(w, http.StatusNotFound, "文件不存在")
+			return
+		}
+		wav, terr := s.transcodeBytesToWAV(r.Context(), raw, format)
+		if terr != nil {
+			writeErr(w, http.StatusInternalServerError, "解码失败："+terr.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		http.ServeContent(w, r, "", st.ModTime(), bytes.NewReader(wav))
+		return
+	}
 	// ServeContent 支持 Range：浏览器媒体栈探测 mp3 等格式时长要 seek
 	// 文件尾，纯 200 全量会让 <audio> 卡在加载。
 	w.Header().Set("Content-Type", mimeByFormat(format))
@@ -599,7 +621,7 @@ func (s *Server) resolveAssetFile(ctx context.Context, id string, spec media.Spe
 	vpath := filepath.Join(s.assetsRoot(), id+".v."+fp+extByFormat(spec.Format))
 	part := vpath + ".part-" + newAssetID()[4:]
 	if err := s.opts.Media.TranscodeFile(ctx, src, part, spec); err != nil {
-		return "", 0, http.StatusBadRequest, "转码失败："+err.Error()
+		return "", 0, http.StatusBadRequest, "转码失败：" + err.Error()
 	}
 	if err := os.Rename(part, vpath); err != nil {
 		// 并发转码输家：对方已就位则用对方的，删掉自己的半成品。

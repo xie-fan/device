@@ -114,6 +114,7 @@ func (t *Toolchain) TranscodeFile(ctx context.Context, src, dst string, spec Spe
 		args = append(args, "-ac", strconv.Itoa(spec.Channels))
 	}
 	args = append(args, codecArgs...)
+	args = append(args, muxerArgs(spec.Format)...)
 	args = append(args, "-f", mux, dst)
 	cmd := exec.CommandContext(ctx, t.FFmpeg, args...)
 	hardenCancel(cmd)
@@ -150,6 +151,7 @@ func (t *Toolchain) StreamRealtime(ctx context.Context, src string, spec Spec, c
 		}
 	}
 	args = append(args, codecArgs...)
+	args = append(args, muxerArgs(spec.Format)...)
 	args = append(args, "-f", mux, "pipe:1")
 
 	cctx, cancel := context.WithCancel(ctx)

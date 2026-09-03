@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -111,12 +112,12 @@ func writeTestWAV(t *testing.T, ms int) string {
 	buf = append(buf, u32(uint32(36+len(data)))...)
 	buf = append(buf, "WAVEfmt "...)
 	buf = append(buf, u32(16)...)
-	buf = append(buf, u16(1)...)          // PCM
-	buf = append(buf, u16(1)...)          // mono
-	buf = append(buf, u32(sr)...)         // sample rate
-	buf = append(buf, u32(sr*2)...)       // byte rate
-	buf = append(buf, u16(2)...)          // block align
-	buf = append(buf, u16(16)...)         // bits
+	buf = append(buf, u16(1)...)    // PCM
+	buf = append(buf, u16(1)...)    // mono
+	buf = append(buf, u32(sr)...)   // sample rate
+	buf = append(buf, u32(sr*2)...) // byte rate
+	buf = append(buf, u16(2)...)    // block align
+	buf = append(buf, u16(16)...)   // bits
 	buf = append(buf, "data"...)
 	buf = append(buf, u32(uint32(len(data)))...)
 	buf = append(buf, data...)
@@ -257,4 +258,58 @@ func TestTranscodeAMRIfAvailable(t *testing.T) {
 	if info.Format != FormatAMR || info.SampleRate != 8000 {
 		t.Fatalf("amr 探测异常：%+v", info)
 	}
+}
+
+// mp3 产物两条路径都必须是裸 MPEG 帧流：ffmpeg 默认写 ID3v2 与 Xing/LAME 帧，
+// 真实设备固件不会。直通推流（-c:a copy）会整体替换编码参数，容器参数若混在
+// 编码参数里就会被丢掉——那正是 Phase 6 修的 bug，所以两条路径都要断言。
+func TestMP3OutputHasNoID3(t *testing.T) {
+	tc := requireTC(t)
+	if err := tc.CanEncode(FormatMP3, 16000); err != nil {
+		t.Skipf("跳过：%v", err)
+	}
+	ctx := context.Background()
+	spec := Spec{Format: FormatMP3, SampleRate: 16000, Channels: 1, BitrateKbps: 64}
+	mp3Path := filepath.Join(t.TempDir(), "naked.mp3")
+	if err := tc.TranscodeFile(ctx, writeTestWAV(t, 1000), mp3Path, spec); err != nil {
+		t.Fatal(err)
+	}
+	transcoded, err := os.ReadFile(mp3Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := tc.StreamRealtime(ctx, mp3Path, spec, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamed, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		what string
+		b    []byte
+	}{{"TranscodeFile", transcoded}, {"StreamRealtime", streamed}} {
+		if len(c.b) < 4 {
+			t.Fatalf("%s 产物过短：%d 字节", c.what, len(c.b))
+		}
+		if string(c.b[:3]) == "ID3" {
+			t.Errorf("%s 产物带 ID3 头：% x", c.what, c.b[:4])
+		}
+		if c.b[0] != 0xFF || c.b[1]&0xE0 != 0xE0 {
+			t.Errorf("%s 首字节不是 MPEG 帧同步字：% x", c.what, c.b[:4])
+		}
+		if bytes.Contains(c.b[:min(2048, len(c.b))], []byte("Xing")) ||
+			bytes.Contains(c.b[:min(2048, len(c.b))], []byte("Info")) {
+			t.Errorf("%s 产物带 Xing/Info 帧", c.what)
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
