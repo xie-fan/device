@@ -93,7 +93,32 @@ mode 4 坏帧吃掉、读成 **20.684 s**；去重后 **20.000 s**，`?raw=1` �
 下行格式跟随上行格式（`common/client/reply.go` 的 `audioConfig.Format = c.Format`），
 这既是 5g 实测结论，也是代码依据。
 
-## 边界（本阶段不做）
+## 5. VAD / Stage=4 实测（2026-09-03，真实服务端 VOICE-TEST）
+
+`architecture.md` 硬约束表写着「Stage=4 → 先 vad（若空），停 Stage=1，补 Stage=2」。
+这条约束此前**从未被验证**：`core.handleVADLocked` 无任何测试覆盖，echosrv 也从不发 Stage=4。
+用真实身份对真实服务端跑了三发（设备 `audio.format=pcm`，因而可用 `stream` 拼接）：
+
+| 探针 | 上行 | Stage=1 跨度 | Stage=2 | Stage=4 |
+|---|---|---|---|---|
+| A | 单资产 1.67 s | 1.60 s | +1.80 s | +1.98 s（晚 **0.17 s**） |
+| B | 1.67 s + 静音 0.8 s + 1.59 s | 4.01 s | +4.21 s | +4.37 s（晚 **0.16 s**） |
+| C | 1.67 s + 静音 3.0 s + 1.59 s | 6.21 s | +6.41 s | +6.54 s（晚 **0.12 s**） |
+
+结论：
+
+- **Stage=4 每轮都会来**，`vad` 事件每轮都记到了——`handleVADLocked` 一直在跑，不是死代码。
+- **但它恒定晚于我们自己的 Stage=2 约 0.12–0.17 s**，此时 `slot.UplinkEnd()` 已是 `stage2`、
+  状态也过了 `TurnWaitingReply`，所以该函数的三个副作用——写 `uplink_end_reason=vad`、
+  `turn.frozen=true` 停发剩余 Stage=1、补发 Stage=2——**一个都没触发**，只留下事件。
+- **插入静音不会让 ASR 提前 final**。服务端的 Stage=4 由云 ASR 的 `isFinal && text != ""`
+  触发（`module/voiceModule/voice_module.go` 的 `sendVadFlagIfSet`），而 `asr.vad`（默认 300 ms）
+  是传给厂商 ASR 的端点检测参数。实测这条链路上 ASR **只在上行流结束后**才给 final：
+  0.8 s 与 3.0 s 的数字静音都没能让它在流中途断句。
+
+因此 `uplink_end_reason=vad` 这条分支在当前服务端配置下**不可达**，
+`turn.frozen` 的停发路径同样从未执行。要覆盖它只能靠模拟服务端主动发 Stage=4。
+在此之前，硬约束表里那条不应被当成「已验证」。
 
 - opus / ogg / speex / silk / m4a——`audio.format` 取值域仍是 `pcm|wav|mp3|amr|aac` 五项。
 - Phase 5 的其余边界照旧不做：压缩设备的 `stream` 拼接、`bad_seq` 以外的故障注入走压缩流、
