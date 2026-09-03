@@ -155,6 +155,7 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		d := s.newManaged(cfg, body.Environment)
 		s.devices[cfg.DeviceID] = d
+		s.persistDevicesLocked()
 		s.mu.Unlock()
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"device_ids": []string{cfg.DeviceID},
@@ -212,6 +213,7 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		s.devices[id] = d
 		made = append(made, created{id, d})
 	}
+	s.persistDevicesLocked()
 	deviceIDs := make([]string, 0, len(made))
 	insts := make([]map[string]any, 0, len(made))
 	for _, c := range made {
@@ -445,6 +447,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if !running {
 		d.playingMode = next.PlayingMode
 	}
+	s.persistDevicesLocked()
 	writeJSON(w, http.StatusOK, configPublic(d.cfg, d.envName))
 }
 

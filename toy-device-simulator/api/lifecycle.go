@@ -353,6 +353,7 @@ func (s *Server) deleteDevice(id string) (int, any) {
 		gen:        d.gen,
 	}
 	delete(s.devices, id)
+	s.persistDevicesLocked()
 	s.mu.Unlock()
 	deletedNotify.NotifyHTTP()
 	return http.StatusOK, map[string]any{"device_id": id, "instance_id": ins, "deleted": true}

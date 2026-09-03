@@ -64,6 +64,7 @@ func New(opts Options) (http.Handler, error) {
 		runs:    map[string]*scenarioRun{},
 	}
 	s.loadAssetIndex()
+	s.loadDevices()
 	mux := http.NewServeMux()
 	s.mux = mux
 	mux.HandleFunc("POST /assets", s.handlePostAsset)
