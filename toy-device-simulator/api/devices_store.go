@@ -13,6 +13,7 @@ package api
 // ponytail: 整份重写，够几十台设备用；等到要按条件查、或多进程并发写，再换 sqlite。
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -71,7 +72,7 @@ func (s *Server) loadDevices() {
 func (s *Server) persistDevicesLocked() {
 	f := devicesStoreFile{Devices: make([]deviceStoreEntry, 0, len(s.devices))}
 	for _, d := range s.devices {
-		f.Devices = append(f.Devices, deviceStoreEntry{Environment: d.envName, Device: d.cfg})
+		f.Devices = append(f.Devices, deviceStoreEntry{Environment: d.defEnv, Device: d.def})
 	}
 	sort.Slice(f.Devices, func(i, j int) bool {
 		return f.Devices[i].Device.DeviceID < f.Devices[j].Device.DeviceID
@@ -87,4 +88,24 @@ func (s *Server) persistDevicesLocked() {
 		}
 	}
 	_ = os.WriteFile(path, raw, 0o644)
+}
+
+// overridden 当前值是否偏离落盘定义。比 yaml 字节而不是 reflect.DeepEqual：
+// Behavior 里有 *bool，比指针的语义不是我们要的。调用方须持 s.mu。
+func (d *managedDevice) overridden() bool {
+	if d.envName != d.defEnv {
+		return true
+	}
+	a, err1 := yaml.Marshal(d.cfg)
+	b, err2 := yaml.Marshal(d.def)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return !bytes.Equal(a, b)
+}
+
+// resetToDefinitionLocked 丢弃临时修改，回到落盘定义。调用方须持 s.mu。
+func (d *managedDevice) resetToDefinitionLocked() {
+	d.cfg = d.def
+	d.envName = d.defEnv
 }

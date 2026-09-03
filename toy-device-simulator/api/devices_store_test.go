@@ -11,11 +11,12 @@ func TestDevicesSurviveRestart(t *testing.T) {
 	e := newEnv(t)
 
 	e.createDevice(t, "keep_me")
-	code, _ := e.put(t, "/devices/keep_me/config", map[string]any{
+	// 落盘的是定义；PUT /config 的临时修改不落盘（见 TestConfigOverrideIsNotPersisted）。
+	code, _ := e.put(t, "/devices/keep_me/definition", map[string]any{
 		"audio": map[string]any{"format": "mp3", "sample_rate": 16000, "bitrate_kbps": 64},
 	})
 	if code != http.StatusOK {
-		t.Fatalf("PUT config 应 200，得到 %d", code)
+		t.Fatalf("PUT definition 应 200，得到 %d", code)
 	}
 
 	// 同一 assets_root（devices.yaml 与之同目录）重建 Server。
@@ -37,7 +38,7 @@ func TestDevicesSurviveRestart(t *testing.T) {
 		t.Fatalf("GET config 应 200，得到 %d", code)
 	}
 	if !containsBytes(cbody, `"format":"mp3"`) || !containsBytes(cbody, `"bitrate_kbps":64`) {
-		t.Fatalf("重启后应保留 PUT 过的音频配置：%s", cbody)
+		t.Fatalf("重启后应保留写进定义的音频配置：%s", cbody)
 	}
 }
 

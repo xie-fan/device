@@ -20,6 +20,10 @@ type managedDevice struct {
 	instanceID   string
 	envName      string // 配置树环境名；enterprise/device_type 简称在 cfg 里
 	cfg          config.Device
+	// def 是落盘的「设备定义」（基线）；cfg 是本次运行的当前值。
+	// PUT /config 只改 cfg（试这一次），PUT /definition 改 def 并落盘。
+	def    config.Device
+	defEnv string
 	state        string
 	gen          int
 	committed    map[int]bool

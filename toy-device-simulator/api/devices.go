@@ -243,6 +243,8 @@ func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 		instanceID:   ins,
 		envName:      envName,
 		cfg:          cfg,
+		def:          cfg,
+		defEnv:       envName,
 		state:        stCreated,
 		committed:    map[int]bool{},
 		log:          log,
@@ -285,8 +287,13 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := d.cfg
 	envName := d.envName
+	over := d.overridden()
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, configPublic(cfg, envName))
+	out := configPublic(cfg, envName)
+	// 当前值与落盘定义不一致时置位：界面据此提示「临时修改，未写入定义」，
+	// agent 据此判断这台设备是不是干净的基线。
+	out["overridden"] = over
+	writeJSON(w, http.StatusOK, out)
 }
 
 func configPublic(cfg config.Device, envName string) map[string]any {
@@ -408,47 +415,52 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	next := d.cfg
-	newEnv := d.envName
-	// 树引用重新挂靠：可部分给出，缺省沿用当前；持 s.mu 调 Resolve（叶子锁）。
+	next, newEnv, code, msg := s.patchConfigLocked(d, d.cfg, d.envName, raw)
+	if code != 0 {
+		writeErr(w, code, msg)
+		return
+	}
+	// 只改内存里的当前值，不落盘：抽屉是「试这一次」，manager 重启回到定义。
+	d.cfg = next
+	d.envName = newEnv
+	if !running {
+		d.playingMode = next.PlayingMode
+	}
+	writeJSON(w, http.StatusOK, configPublic(d.cfg, d.envName))
+}
+
+// patchConfigLocked 把 PUT body 打到 base 上，返回新配置与新环境名；
+// code!=0 表示失败。调用方须持 s.mu（Resolve 是叶子锁）。
+func (s *Server) patchConfigLocked(d *managedDevice, base config.Device, baseEnv string, raw map[string]any) (config.Device, string, int, string) {
+	next := base
+	newEnv := baseEnv
+	// 树引用重新挂靠：可部分给出，缺省沿用当前。
 	if hasAnyKey(raw, "environment", "enterprise", "device_type") {
-		env, ent, typ := d.envName, d.cfg.Enterprise, d.cfg.DeviceType
+		env, ent, typ := baseEnv, base.Enterprise, base.DeviceType
 		if err := takeStringKey(raw, "environment", &env); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			return next, newEnv, http.StatusBadRequest, err.Error()
 		}
 		if err := takeStringKey(raw, "enterprise", &ent); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			return next, newEnv, http.StatusBadRequest, err.Error()
 		}
 		if err := takeStringKey(raw, "device_type", &typ); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
+			return next, newEnv, http.StatusBadRequest, err.Error()
 		}
 		resolved, err := s.reg.Resolve(env, ent, typ, d.id)
 		if err != nil {
-			writeErr(w, refErrStatus(err), err.Error())
-			return
+			return next, newEnv, refErrStatus(err), err.Error()
 		}
 		next.Enterprise, next.DeviceType = ent, typ
 		next.Server.URL = resolved
 		newEnv = env
 	}
 	if err := applyPutAllowlist(&next, raw); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		return next, newEnv, http.StatusBadRequest, err.Error()
 	}
 	if err := config.ValidatePhase2(next); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		return next, newEnv, http.StatusBadRequest, err.Error()
 	}
-	d.cfg = next
-	d.envName = newEnv
-	if !running {
-		d.playingMode = next.PlayingMode
-	}
-	s.persistDevicesLocked()
-	writeJSON(w, http.StatusOK, configPublic(d.cfg, d.envName))
+	return next, newEnv, 0, ""
 }
 
 func hasAnyKey(m map[string]any, keys ...string) bool {
