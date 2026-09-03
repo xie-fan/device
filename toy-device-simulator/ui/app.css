@@ -467,3 +467,8 @@ select:disabled{opacity:.4;cursor:not-allowed}
   .manage__bar input[type=search]{width:180px}
   .manage__bar .api{display:none}
 }
+
+/* 空态原本长在 300px 宽的侧栏里；.blank 是 column flex、默认 align-items:stretch，
+   放进全宽表格后按钮会被拉满整行，要 align-self 收回来。 */
+.manage .blank{margin:56px auto;max-width:520px;padding:32px 24px}
+.manage .blank .btn{align-self:center;width:auto;padding-left:18px;padding-right:18px}
