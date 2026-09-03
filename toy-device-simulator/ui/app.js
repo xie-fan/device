@@ -1964,7 +1964,7 @@
       { title: "音频", tag: "仅 created / stopped 可改", lock: true, fields: [
         { name: "audio.format", zh: "格式", v: audio.format || "pcm", locked: lock,
           select: ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })),
-          note: "压缩格式经 ffmpeg 转码并 -re 限速推流" },
+          note: "压缩格式经 ffmpeg 转码并 -re 限速推流；下发格式跟随上行，但真实服务端没有 wav 下行契约（wav 设备收不到回复音频）" },
         { name: "audio.sample_rate", zh: "采样率", v: audio.sample_rate ?? 16000, num: true, locked: lock, note: "amr 仅支持 8000 / 16000；running 下改会 409" },
         { name: "audio.bitrate_kbps", zh: "码率", v: audio.bitrate_kbps ?? 0, num: true, locked: lock, note: "0 = 默认，仅压缩格式有效" },
         { name: "audio.slice_ms", zh: "切片长度", v: audio.slice_ms ?? 100, num: true, locked: lock },
