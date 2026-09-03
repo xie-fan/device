@@ -37,10 +37,10 @@ wav 设备整段只有一个 RIFF 头（88748 B = 44 + 2772ms × 32000 B/s），
   算出约 7 s 的包间隔，超过设备的 `downlink_idle_timeout_sec`，turn 在第一包后就 idle
   收尾、后续包全丢（只落了 20444 B）。封顶后 61027 B、3 包全部落地。
 
-**wav 设备的下行**维持回 pcm 不变。真实服务端**没有 wav 下行契约**
-（其自身测试 `TestBuiltinAudioFormatContractsRejectInvalidProfiles` 断言 wav profile 必须 Resolve 失败），
-即 wav 设备在真实环境收不到下行音频；echosrv 不复刻这一点，因为 Phase 4 的 wav 推流验收与
-backlog 排队验收都依赖「有下行」。该事实由本文档与界面提示传达，不由 echosrv 的行为传达。
+**wav 设备的下行维持回 pcm**，这与真实服务端一致：下行格式契约注册表里确实没有 `wav`
+（服务端自身测试 `TestBuiltinAudioFormatContractsRejectInvalidProfiles` 断言 wav profile 必须
+Resolve 失败），但 wav 在下行侧被归入 PCM 家族处理——**实测 wav 设备照常收到 TTS，
+`down_format=pcm`**（见 §6）。所以 echosrv 回 pcm 不是妥协，就是拟真。
 
 **落盘契约不变**：下行字节仍原样追加进 `downlink.pcm`。AMR 每包带头意味着该文件里会有
 多个 `#!AMR-WB` 头——这是真实服务端本来就有的形态，**修在回放侧**：
@@ -83,12 +83,12 @@ mode 4 坏帧吃掉、读成 **20.684 s**；去重后 **20.000 s**，`?raw=1` �
 | 格式 | 上行 ASR | 下行编码契约 | 备注 |
 |---|---|---|---|
 | pcm / s16le / raw | ✅ | ✅ | |
-| wav | ✅ | ❌ 无契约 | 服务端测试断言拒绝 wav profile |
+| wav | ✅ | ✅ **回落为 pcm** | 注册表无 wav 契约，下行归入 PCM 家族（实测） |
 | mp3 | ✅ | ✅ 帧对齐切分 | 5g 实测 |
 | amr | ✅ | ✅ 每包带存储头 | 5g 实测 |
-| aac | ✅ | ✅ 20 KB 硬切 | 下行未实测 |
+| aac | ✅ | ✅ 20 KB 硬切 | 实测服务端回 aac |
 | opus / ogg | ✅ | ✅ 自包含 OggS 页 | 模拟器未实现 |
-| speex / silk / m4a | ✅ 透传云 ASR | ❌ 无契约 | 模拟器未实现 |
+| speex / silk / m4a | ✅ 透传云 ASR | ❌ 无契约，且无 PCM 家族回落 | 模拟器未实现 |
 
 下行格式跟随上行格式（`common/client/reply.go` 的 `audioConfig.Format = c.Format`），
 这既是 5g 实测结论，也是代码依据。
@@ -119,6 +119,24 @@ mode 4 坏帧吃掉、读成 **20.684 s**；去重后 **20.000 s**，`?raw=1` �
 因此 `uplink_end_reason=vad` 这条分支在当前服务端配置下**不可达**，
 `turn.frozen` 的停发路径同样从未执行。要覆盖它只能靠模拟服务端主动发 Stage=4。
 在此之前，硬约束表里那条不应被当成「已验证」。
+
+## 6. 四格式真实服务端全通实测（2026-09-03，VOICE-TEST 真实身份）
+
+| 设备格式 | 上行落盘首字节 | 服务端下行 | `down_format` | 何时测的 |
+|---|---|---|---|---|
+| pcm | 裸 s16le | pcm | `pcm` | 本阶段（VAD 三发探针） |
+| wav | `RIFF` | **pcm**，156932 B / 12 帧 | `pcm` | 本阶段 |
+| mp3 | `FF F3`（裸 MPEG 帧） | mp3 | `mp3` | Phase 5g |
+| amr | `#!AMR-WB` | amr | `amr` | Phase 5g |
+| aac | ADTS `FF F1` | **aac**，27434 B | `aac` | 本阶段 |
+
+五种取值全部走通「注册 → Ready → 上行 → 服务端 TTS → `reply_kind=tts` / `idle` 终态」。
+
+**唯一要知道的差异：wav 设备的下行是 pcm，不是 wav。** 先前据服务端注册表推断的
+「wav 设备收不到下行」是错的——注册表确实没有 wav 契约，但下行走 PCM 家族回落，
+照常有音频。`speex/silk/m4a` 没有这种回落（`Resolve` 直接失败），不能类推。
+
+## 边界（本阶段不做）
 
 - opus / ogg / speex / silk / m4a——`audio.format` 取值域仍是 `pcm|wav|mp3|amr|aac` 五项。
 - Phase 5 的其余边界照旧不做：压缩设备的 `stream` 拼接、`bad_seq` 以外的故障注入走压缩流、
