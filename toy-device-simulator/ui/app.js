@@ -1436,12 +1436,13 @@
       nic_iccid: extra.nic_iccid || "8986xxxxxxxxxx",
       playing_mode: extra.playing_mode || 1,
       audio: {
-        format: "pcm",
+        format: extra.format || "pcm",
         sample_rate: extra.sample_rate || 16000,
         channels: 1,
         sample_format: "s16le",
         slice_ms: 100,
         max_payload_size: 51200,
+        bitrate_kbps: extra.bitrate_kbps || 0,
       },
       behavior: {
         auto_register: true,
@@ -1873,6 +1874,10 @@
     { name: "nic_iccid", zh: "SIM ICCID", v: "8986xxxxxxxxxx", ph: "20 位数字", note: "模拟上报的 SIM 卡号，纯透传" },
     { name: "playing_mode", zh: "播放模式", v: "1", ph: "1-3" },
     { name: "sample_rate", zh: "采样率", v: "16000", ph: "16000", note: "amr 仅支持 8000 / 16000" },
+    { name: "audio.format", zh: "音频格式", v: "pcm",
+      select: ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })),
+      note: "设备在线上收发音频的格式；压缩格式经 ffmpeg 转码推流" },
+    { name: "audio.bitrate_kbps", zh: "码率", v: "0", num: true, note: "0 = 按格式取默认，仅压缩格式有效" },
   ];
 
   function fieldHTML(f) {
@@ -2264,6 +2269,8 @@
             nic_iccid: String(formVal("nic_iccid") || "").trim(),
             playing_mode: Number(formVal("playing_mode")),
             sample_rate: Number(formVal("sample_rate")),
+            format: String(formVal("audio.format") || "pcm"),
+            bitrate_kbps: Number(formVal("audio.bitrate_kbps")) || 0,
           }),
         });
         flash("POST /devices · 已创建 " + id, "ok");
