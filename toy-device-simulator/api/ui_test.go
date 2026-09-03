@@ -25,8 +25,19 @@ func TestUIIndexAndAssets(t *testing.T) {
 	if !strings.Contains(html, `id="filter-enterprise"`) || !strings.Contains(html, `id="filter-type"`) {
 		t.Fatalf("GET / 应含厂商与设备类型筛选")
 	}
-	if strings.Contains(html, "btn-batch-start") || strings.Contains(html, "btn-batch-delete") {
-		t.Fatalf("左侧不应再有批量启动/停止/删除")
+	// 重设计后批量启停删回到左栏（勾选设备才出现），走 /devices/batch/*。
+	for _, id := range []string{"btn-batch-start", "btn-batch-stop", "btn-batch-delete"} {
+		if !strings.Contains(html, id) {
+			t.Fatalf("左栏应有批量条 %s", id)
+		}
+	}
+	// 支撑面板（新建 / 配置 / 音频库 / 模板 / 故障 / 术语 / 场景）都退到抽屉里。
+	if !strings.Contains(html, `id="drawer-body"`) || !strings.Contains(html, `id="btn-new"`) {
+		t.Fatalf("新建与配置等支撑面板应收进抽屉")
+	}
+	// 中栏是真的对话流，不是控制面板。
+	if !strings.Contains(html, `id="conv"`) || !strings.Contains(html, `class="sendbar"`) {
+		t.Fatalf("中栏应有对话流与单条送话条")
 	}
 	if !strings.Contains(html, "/ui/app.js") || !strings.Contains(html, "/ui/app.css") {
 		t.Fatalf("GET / 应引用 /ui/app.js 与 /ui/app.css")
@@ -52,8 +63,18 @@ func TestUIIndexAndAssets(t *testing.T) {
 	if !strings.Contains(js, "payload_len") || !strings.Contains(js, "上传") || !strings.Contains(js, "下发") {
 		t.Fatalf("app.js 事件带应合并上传/下发并展示包大小")
 	}
-	if strings.Contains(js, `$("speak-work").hidden = !running`) {
+	// 送出区任何时候都在，只由 blockedReason 决定按钮能不能点并给出理由。
+	if !strings.Contains(js, "function blockedReason") {
+		t.Fatalf("送话可用性应收敛到 blockedReason 一个真源")
+	}
+	if strings.Contains(js, `show($("form-speak")`) {
 		t.Fatalf("送出区不得在非 running 时整块关掉")
+	}
+	// 后端早有、旧页面没用上的能力：批量、上行回放、同步送话。
+	for _, needle := range []string{"/devices/batch/", "audio/${dir}", "speak_and_wait"} {
+		if !strings.Contains(js, needle) {
+			t.Fatalf("app.js 应接上 %s", needle)
+		}
 	}
 	if !strings.Contains(js, "可再送出") {
 		t.Fatalf("turn_terminal 后应提示可再送出")
