@@ -114,5 +114,13 @@ func deviceView(d *managedDevice) map[string]any {
 		"enterprise":        d.cfg.Enterprise,
 		"device_type":       d.cfg.DeviceType,
 		"speak_backlog_len": backlog,
+		// 设备管理表格要一眼看清音频规格与「当前值是否偏离定义」，
+		// 不必为每一行再打一次 GET /config。
+		"audio": map[string]any{
+			"format":       d.cfg.Audio.Format,
+			"sample_rate":  d.cfg.Audio.SampleRate,
+			"bitrate_kbps": d.cfg.Audio.BitrateKbps,
+		},
+		"overridden": d.overridden(),
 	}
 }

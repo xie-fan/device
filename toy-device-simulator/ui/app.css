@@ -436,3 +436,34 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .toast[data-kind="err"]{color:var(--err)}
 .toast #flash-text{color:var(--fg)}
 .toast .tag{border-color:currentColor;color:inherit;background:transparent;flex:none}
+
+/* ——— 设备管理：全屏表格视图。编辑的是落盘定义，不是本次运行的当前值 ——— */
+.manage{display:flex;flex-direction:column;min-height:0;flex:1;background:var(--bg);overflow:hidden}
+.manage[hidden]{display:none}
+.manage__bar{display:flex;align-items:center;gap:10px;padding:12px 18px;
+  border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}
+.manage__title{margin:0;font-size:14px;font-weight:500;letter-spacing:.01em}
+.manage__bar input[type=search]{width:300px;padding:7px 10px;border-radius:var(--r);
+  border:1px solid var(--line);background:var(--well);color:var(--fg);font-size:12.5px;font-family:var(--sans)}
+.manage__batch{display:flex;align-items:center;gap:10px;padding:9px 18px;
+  background:var(--accsoft);border-bottom:1px solid var(--accline);font-size:12.5px;flex:0 0 auto}
+.manage__wrap{flex:1;min-height:0;overflow:auto;padding:0 18px 24px}
+
+.grid{width:100%;border-collapse:collapse;font-size:12.5px}
+.grid th{position:sticky;top:0;z-index:1;text-align:left;font-weight:500;color:var(--dim);
+  background:var(--bg);padding:10px 12px;border-bottom:1px solid var(--line2);white-space:nowrap}
+.grid td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.grid tbody tr:hover{background:var(--panel2)}
+.grid tbody tr[data-sel="1"]{background:var(--accsoft)}
+.grid__pick{width:34px}
+.grid__ops{width:1%;white-space:nowrap;text-align:right}
+.grid__ops .btn{margin-left:6px}
+.grid .mono{font-family:var(--mono)}
+.grid__id{font-family:var(--mono);font-weight:500}
+.grid__path{color:var(--dim);font-size:11.5px}
+.grid__dim{color:var(--faint)}
+
+@media (max-width:1100px){
+  .manage__bar input[type=search]{width:180px}
+  .manage__bar .api{display:none}
+}

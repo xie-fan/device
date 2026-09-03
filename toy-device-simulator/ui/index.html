@@ -39,6 +39,14 @@
     <div class="mast__gap"></div>
 
     <div class="segwrap">
+      <span class="segwrap__label">视图</span>
+      <div class="seg" role="group" aria-label="视图">
+        <button type="button" class="seg__btn is-on" id="btn-view-bench" aria-pressed="true">调试台</button>
+        <button type="button" class="seg__btn" id="btn-view-manage" aria-pressed="false">设备管理</button>
+      </div>
+    </div>
+
+    <div class="segwrap" id="segwrap-mode">
       <span class="segwrap__label">中栏形态</span>
       <div class="seg" role="group" aria-label="中栏形态">
         <button type="button" class="seg__btn is-on" id="btn-mode-bubble" aria-pressed="true">气泡对话</button>
@@ -208,6 +216,52 @@
       </div>
     </aside>
   </main>
+
+  <!-- ——— 设备管理：编辑的是落盘的「定义」，不是本次运行的当前值 ——— -->
+  <section class="manage" id="manage" hidden aria-labelledby="manage-title">
+    <div class="manage__bar">
+      <h2 class="manage__title" id="manage-title">设备管理</h2>
+      <span class="tag tag--acc" id="manage-count">0</span>
+      <input type="search" id="manage-q" placeholder="搜索 device_id / 环境 / 厂商 / 类型 / 格式" aria-label="搜索设备" autocomplete="off" spellcheck="false">
+      <span class="grow"></span>
+      <span class="api">定义落盘 data/devices.yaml · 跨重启存活</span>
+      <button type="button" class="btn btn--primary btn--sm" id="manage-new">＋ 新建设备</button>
+    </div>
+
+    <div class="manage__batch" id="manage-batch" hidden>
+      <span>已选 <b class="mono" id="manage-sel-count">0</b> 台</span>
+      <button type="button" class="btn btn--ghost btn--sm" id="manage-sel-clear">取消</button>
+      <span class="grow"></span>
+      <button type="button" class="btn btn--sub btn--sm" id="manage-batch-start">批量启动</button>
+      <button type="button" class="btn btn--sub btn--sm" id="manage-batch-stop">批量停止</button>
+      <button type="button" class="btn btn--danger btn--sm" id="manage-batch-delete" data-armed="0">批量删除</button>
+    </div>
+
+    <div class="manage__wrap">
+      <table class="grid" id="manage-table">
+        <thead>
+          <tr>
+            <th class="grid__pick"><input type="checkbox" id="manage-all" aria-label="全选"></th>
+            <th>device_id</th>
+            <th>环境 · 厂商 · 类型</th>
+            <th>音频格式</th>
+            <th>采样率</th>
+            <th>码率</th>
+            <th>播放模式</th>
+            <th>状态</th>
+            <th>定义</th>
+            <th class="grid__ops">操作</th>
+          </tr>
+        </thead>
+        <tbody id="manage-rows"></tbody>
+      </table>
+      <div class="blank" id="manage-empty" hidden>
+        <p class="blank__title" id="manage-empty-title">还没有设备</p>
+        <p class="blank__body">设备定义会落盘，manager 重启后还在——agent 可以直接按 device_id 引用。</p>
+        <button type="button" class="btn btn--primary btn--sm" id="manage-empty-cta">新建第一台设备</button>
+      </div>
+    </div>
+  </section>
 
   <!-- ——— 抽屉：新建 / 配置 / 音频库 / 术语 / 场景 / 模板 / 故障 / 窄屏事件 ——— -->
   <div class="scrim" id="scrim" hidden></div>

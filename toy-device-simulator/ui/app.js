@@ -4,6 +4,9 @@
   const $ = (id) => document.getElementById(id);
 
   const state = {
+    view: "bench",          // bench = 调试台；manage = 设备管理（编辑落盘定义）
+    manageQ: "",
+    defTarget: null,        // 正在编辑的设备定义（GET /devices/{id}/definition）
     devices: [],
     selectedId: null,
     instanceId: null,
@@ -376,6 +379,7 @@
       if (!state.devices.some((d) => d.device_id === id)) state.checked.delete(id);
     }
     renderRoster();
+    if (state.view === "manage") renderManage();
     if (state.selectedId && !state.tombstone) {
       const row = state.devices.find((d) => d.device_id === state.selectedId);
       if (row) {
@@ -1743,11 +1747,173 @@
     await loadLibrary();
   }
 
+  // ——— 设备管理视图 ———
+  // 这里编辑的是落盘的「定义」；调试台的配置抽屉改的是本次运行的当前值。
+
+  function setView(v) {
+    state.view = v === "manage" ? "manage" : "bench";
+    const manage = state.view === "manage";
+    $("manage").hidden = !manage;
+    document.querySelector("main.bench").hidden = manage;
+    $("segwrap-mode").hidden = manage;
+    for (const [id, on] of [["btn-view-bench", !manage], ["btn-view-manage", manage]]) {
+      $(id).classList.toggle("is-on", on);
+      $(id).setAttribute("aria-pressed", String(on));
+    }
+    if (manage) renderManage();
+  }
+
+  function manageRows() {
+    const q = state.manageQ.trim().toLowerCase();
+    if (!q) return state.devices;
+    return state.devices.filter((d) => [d.device_id, d.environment, d.enterprise, d.device_type, d.audio_format]
+      .some((x) => String(x || "").toLowerCase().includes(q)));
+  }
+
+  function renderManage() {
+    const rows = manageRows();
+    setText($("manage-count"), String(rows.length));
+    $("manage-empty").hidden = rows.length > 0;
+    $("manage-empty-title").textContent = state.devices.length ? "没有匹配的设备" : "还没有设备";
+    const sel = [...state.checked].filter((id) => state.devices.some((d) => d.device_id === id));
+    $("manage-batch").hidden = sel.length === 0;
+    setText($("manage-sel-count"), String(sel.length));
+    $("manage-all").checked = rows.length > 0 && rows.every((d) => state.checked.has(d.device_id));
+
+    setHTML($("manage-rows"), rows.map((d) => {
+      const a = d.audio || {};
+      const picked = state.checked.has(d.device_id);
+      const over = d.overridden;
+      return `<tr data-id="${esc(d.device_id)}" data-sel="${picked ? 1 : 0}">
+        <td class="grid__pick"><input type="checkbox" data-pick="${esc(d.device_id)}"${picked ? " checked" : ""} aria-label="选择 ${esc(d.device_id)}"></td>
+        <td class="grid__id">${esc(d.device_id)}</td>
+        <td class="grid__path">${esc(d.environment || "—")} · ${esc(d.enterprise || "—")} · ${esc(d.device_type || "—")}</td>
+        <td class="mono">${esc(a.format || "—")}</td>
+        <td class="mono">${esc(a.sample_rate || "—")}</td>
+        <td class="mono grid__dim">${a.bitrate_kbps ? esc(a.bitrate_kbps) : "—"}</td>
+        <td class="mono grid__dim">${esc(d.playing_mode || "—")}</td>
+        <td><span class="${tagCls(d.instance_state === "running" ? "ok" : "")}">${esc(d.instance_state || "—")}</span></td>
+        <td>${over ? `<span class="${tagCls("warn")}" title="本次运行的当前值已偏离定义">已临时改</span>` : `<span class="grid__dim">一致</span>`}</td>
+        <td class="grid__ops">
+          <button type="button" class="btn btn--ghost btn--tiny" data-mact="open" title="到调试台选中这台">调试</button>
+          <button type="button" class="btn btn--sub btn--tiny" data-mact="edit">编辑定义</button>
+          <button type="button" class="btn btn--ghost btn--tiny" data-mact="copy" title="按同一份定义复制一台">复制</button>
+          <button type="button" class="btn btn--danger btn--tiny" data-mact="del" data-armed="0">删除</button>
+        </td>
+      </tr>`;
+    }).join(""));
+  }
+
+  async function editDefinition(id) {
+    try {
+      state.defTarget = await api("GET", `/devices/${encodeURIComponent(id)}/definition`);
+      state.selectedId = id;
+      openDrawer("definition");
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  async function saveDefinition(ev) {
+    if (ev) ev.preventDefault();
+    if (!state.selectedId) return;
+    try {
+      state.defTarget = await api("PUT", `/devices/${encodeURIComponent(state.selectedId)}/definition`, readConfigDrawer(true));
+      flash("PUT /devices/" + state.selectedId + "/definition · 已落盘", "ok");
+      renderDrawer();
+      await refreshList();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  async function resetConfig() {
+    if (!state.selectedId) return;
+    try {
+      state.config = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/config/reset`, null);
+      flash("已重置为定义", "ok");
+      renderDrawer();
+      await refreshList();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  // 复制：读定义 → 换一个没被占用的 id 建一台。id 不可变，所以只能一次给对，
+  // 自动取 {id}_copy / _copy2 …，不弹对话框问。
+  async function duplicateDevice(id) {
+    try {
+      const def = await api("GET", `/devices/${encodeURIComponent(id)}/definition`);
+      let next = id + "_copy";
+      for (let i = 2; state.devices.some((d) => d.device_id === next); i++) next = id + "_copy" + i;
+      const dev = { ...def, device_id: next };
+      delete dev.environment; delete dev.enterprise; delete dev.device_type; delete dev.server;
+      delete dev.overridden;
+      await api("POST", "/devices", {
+        environment: def.environment, enterprise: def.enterprise, device_type: def.device_type, device: dev,
+      });
+      flash("已复制为 " + next, "ok");
+      await refreshList();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  function bindManage() {
+    $("btn-view-bench").addEventListener("click", () => setView("bench"));
+    $("btn-view-manage").addEventListener("click", () => setView("manage"));
+    $("manage-new").addEventListener("click", () => openDrawer("new"));
+    $("manage-empty-cta").addEventListener("click", () => openDrawer("new"));
+    $("manage-q").addEventListener("input", (e) => { state.manageQ = e.target.value; renderManage(); });
+    $("manage-sel-clear").addEventListener("click", () => { state.checked.clear(); renderManage(); renderRoster(); });
+    $("manage-batch-start").addEventListener("click", () => batchAct("start"));
+    $("manage-batch-stop").addEventListener("click", () => batchAct("stop"));
+    $("manage-batch-delete").addEventListener("click", (e) => armThen(e.currentTarget, () => batchAct("delete")));
+    $("manage-all").addEventListener("change", (e) => {
+      for (const d of manageRows()) {
+        if (e.target.checked) state.checked.add(d.device_id);
+        else state.checked.delete(d.device_id);
+      }
+      renderManage(); renderRoster();
+    });
+    $("manage-rows").addEventListener("change", (e) => {
+      const pick = e.target.dataset.pick;
+      if (!pick) return;
+      if (e.target.checked) state.checked.add(pick); else state.checked.delete(pick);
+      renderManage(); renderRoster();
+    });
+    $("manage-rows").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-mact]");
+      if (!btn) return;
+      const id = btn.closest("tr").dataset.id;
+      const act = btn.dataset.mact;
+      if (act === "edit") editDefinition(id);
+      else if (act === "copy") duplicateDevice(id);
+      else if (act === "open") { setView("bench"); selectDevice(id); }
+      else if (act === "del") armThen(btn, async () => {
+        try {
+          await api("DELETE", `/devices/${encodeURIComponent(id)}`, null);
+          flash("已删除 " + id, "ok");
+          await refreshList();
+        } catch (err) { apiErr(err); }
+      });
+    });
+  }
+
+  // armThen 两击确认：第一次亮起并等 3 秒，第二次才真执行。
+  function armThen(btn, run) {
+    if (btn.dataset.armed === "1") { btn.dataset.armed = "0"; btn.classList.remove("is-armed"); run(); return; }
+    btn.dataset.armed = "1";
+    btn.classList.add("is-armed");
+    setTimeout(() => { btn.dataset.armed = "0"; btn.classList.remove("is-armed"); }, 3000);
+  }
+
   // ——— 抽屉 ———
 
   const DRAWER_TITLE = {
     new: ["新建设备", "POST /devices"],
     config: ["配置", "GET / PUT /devices/{id}/config"],
+    definition: ["编辑定义", "GET / PUT /devices/{id}/definition"],
     assets: ["音频库", "GET / POST /assets"],
     help: ["术语与状态机", ""],
     scenarios: ["场景编排", "POST /scenarios/run"],
@@ -1938,10 +2104,12 @@
     </div>`;
   }
 
-  function configDrawerHTML() {
-    const cfg = state.config;
-    if (!cfg) return `<p class="blank--drawer">这台设备没有可读的配置（可能已进入墓碑态）。</p>`;
-    const lock = !identityEditable();
+  // def=true 时编辑落盘的「定义」（PUT /definition，随时可改、下次 start 生效）；
+  // 否则编辑本次运行的当前值（PUT /config，不落盘，Running 下锁身份与音频）。
+  function configDrawerHTML(def) {
+    const cfg = def ? state.defTarget : state.config;
+    if (!cfg) return `<p class="blank--drawer">这台设备没有可读的${def ? "定义" : "配置"}（可能已进入墓碑态）。</p>`;
+    const lock = def ? false : !identityEditable();
     const audio = cfg.audio || {};
     const beh = cfg.behavior || {};
     const rec = cfg.recording || {};
@@ -2000,12 +2168,14 @@
       ]},
     ];
     const conn = (state.live && state.live.connection_state) || "—";
-    return `<form id="form-config" class="sheet sheet--tight">
-      <div class="lockbar lockbar--${lock ? "warn" : "ok"}">
-        <span class="tag">锁态</span>
-        <span>${lock
-          ? `当前 instance_state 是 ${esc(st)}，只有录音那一组能改。改采样率会返回 409，要先停止设备。`
-          : `当前 instance_state 是 ${esc(st)}，挂靠 / 音频 / 身份 / 行为 四组都可以改。`}</span>
+    return `<form id="form-${def ? "definition" : "config"}" class="sheet sheet--tight">
+      <div class="lockbar lockbar--${def ? "ok" : (lock ? "warn" : "ok")}">
+        <span class="tag">${def ? "定义" : "锁态"}</span>
+        <span>${def
+          ? `改的是落盘定义（data/devices.yaml），agent 按 device_id 引用的就是它。随时可改，运行中的这一轮不受影响，下次 start 生效。`
+          : (lock
+            ? `当前 instance_state 是 ${esc(st)}，只有录音那一组能改。改采样率会返回 409，要先停止设备。`
+            : `当前 instance_state 是 ${esc(st)}，挂靠 / 音频 / 身份 / 行为 四组都可以改。这里改的是本次运行的当前值，不落盘。`)}</span>
       </div>
       ${groups.map((g) => `<div class="grp">
         <div class="grp__head">
@@ -2016,11 +2186,15 @@
         <div class="fields">${g.fields.map(fieldHTML).join("")}</div>
       </div>`).join("")}
       <div class="foot">
-        <button type="submit" class="btn btn--primary"${state.tombstone ? " disabled" : ""}>保存配置</button>
+        <button type="submit" class="btn btn--primary"${state.tombstone ? " disabled" : ""}>${def ? "保存到定义（落盘）" : "保存配置（只对本次运行生效）"}</button>
+        ${def ? "" : `<button type="button" class="btn btn--sub" data-act="reset"${cfg.overridden ? "" : " disabled"}
+          title="POST /devices/{id}/config/reset · 丢弃临时修改，回到落盘定义">重置为定义</button>
         <button type="button" class="btn btn--sub" data-act="report"${conn === "ready" ? "" : " disabled"}
-          title="POST /devices/{id}/report {playingMode} · 仅 connection_state=ready">热更新 playingMode</button>
+          title="POST /devices/{id}/report {playingMode} · 仅 connection_state=ready">热更新 playingMode</button>`}
         <span class="grow"></span>
-        <span class="api">connection_state = ${esc(conn)} · 热更新${conn === "ready" ? "可用" : "不可用"}</span>
+        <span class="api">${def
+          ? "PUT /devices/{id}/definition"
+          : `${cfg.overridden ? "当前值已偏离定义 · " : ""}connection_state = ${esc(conn)}`}</span>
       </div>
     </form>`;
   }
@@ -2224,7 +2398,8 @@
     const w = state.drawer;
     if (!w) return;
     if (w === "new") setHTML(body, newDrawerHTML());
-    else if (w === "config") setHTML(body, configDrawerHTML());
+    else if (w === "config") setHTML(body, configDrawerHTML(false));
+    else if (w === "definition") setHTML(body, configDrawerHTML(true));
     else if (w === "assets") setHTML(body, assetsDrawerHTML());
     else if (w === "help") setHTML(body, helpDrawerHTML());
     else if (w === "scenarios") setHTML(body, scenariosDrawerHTML());
@@ -2299,14 +2474,15 @@
     }
   }
 
-  function readConfigDrawer() {
+  function readConfigDrawer(def) {
     const rec = {
       enable_frame_log: !!formVal("recording.enable_frame_log"),
       save_uplink_audio: !!formVal("recording.save_uplink_audio"),
       save_downlink_audio: !!formVal("recording.save_downlink_audio"),
       output_dir: formVal("recording.output_dir"),
     };
-    if (!identityEditable()) return { recording: rec };
+    // 定义随时可整份改；当前值在 Running 下只放行录音那一组（后端同样门禁）。
+    if (!def && !identityEditable()) return { recording: rec };
     return {
       environment: formVal("environment"),
       enterprise: formVal("enterprise"),
@@ -2361,7 +2537,7 @@
     if (ev) ev.preventDefault();
     if (!state.selectedId || state.tombstone) return;
     try {
-      state.config = await api("PUT", `/devices/${encodeURIComponent(state.selectedId)}/config`, readConfigDrawer());
+      state.config = await api("PUT", `/devices/${encodeURIComponent(state.selectedId)}/config`, readConfigDrawer(false));
       flash("PUT /devices/" + state.selectedId + "/config · 已保存", "ok");
       renderDrawer();
     } catch (err) {
@@ -2746,7 +2922,16 @@
     $("btn-new").addEventListener("click", () => openDrawer("new"));
     $("btn-assets").addEventListener("click", () => openDrawer("assets"));
     $("btn-templates").addEventListener("click", () => openDrawer("templates"));
-    $("btn-config").addEventListener("click", () => openDrawer("config"));
+    // 打开前重拉一次：overridden 与各字段可能被别处改过（agent、另一个页签、
+    // 或本页的重置），拿选中设备时的缓存会让「重置为定义」按钮状态不对。
+    $("btn-config").addEventListener("click", async () => {
+      openDrawer("config");
+      if (!state.selectedId || state.tombstone) return;
+      try {
+        state.config = await api("GET", `/devices/${encodeURIComponent(state.selectedId)}/config`);
+        if (state.drawer === "config") renderDrawer();
+      } catch { /* 抽屉已渲染缓存值，拉失败就维持原样 */ }
+    });
     $("btn-faults").addEventListener("click", () => openDrawer("faults"));
     $("btn-sheet").addEventListener("click", () => openDrawer("sheet"));
     $("flash-x").addEventListener("click", () => flash(""));
@@ -2953,6 +3138,7 @@
       if (act === "create") createFromDrawer();
       else if (act === "close") closeDrawer();
       else if (act === "report") reportMode();
+      else if (act === "reset") resetConfig();
       else if (act === "tpl-add") addTemplate();
     });
     body.addEventListener("change", (e) => {
@@ -2986,6 +3172,7 @@
     body.addEventListener("submit", (e) => {
       e.preventDefault();
       if (e.target.id === "form-config") saveConfig(e);
+      else if (e.target.id === "form-definition") saveDefinition(e);
       else if (e.target.id === "form-create") createFromDrawer();
     });
   }
@@ -3035,6 +3222,7 @@
     bindStage();
     bindSide();
     bindDrawer();
+    bindManage();
     bindKeys();
     setFollow(true);
     setMode("bubble");
