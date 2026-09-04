@@ -656,6 +656,12 @@ Phase 2 设备身份来自**配置树**（环境 → 厂商 → 设备类型，�
 
 PUT `playing_mode` 在 Running/Ready **不得** 200。热更必须 report，且仅 Ready。
 
+上表约束的是 `PUT /devices/{id}/config`，改的是**本次运行的当前值**，不落盘。
+Phase 7 另有 `PUT /devices/{id}/definition` 改**落盘定义**：同一套 allowlist 与校验，
+但**不受运行态门禁**（定义下次 start 才生效），`created` / `stopped` 时顺手拉齐当前值。
+`POST /devices/{id}/config/reset` 把当前值还原成定义，Running 409。两层的存储与
+`overridden` 语义见 phase7.md。
+
 Phase 1 CLI（cmd/speak）仍用单机平铺 YAML，不走配置树。
 
 ### 4.12 锁、代际、finalizer、Created
@@ -749,6 +755,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 | Phase 4 | speak backlog、静默探针、raw PCM、全局总线、断开打断、wav 推流 |
 | Phase 5 | 多格式音频：设备可配 mp3/amr/aac、音频库、ffmpeg 转码与 `-re` 推流、下行格式感知 |
 | Phase 6 | 多格式的本地闭环：echosrv 按上行格式回 TTS（分包拟真）、音频库解码试听、mp3 去 ID3 |
+| Phase 7 | 设备定义落盘（`data/devices.yaml`）、定义与当前值两层、设备管理视图 |
 
 ## 9. 目录
 
