@@ -19,17 +19,6 @@ func (s *Server) requireInstance(r *http.Request) (string, bool) {
 	return ins, ins != ""
 }
 
-func (s *Server) resolveInstance(deviceID, instanceID string) (live *managedDevice, tomb *tombstone, found string) {
-	s.purgeExpiredTombsLocked()
-	if d, ok := s.devices[deviceID]; ok && d.instanceID == instanceID {
-		return d, nil, "live"
-	}
-	if t, ok := s.tombs[instanceID]; ok && t.deviceID == deviceID && time.Now().Before(t.expires) {
-		return nil, t, "tomb"
-	}
-	return nil, nil, ""
-}
-
 func (s *Server) purgeExpiredTombsLocked() {
 	now := time.Now()
 	for id, t := range s.tombs {
@@ -63,24 +52,16 @@ func (s *Server) handleListTurns(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "缺 instance_id")
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	live, tomb, found := s.resolveInstance(id, ins)
-	if found == "" {
+	v := s.resolveInstance(id, ins)
+	if v.src == "" {
 		writeErr(w, http.StatusNotFound, "instance 未命中")
 		return
 	}
-	turns := map[string]*turnRec{}
-	if live != nil {
-		turns = live.turns
-	} else {
-		turns = tomb.turns
+	list := make([]map[string]any, 0, len(v.turns))
+	for i := range v.turns {
+		list = append(list, turnJSON(&v.turns[i]))
 	}
-	list := make([]map[string]any, 0, len(turns))
-	for _, t := range turns {
-		list = append(list, turnJSON(t))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"turns": list})
+	writeJSON(w, http.StatusOK, map[string]any{"turns": list, "source": v.src})
 }
 
 func turnJSON(t *turnRec) map[string]any {
@@ -100,19 +81,12 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "缺 instance_id")
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	live, tomb, found := s.resolveInstance(id, ins)
-	if found == "" {
+	v := s.resolveInstance(id, ins)
+	if v.src == "" {
 		writeErr(w, http.StatusNotFound, "instance 未命中")
 		return
 	}
-	var tr *turnRec
-	if live != nil {
-		tr = live.turns[turnID]
-	} else {
-		tr = tomb.turns[turnID]
-	}
+	tr := v.turn(turnID)
 	if tr == nil {
 		writeErr(w, http.StatusNotFound, "turn 不存在")
 		return
@@ -128,26 +102,15 @@ func (s *Server) handleGetFrames(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "缺 instance_id")
 		return
 	}
-	s.mu.Lock()
-	live, tomb, found := s.resolveInstance(id, ins)
-	if found == "" {
-		s.mu.Unlock()
+	v := s.resolveInstance(id, ins)
+	if v.src == "" {
 		writeErr(w, http.StatusNotFound, "instance 未命中")
 		return
 	}
-	outDir := s.opts.RecordingsDir
-	var tr *turnRec
-	if live != nil {
-		outDir = live.cfg.Recording.OutputDir
-		tr = live.turns[turnID]
-	} else {
-		outDir = tomb.cfg.Recording.OutputDir
-		tr = tomb.turns[turnID]
-	}
-	if tr != nil && tr.OutputDir != "" {
+	outDir := v.outDir
+	if tr := v.turn(turnID); tr != nil && tr.OutputDir != "" {
 		outDir = tr.OutputDir
 	}
-	s.mu.Unlock()
 	frames, _, _, _, err := core.RecordingPathsPhase2(outDir, id, ins, turnID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -179,40 +142,30 @@ func (s *Server) serveAudio(w http.ResponseWriter, r *http.Request, uplink bool)
 		writeErr(w, http.StatusBadRequest, "缺 instance_id")
 		return
 	}
-	s.mu.Lock()
-	live, tomb, found := s.resolveInstance(id, ins)
-	if found == "" {
-		s.mu.Unlock()
+	v := s.resolveInstance(id, ins)
+	if v.src == "" {
 		writeErr(w, http.StatusNotFound, "instance 未命中")
 		return
 	}
-	outDir := s.opts.RecordingsDir
-	sr, ch := 16000, 1
-	var tr *turnRec
-	if live != nil {
-		outDir = live.cfg.Recording.OutputDir
-		sr, ch = live.cfg.Audio.SampleRate, live.cfg.Audio.Channels
-		tr = live.turns[turnID]
-	} else {
-		outDir = tomb.cfg.Recording.OutputDir
-		sr, ch = tomb.cfg.Audio.SampleRate, tomb.cfg.Audio.Channels
-		tr = tomb.turns[turnID]
+	outDir := v.outDir
+	sr, ch := v.audio.SampleRate, v.audio.Channels
+	if sr <= 0 {
+		sr, ch = 16000, 1
 	}
-	if tr != nil {
+	// 上行格式优先用 turn.json 自己记的（Phase 8）：跨重启回看时设备的当前配置
+	// 未必还是录这段时的那一套，设备甚至可能已经删了。
+	devFormat := v.audio.Format
+	if tr := v.turn(turnID); tr != nil {
 		if tr.SampleRate > 0 {
 			sr, ch = tr.SampleRate, tr.Channels
 		}
 		if tr.OutputDir != "" {
 			outDir = tr.OutputDir
 		}
+		if tr.UpFormat != "" {
+			devFormat = tr.UpFormat
+		}
 	}
-	devFormat := ""
-	if live != nil {
-		devFormat = live.cfg.Audio.Format
-	} else {
-		devFormat = tomb.cfg.Audio.Format
-	}
-	s.mu.Unlock()
 	_, up, down, turnPath, err := core.RecordingPathsPhase2(outDir, id, ins, turnID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -343,19 +296,16 @@ func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		after = n
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	live, tomb, found := s.resolveInstance(id, ins)
-	if found == "" {
+	v := s.resolveInstance(id, ins)
+	if v.src == "" {
 		writeErr(w, http.StatusNotFound, "instance 未命中")
 		return
 	}
-	var log *core.EventLog
-	if live != nil {
-		log = live.log
-	} else {
-		log = tomb.log
+	if v.src == "disk" {
+		writeJSON(w, http.StatusOK, map[string]any{"events": diskEvents(v.dir, after), "source": "disk"})
+		return
 	}
+	log := v.log
 	if log.CursorExpired(after) {
 		writeJSON(w, http.StatusGone, map[string]any{
 			"error":               "event_seq_expired",

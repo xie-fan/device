@@ -363,6 +363,9 @@ func (d *DeviceInstance) submitTurnFileLocked(ev Event) {
 		EndedAt:         recording.FormatTS(ev.At),
 		DownFormat:      d.turn.downFormat,
 		DownSampleRate:  d.turn.downSampleRate,
+		UpFormat:        d.cfg.Audio.Format,
+		UpSampleRate:    d.cfg.Audio.SampleRate,
+		UpChannels:      d.cfg.Audio.Channels,
 	})
 }
 

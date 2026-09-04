@@ -35,7 +35,7 @@ func (s *Server) handleWSEvents(w http.ResponseWriter, r *http.Request) {
 	t := drainTimeout(s.opts.Config)
 
 	s.mu.Lock()
-	live, tomb, found := s.resolveInstance(deviceID, instanceID)
+	live, tomb, found := s.resolveLiveLocked(deviceID, instanceID)
 	if found == "" {
 		s.mu.Unlock()
 		writeErr(w, http.StatusNotFound, "instance 未命中")

@@ -55,6 +55,19 @@ func RecordingDirPhase2(outputDir, deviceID, instanceID, turnID string) (string,
 	return dir, nil
 }
 
+// RecordingDeviceDir 为 recordings/{device_id}/，其下每个子目录是一次运行。
+func RecordingDeviceDir(outputDir, deviceID string) (string, error) {
+	if err := config.ValidatePathComponent(deviceID); err != nil {
+		return "", fmt.Errorf("device_id: %w", err)
+	}
+	base := filepath.Clean(outputDir)
+	dir := filepath.Clean(filepath.Join(outputDir, deviceID))
+	if !underOutputDir(base, dir) {
+		return "", fmt.Errorf("录制目录逃出 output_dir")
+	}
+	return dir, nil
+}
+
 func RecordingInstanceDir(outputDir, deviceID, instanceID string) (string, error) {
 	if err := config.ValidatePathComponent(deviceID); err != nil {
 		return "", fmt.Errorf("device_id: %w", err)

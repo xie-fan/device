@@ -44,6 +44,11 @@ type TurnRow struct {
 	// Phase 5e：下行实际格式（首个 TTS 帧头），回放 API 据此处理；空=无下行音频。
 	DownFormat     string `json:"down_format,omitempty"`
 	DownSampleRate int    `json:"down_sample_rate,omitempty"`
+	// Phase 8：上行的设备线上格式。回放上行原本靠「设备现在的配置」，
+	// 跨重启回看历史时那份配置可能已经改过、设备甚至已删除，所以记进 turn.json。
+	UpFormat     string `json:"up_format,omitempty"`
+	UpSampleRate int    `json:"up_sample_rate,omitempty"`
+	UpChannels   int    `json:"up_channels,omitempty"`
 }
 
 type job struct {
@@ -133,6 +138,15 @@ func (r *Recorder) SubmitPCM(path string, pcm []byte, uplink bool) {
 		return
 	}
 	r.submit(job{kind: "pcm", path: path, pcm: append([]byte(nil), pcm...), mkdir: filepath.Dir(path)})
+}
+
+// SubmitLine 追加一行已序列化的 NDJSON（Phase 8 事件落盘）。走同一条异步队列：
+// 调用点在 EventLog 的临界区里，禁止同步 IO。
+func (r *Recorder) SubmitLine(path string, line []byte) {
+	if r == nil || len(line) == 0 {
+		return
+	}
+	r.submit(job{kind: "turn", path: path, line: line, mkdir: filepath.Dir(path)})
 }
 
 func (r *Recorder) SubmitTurn(path string, row TurnRow) {

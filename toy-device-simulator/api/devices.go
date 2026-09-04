@@ -18,6 +18,7 @@ import (
 	"toy-device-simulator/config"
 	"toy-device-simulator/core"
 	"toy-device-simulator/manager"
+	"toy-device-simulator/recording"
 )
 
 func newInstanceID() string {
@@ -235,7 +236,10 @@ func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 	ins := newInstanceID()
 	log := core.NewEventLog(cfg.DeviceID, ins)
 	log.SetMaxEntries(s.opts.Config.EventLogMaxEntries)
-	log.SetMirror(s.bus.Publish)
+	// 事件除了进全局总线还要落盘，否则 manager 一重启这个 instance 的事件就没了，
+	// 而 turn / 帧 / 音频都还在——历史只有半份（Phase 8）。
+	evRec := recording.New(false, false, false)
+	log.SetMirror(s.eventSink(cfg.DeviceID, ins, cfg.Recording.OutputDir, evRec))
 	devID := cfg.DeviceID
 	log.SetOnWSAbort(func() { s.interruptOnWSAbort(devID) })
 	return &managedDevice{
@@ -251,6 +255,7 @@ func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 		lastActivity: time.Now(),
 		turns:        map[string]*turnRec{},
 		playingMode:  cfg.PlayingMode,
+		evRec:        evRec,
 	}
 }
 

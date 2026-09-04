@@ -5,6 +5,7 @@ import (
 
 	"toy-device-simulator/config"
 	"toy-device-simulator/core"
+	"toy-device-simulator/recording"
 )
 
 const (
@@ -35,6 +36,9 @@ type managedDevice struct {
 	lastActivity time.Time
 	turns        map[string]*turnRec
 	playingMode  int
+	// evRec 事件落盘的异步写入器（Phase 8）。与 core 里按 turn 写帧/音频的那个
+	// Recorder 不是同一个：这份按 instance 走，且不受 recording.* 开关影响。
+	evRec *recording.Recorder
 }
 
 type turnRec struct {
@@ -48,6 +52,8 @@ type turnRec struct {
 	SampleRate   int
 	Channels     int
 	OutputDir    string
+	// UpFormat 只有盘上历史会填：设备可能已改格式甚至已删除，不能再问它当前配置。
+	UpFormat string
 }
 
 type tombstone struct {

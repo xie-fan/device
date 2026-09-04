@@ -11,6 +11,7 @@ import (
 	"toy-device-simulator/core"
 	"toy-device-simulator/manager"
 	"toy-device-simulator/media"
+	"toy-device-simulator/recording"
 )
 
 // Options 测试与进程入口共用。
@@ -99,6 +100,8 @@ func New(opts Options) (http.Handler, error) {
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/audio/uplink", s.handleGetAudioUplink)
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/audio/downlink", s.handleGetAudioDownlink)
 	mux.HandleFunc("GET /devices/{id}/events", s.handleGetEvents)
+	mux.HandleFunc("GET /devices/{id}/instances", s.handleListInstances)
+	mux.HandleFunc("DELETE /devices/{id}/instances/{instance_id}", s.handleDeleteInstance)
 
 	mux.HandleFunc("POST /devices/batch/start", s.handleBatchStart)
 	mux.HandleFunc("POST /devices/batch/stop", s.handleBatchStop)
@@ -147,6 +150,17 @@ func (s *Server) Close() error {
 	s.mu.Unlock()
 	for _, inst := range insts {
 		inst.Shutdown()
+	}
+	// 排在 Shutdown 之后：收尾事件还要经 mirror 写进 events.jsonl。
+	s.mu.Lock()
+	recs := make([]*recording.Recorder, 0, len(s.devices))
+	for _, d := range s.devices {
+		recs = append(recs, d.evRec)
+		d.evRec = nil
+	}
+	s.mu.Unlock()
+	for _, r := range recs {
+		r.Stop()
 	}
 	return nil
 }

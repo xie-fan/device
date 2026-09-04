@@ -69,7 +69,7 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request) {
 // gateWaitGenerationLocked：live 且当前 speakable（或请求带了 generation）时缺 conn_generation → 400；
 // 带了但与当前代 / committed / tombstone 不符 → 409 generation_gone。
 func (s *Server) gateWaitGenerationLocked(deviceID, instanceID string, genp *int) (int, any, bool) {
-	live, tomb, found := s.resolveInstance(deviceID, instanceID)
+	live, tomb, found := s.resolveLiveLocked(deviceID, instanceID)
 	speakable := live != nil && live.inst != nil && core.Speakable(live.inst.ConnectionState(), live.fault)
 	needGen := speakable || genp != nil
 	if !needGen {
@@ -103,7 +103,7 @@ func (s *Server) gateWaitGenerationLocked(deviceID, instanceID string, genp *int
 
 func (s *Server) waitEvent(deviceID, instanceID, eventType, turnID string, after int, timeout time.Duration, gen int) (int, any) {
 	s.mu.Lock()
-	live, tomb, found := s.resolveInstance(deviceID, instanceID)
+	live, tomb, found := s.resolveLiveLocked(deviceID, instanceID)
 	if found == "" {
 		s.mu.Unlock()
 		return http.StatusNotFound, map[string]any{"error": "instance 未命中"}
@@ -178,7 +178,7 @@ func (s *Server) waitEventTimeout(deviceID, instanceID string, log *core.EventLo
 		return http.StatusOK, eventWaitJSON(got)
 	}
 	s.mu.Lock()
-	live, tomb, found := s.resolveInstance(deviceID, instanceID)
+	live, tomb, found := s.resolveLiveLocked(deviceID, instanceID)
 	s.mu.Unlock()
 	if found == "" || tomb != nil {
 		return http.StatusNotFound, map[string]any{"error": "tombstone 历史未命中"}
