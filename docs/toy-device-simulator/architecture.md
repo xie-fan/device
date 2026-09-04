@@ -45,6 +45,7 @@ DeviceInstance:
   wsHub：每订阅 backlog 切片 + live inbox + 该 socket 唯一 writer；禁止解锁后 fan-out
   pending_reports / early_downlink_buf / event_log（instance 级）
 protocol: AudioHeader / '1' / '4' / '{'
+recordings/{device_id}/{instance_id}/               # 一次运行；events.jsonl 在这一层（Phase 8）
 recordings/{device_id}/{instance_id}/{turn_id}/     # Phase 2
 recordings/{device_id}/{turn_id}/                   # Phase 1 单进程
 assets/index.json + {asset_id}.{ext} + epoch        # Phase 5 持久库（原格式保存）
@@ -345,6 +346,11 @@ live:
 
 `POST /devices` 分配 `instance_id`。`event_seq` 从 1，属于该 instance。每条事件含 `device_id`、`instance_id`、`event_seq`。连接级用 `correlation_id`。Reserved 之后的对话事件带 `turn_id`。
 
+事件同时镜像到 `recordings/{device_id}/{instance_id}/events.jsonl`（Phase 8），
+一行一条、形状与 `GET .../events` 逐字节相同。写入经 `EventLog.SetMirror`
+接异步 recorder：**mirror 在 EventLog 临界区内被调，禁止同步 IO，只许拿叶子锁**。
+盘上是全量追加、无淘汰，所以从盘读时不存在游标过期（不 410）。
+
 禁止发出 `device_not_found`、`status_invalid`、`no_active_turn` 等 **服务端日志名**（HTTP 可用自己的 error 字段，例如 `interrupted:false`）。
 
 | 类型 | 含义 |
@@ -398,10 +404,18 @@ live:
        且 tombstone.device_id 等于请求的 device_id
        且未超过 event_log_ttl_hours
       → 使用 tombstone
+  否则若 recordings/{device_id}/{instance_id}/ 存在      # Phase 8，仅历史读端点
+      → 使用盘（turn 元数据取各 turn.json 末行，事件取 events.jsonl）
   否则 → 404
 ```
 
-因此：**TTL 内**用旧 `instance_id` 访问 events / `/wait` / WS / turns / 录音，能读到该世系，**不会**接到重建后的新 live。TTL 外或 ID 从未存在 → 404。  
+**盘这一档只给历史读端点**（`GET .../turns*`、`.../frames`、`.../audio/*`、`.../events`）。
+`/wait` 与 WS 等的是**将来的**事件，盘上历史没有将来，对它们仍只有 live / tombstone 两档，
+否则 404。读盘一律在 manager 锁之外做。
+
+因此：**TTL 内**用旧 `instance_id` 访问 events / `/wait` / WS / turns / 录音，能读到该世系，**不会**接到重建后的新 live。
+TTL 外、或 manager 重启后（tombstone 随进程消失），历史读端点**仍从盘上读得到**，
+`/wait` 与 WS 则 404。ID 从未存在 → 404。  
 **`GET /devices/{id}` 不走 tombstone：** 摘 live 后一律 404。  
 重建同 `device_id` 得到新 `instance_id`，seq 从 1。旧 `turn_id` 配新 `instance_id` → 404。
 
@@ -712,7 +726,8 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 - `POST /devices/{id}/speak`：资产规格与设备 `audio_*` 不符时经 ffmpeg 派生副本自动转码（无 ffmpeg → 400）；压缩格式设备见 phase5.md。
 - `stream`：元素个数 ≤ `max_stream_entries`（默认 16）。各 audio 段 duration 与各 `silence.duration_ms` 之和 ≤ `max_stream_duration_sec * 1000`（默认 60s），否则 400。`silence` 为内部全零 PCM，格式同 `audio_fp`，禁止拼接 RIFF。压缩格式设备不支持 `stream` → 400。
 - 下载：默认解码为 `audio/wav` 试听；`?raw=1` 原始字节 + 实际格式 Content-Type（Phase 5 格式感知，含 turn.json `down_format`）。CLI `--audio` 仅 Phase 1。
-- **Turn / frames / audio：** 查询参数 **必填** `instance_id`。路由 §4.2。缺 → 400。只返回该 instance 的 Turn。tombstone TTL 内且文件仍在 → 200；文件缺失 → 404。禁止只凭 `device_id`+`turn_id` 在多个 instance 目录里搜索。
+- **Turn / frames / audio：** 查询参数 **必填** `instance_id`。路由 §4.2。缺 → 400。只返回该 instance 的 Turn。tombstone TTL 内且文件仍在 → 200；文件缺失 → 404。禁止只凭 `device_id`+`turn_id` 在多个 instance 目录里搜索。manager 重启后 tombstone 已随进程消失，但目录仍在 → 走盘这一档（Phase 8）。
+- **上行回放格式** 取 `turn.json` 的 `up_format` / `up_sample_rate` / `up_channels`（Phase 8），不取设备当前配置——跨重启回看时那份配置未必还是录这段时的那一套。缺这几个字段的老录音回落到设备当前配置。下行仍取 `down_format`（Phase 5e）。
 
 ## 5. 硬约束
 

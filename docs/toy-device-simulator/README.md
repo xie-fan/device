@@ -5,8 +5,8 @@
 本目录可单独阅读。同目录 `architecture.md` 与 `phase*.md` 可以互相参照；凡被参照的表，本目录内必须有全文。协议正文见 `docs/toy-device-websocket-protocol.md`。
 
 产品：忠实模拟 chatbot、批量并发、Agent API、调试 UI。  
-当前落地：Phase 1 CLI（speak / check / fixture）、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI（`GET /`）、Phase 4 全部主项——speak backlog、静默成功探针、raw PCM 上传、全局事件总线（`/ws/events/global`）、断开即 interrupt、wav 推流、Phase 5 多格式音频——设备可配 mp3/amr/aac 线上格式（含码率）、持久化音频库（导入/筛选/编辑/试听）、格式不符自动 ffmpeg 转码、压缩格式 `-re` 限速推流、下行/回放格式感知（契约见 phase5.md）、Phase 6 多格式本地闭环——echosrv 按上行格式回 TTS 且分包形态照抄真实服务端、音频库解码试听、mp3 去 ID3（见 phase6.md）、Phase 7 设备定义持久化——设备落盘 `data/devices.yaml` 跨重启存活，「定义」与「本次运行的当前值」分两层，独立的设备管理视图（见 phase7.md）。  
-阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需增强（speak backlog ≠ outbound buffer；见 phase4.md）；Phase 5 多格式音频 + ffmpeg 管线（见 phase5.md）；Phase 6 多格式的本地可重复验收（见 phase6.md）；Phase 7 设备定义持久化与设备管理（见 phase7.md）。
+当前落地：Phase 1 CLI（speak / check / fixture）、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI（`GET /`）、Phase 4 全部主项——speak backlog、静默成功探针、raw PCM 上传、全局事件总线（`/ws/events/global`）、断开即 interrupt、wav 推流、Phase 5 多格式音频——设备可配 mp3/amr/aac 线上格式（含码率）、持久化音频库（导入/筛选/编辑/试听）、格式不符自动 ffmpeg 转码、压缩格式 `-re` 限速推流、下行/回放格式感知（契约见 phase5.md）、Phase 6 多格式本地闭环——echosrv 按上行格式回 TTS 且分包形态照抄真实服务端、音频库解码试听、mp3 去 ID3（见 phase6.md）、Phase 7 设备定义持久化——设备落盘 `data/devices.yaml` 跨重启存活，「定义」与「本次运行的当前值」分两层，独立的设备管理视图（见 phase7.md）、Phase 8 跨重启的历史——旧 `instance_id` 的 turn / 帧 / 音频 / 事件不再 404（盘就是真相源，事件落盘 `events.jsonl`），`GET /devices/{id}/instances` 列出每一次运行，界面「历史运行」抽屉可回看（见 phase8.md）。  
+阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需增强（speak backlog ≠ outbound buffer；见 phase4.md）；Phase 5 多格式音频 + ffmpeg 管线（见 phase5.md）；Phase 6 多格式的本地可重复验收（见 phase6.md）；Phase 7 设备定义持久化与设备管理（见 phase7.md）；Phase 8 跨重启的历史（见 phase8.md）。
 
 设备身份走配置树（环境 → 厂商 → 设备类型 → 设备，`/registry`，落盘 `configs/registry.yaml`）：厂商/类型有名称与简称，wire 值与环境 url 占位符都用简称；设备创建引用树路径，不再平铺身份字段（phase2.md §6.10）。Phase 1 CLI 仍用单机平铺 YAML。
 
@@ -34,9 +34,10 @@
 | `phase5.md` | 多格式音频（mp3/amr/aac 设备格式 / 音频库 / ffmpeg 转码与 -re 推流 / 格式感知回放） |
 | `phase6.md` | 多格式的本地闭环（echosrv 按格式回 TTS 与分包拟真 / 音频库解码试听 / mp3 去 ID3 / 与真实服务端的格式对照表） |
 | `phase7.md` | 设备定义持久化（`data/devices.yaml`）/ 定义与当前值两层 / definition 与 reset 端点 / 设备管理视图 |
+| `phase8.md` | 跨重启的历史（instance 三种来源 / 事件落盘 `events.jsonl` / `GET /instances` / 上行格式自描述 / 历史运行视图） |
 
 ## 阅读顺序
 
 1. `architecture.md`
 2. `phase1.md` → `phase2.md` → `phase3.md`
-3. `phase4.md`、`phase5.md`、`phase6.md`、`phase7.md` 按需
+3. `phase4.md`、`phase5.md`、`phase6.md`、`phase7.md`、`phase8.md` 按需
