@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -231,13 +232,38 @@ func TestDeleteInstanceRemovesRecordingsAndRefusesLive(t *testing.T) {
 }
 
 // 上行回放原本靠「设备现在的配置」定格式；跨重启回看时那份配置可能已经改过，
-// 所以格式要记进 turn.json 并优先采信。
+// 所以格式记进 turn.json 并优先采信。改掉设备当前采样率后，旧录音的 WAV 头
+// 必须仍是录这段时的 16000。
 func TestUplinkFormatComesFromTurnJSONNotCurrentConfig(t *testing.T) {
 	e := newEnv(t)
 	e.auto.replyTTS = true
 	oldIns, turnID := runOneTurn(t, e, "sim_upfmt")
 
-	raw, err := os.ReadFile(filepath.Join(e.recDir, "sim_upfmt", oldIns, turnID, "turn.json"))
+	// 重启顺带把 recorder 排干，turn.json 一定落到位。
+	e.srv.Close()
+	e.start(t, 0)
+
+	code, raw, _ := e.get(t, "/devices/sim_upfmt/config")
+	if code != http.StatusOK {
+		t.Fatalf("GET config %d %s", code, raw)
+	}
+	audio, _ := decodeMap(t, raw)["audio"].(map[string]any)
+	audio["sample_rate"] = 8000
+	audio["max_payload_size"] = 25600
+	if code, raw := e.put(t, "/devices/sim_upfmt/config", map[string]any{"audio": audio}); code != http.StatusOK {
+		t.Fatalf("PUT config 应 200，得到 %d %s", code, raw)
+	}
+
+	code, wav, _ := e.get(t, "/devices/sim_upfmt/turns/"+turnID+"/audio/uplink?instance_id="+oldIns)
+	if code != http.StatusOK || len(wav) < 28 {
+		t.Fatalf("旧 instance 的上行应 200 且是 WAV，得到 %d len=%d", code, len(wav))
+	}
+	if got := binary.LittleEndian.Uint32(wav[24:28]); got != 16000 {
+		t.Fatalf("WAV 头应是录这段时的 16000（turn.json 记的），不是设备改后的 8000，得到 %d", got)
+	}
+
+	// 同一份记录也要能直接在盘上读到。
+	rawTurn, err := os.ReadFile(filepath.Join(e.recDir, "sim_upfmt", oldIns, turnID, "turn.json"))
 	if err != nil {
 		t.Fatalf("读 turn.json：%v", err)
 	}
@@ -246,7 +272,7 @@ func TestUplinkFormatComesFromTurnJSONNotCurrentConfig(t *testing.T) {
 		UpSampleRate int    `json:"up_sample_rate"`
 		UpChannels   int    `json:"up_channels"`
 	}
-	if err := json.Unmarshal(trimLastLine(raw), &row); err != nil {
+	if err := json.Unmarshal(trimLastLine(rawTurn), &row); err != nil {
 		t.Fatalf("解 turn.json：%v", err)
 	}
 	if row.UpFormat != "pcm" || row.UpSampleRate != 16000 || row.UpChannels != 1 {

@@ -114,7 +114,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--accline)}
 .led--running{background:var(--ok)}
 .led--failed{background:var(--err)}
 .led--starting{background:var(--warn);animation:bp 1s infinite}
-.led--deleted{background:var(--faint)}
+.led--deleted,.led--archived{background:var(--faint)}
 
 /* ——— 顶栏 ——— */
 .mast{

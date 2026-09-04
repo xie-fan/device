@@ -10,6 +10,10 @@
     devices: [],
     selectedId: null,
     instanceId: null,
+    // Phase 8：这台设备在盘上的历次运行；tombSource 区分「墓碑（内存，有 TTL）」
+    // 与「盘上历史（跨重启还在）」。
+    instances: [],
+    tombSource: "tomb",
     connGeneration: null,
     live: null,
     tombstone: false,
@@ -198,7 +202,11 @@
   // blockedReason 是「送话不可用」那行的唯一真源；空串表示可以送。
   function blockedReason() {
     if (!state.selectedId) return "先在左边选一台设备";
-    if (state.tombstone) return "连接已结束，重新启动后可再送出";
+    if (state.tombstone) {
+      return state.tombSource === "disk"
+        ? "在看以往的运行，只读；要送话先在「历史运行」里切回本次运行"
+        : "连接已结束，重新启动后可再送出";
+    }
     const st = (state.live && state.live.instance_state) || "created";
     if (st === "starting") return "Starting 时不能说话，等 connection_state 走到 ready";
     if (st === "failed") return "连接已结束，重新启动后可再送出";
@@ -291,7 +299,7 @@
   }
 
   function insTone(v) {
-    return v === "running" ? "ok" : v === "failed" ? "err" : v === "starting" ? "warn" : v === "deleted" ? "mute" : "";
+    return v === "running" ? "ok" : v === "failed" ? "err" : v === "starting" ? "warn" : (v === "deleted" || v === "archived") ? "mute" : "";
   }
 
   function connTone(v) {
@@ -488,7 +496,7 @@
   function renderStage() {
     const has = !!state.selectedId;
     const live = state.live || {};
-    const st = !has ? "" : state.tombstone ? "deleted" : (live.instance_state || "created");
+    const st = !has ? "" : state.tombstone ? (state.tombSource === "disk" ? "archived" : "deleted") : (live.instance_state || "created");
     const conn = live.connection_state || "—";
 
     $("stage-led").className = "led" + (st ? " led--" + st : "");
@@ -525,7 +533,11 @@
 
     show($("tomb-banner"), state.tombstone);
     if (state.tombstone) {
-      setText($("tomb-meta"), `instance_id ${state.instanceId || "—"} · 事件与 turn 只读 · TTL 24 小时`);
+      const disk = state.tombSource === "disk";
+      setText($("tomb-kind"), disk ? "历史运行 · 只读回看" : "墓碑态 · 只读回看");
+      setText($("tomb-meta"), state.tombSource === "disk"
+        ? `instance_id ${state.instanceId || "—"} · 盘上的旧运行 · 只读`
+        : `instance_id ${state.instanceId || "—"} · 事件与 turn 只读 · TTL 24 小时`);
     }
 
     setDisabled($("btn-start"), !has || state.tombstone || state.busy || !identityEditable());
@@ -533,6 +545,7 @@
     setDisabled($("btn-delete"), !has || state.tombstone || state.busy);
     setDisabled($("btn-config"), !has);
     setDisabled($("btn-faults"), !has || state.tombstone);
+    setDisabled($("btn-runs"), !has);
 
     const blocked = has ? blockedReason() : "先在左边选一台设备";
     show($("send-blocked"), !!blocked);
@@ -1360,6 +1373,7 @@
       const instanceChanged = state.tombstone || state.selectedId !== id || state.instanceId !== live.instance_id;
       state.selectedId = id;
       state.tombstone = false;
+      state.tombSource = "tomb";
       state.live = live;
       state.instanceId = live.instance_id;
       state.connGeneration = live.conn_generation;
@@ -1381,10 +1395,11 @@
     }
   }
 
-  async function openTombstone(id, ins) {
+  async function openTombstone(id, ins, src) {
     const instanceChanged = state.selectedId !== id || state.instanceId !== ins;
     state.selectedId = id;
     state.tombstone = true;
+    state.tombSource = src === "disk" ? "disk" : "tomb";
     state.live = null;
     state.instanceId = ins || state.instanceId;
     state.occupiedTurnId = null;
@@ -1395,7 +1410,9 @@
     renderRoster();
     renderStage();
     renderConv();
-    flash("live 已摘除。TTL 内用同一 instance_id 看历史，不要换到新实例。", "info");
+    flash(state.tombSource === "disk"
+      ? "在看盘上的旧运行（只读）。要送话请切回本次运行。"
+      : "live 已摘除。TTL 内用同一 instance_id 看历史，不要换到新实例。", "info");
   }
 
   async function loadConfigAndTurns(resetTape) {
@@ -1421,13 +1438,29 @@
       try {
         const data = await api("GET", `/devices/${encodeURIComponent(state.selectedId)}/turns?instance_id=${encodeURIComponent(state.instanceId)}`);
         state.turns = data.turns || [];
+        if (state.tombstone) state.tombSource = data.source === "disk" ? "disk" : "tomb";
         state.turns.forEach((t) => { if (t.turn_id) queueFrames(t.turn_id); });
       } catch {
         state.turns = [];
       }
-      connectWS({ fromOldest: resetTape || state.events.length === 0 });
+      if (state.tombSource === "disk" && state.tombstone) await loadDiskEvents();
+      else connectWS({ fromOldest: resetTape || state.events.length === 0 });
     }
     renderTurns();
+  }
+
+  // 盘上的旧运行没有 live WS（/ws/events 等的是将来的事件，对它 404 才是对的），
+  // 事件一次性从 GET /events 补齐，仍走 ingestEvent 这条通道，渲染逻辑没有第二套。
+  async function loadDiskEvents() {
+    try {
+      const data = await api("GET", `/devices/${encodeURIComponent(state.selectedId)}/events?instance_id=${encodeURIComponent(state.instanceId)}`);
+      (data.events || []).forEach(ingestEvent);
+      setWsNote("盘上历史 · 事件已读完，无实时流", "done");
+    } catch (err) {
+      setWsNote("盘上历史的事件读取失败", "err");
+      apiErr(err);
+    }
+    renderTape();
   }
 
   // 设备体只含设备级属性；enterprise/device_type/server 由树引用派生。
@@ -1919,6 +1952,7 @@
     scenarios: ["场景编排", "POST /scenarios/run"],
     templates: ["模板管理", "GET / POST / DELETE /templates"],
     faults: ["注入故障", "POST /devices/{id}/faults"],
+    runs: ["历史运行", "GET /devices/{id}/instances"],
     sheet: ["事件", "WS /ws/events"],
   };
 
@@ -2363,6 +2397,54 @@
     </div>`;
   }
 
+  // 每次运行一行。instance_id 是每进程新生成的，manager 一重启同一台设备就换一个，
+  // 所以「历史」天然按运行分段；本次运行标 live，盘上的旧运行标可回看。
+  function runsDrawerHTML() {
+    const rows = state.instances;
+    return `<div class="sheet sheet--tight">
+      <p class="hint">GET /devices/{id}/instances · manager 每次启动都给设备一个新 instance_id，录音与事件按 instance 分区。旧运行只读回看，不能再送话。</p>
+      ${rows.length ? rows.map((r) => {
+        const cur = r.instance_id === state.instanceId;
+        const live = r.source === "live";
+        const span = [fmtTime(r.started_at), r.turns ? `${r.turns} 轮` : "还没有轮次"].filter(Boolean).join(" · ");
+        return `<div class="row row--flat">
+          <span class="${live ? "tag tag--acc" : "tag tag--mute"}">${live ? "本次运行" : r.source === "tomb" ? "墓碑" : "历史"}</span>
+          <span class="mono" style="font-size:12px" title="${esc(r.instance_id)}">${esc(shortId(r.instance_id))}</span>
+          <span class="dim" style="font-size:12px">${esc(span)}</span>
+          <span class="grow"></span>
+          ${cur ? `<span class="dim" style="font-size:12px">正在看</span>` : `<button type="button" class="btn btn--sm" data-run-open="${esc(r.instance_id)}" data-run-src="${esc(r.source)}">回看</button>`}
+          ${live ? "" : `<button type="button" class="btn btn--danger btn--sm" data-run-del="${esc(r.instance_id)}">删除</button>`}
+        </div>`;
+      }).join("") : `<p class="blank--drawer">这台设备还没有留下任何运行记录。启动并送一段音频后再来看。</p>`}
+    </div>`;
+  }
+
+  async function loadInstances() {
+    if (!state.selectedId) return;
+    try {
+      const data = await api("GET", `/devices/${encodeURIComponent(state.selectedId)}/instances`);
+      state.instances = data.instances || [];
+    } catch {
+      state.instances = [];
+    }
+  }
+
+  async function openRuns() {
+    await loadInstances();
+    openDrawer("runs");
+  }
+
+  async function delRun(ins) {
+    try {
+      await api("DELETE", `/devices/${encodeURIComponent(state.selectedId)}/instances/${encodeURIComponent(ins)}`);
+      flash("已删除这次运行的录音与事件", "ok");
+      await loadInstances();
+      renderDrawer();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
   const FAULTS = [
     ["skip_register", "跳过上线注册报文，验证服务端对未注册连接的处理"],
     ["skip_report", "跳过 report 上报，验证服务端的 ready 判定与超时"],
@@ -2405,6 +2487,7 @@
     else if (w === "scenarios") setHTML(body, scenariosDrawerHTML());
     else if (w === "templates") setHTML(body, templatesDrawerHTML());
     else if (w === "faults") setHTML(body, faultsDrawerHTML());
+    else if (w === "runs") setHTML(body, runsDrawerHTML());
     else if (w === "sheet") {
       // 窄屏：右栏收进抽屉，直接把事件带的 DOM 搬过来，不做第二套渲染。
       if (body.firstElementChild !== $("side")) {
@@ -2933,6 +3016,7 @@
       } catch { /* 抽屉已渲染缓存值，拉失败就维持原样 */ }
     });
     $("btn-faults").addEventListener("click", () => openDrawer("faults"));
+    $("btn-runs").addEventListener("click", () => { openRuns().catch(apiErr); });
     $("btn-sheet").addEventListener("click", () => openDrawer("sheet"));
     $("flash-x").addEventListener("click", () => flash(""));
     $("drawer-x").addEventListener("click", closeDrawer);
@@ -3132,6 +3216,16 @@
       if (sc !== null) { runScenario(Number(sc)); return; }
       const tdel = hit("data-tpl-del");
       if (tdel) { delTemplate(tdel); return; }
+      const runOpen = t.closest("[data-run-open]");
+      if (runOpen) {
+        const ins = runOpen.getAttribute("data-run-open");
+        closeDrawer();
+        if (runOpen.getAttribute("data-run-src") === "live") selectDevice(state.selectedId).catch(apiErr);
+        else openTombstone(state.selectedId, ins, runOpen.getAttribute("data-run-src")).catch(apiErr);
+        return;
+      }
+      const runDel = hit("data-run-del");
+      if (runDel) { delRun(runDel); return; }
       const fault = t.closest("[data-fault]");
       if (fault) { injectFault(fault.getAttribute("data-fault")); return; }
       const act = hit("data-act");
