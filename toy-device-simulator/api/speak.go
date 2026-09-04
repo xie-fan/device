@@ -185,6 +185,7 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 		tr.SampleRate = sr
 		tr.Channels = ch
 		tr.OutputDir = inst.Config().Recording.OutputDir
+		tr.UpFormat = devFormat
 		if !res.Queued {
 			// 排队项的 uuid/seq_before 由 OnTurnStarted 出队时补。
 			tr.UplinkUUID = res.UUID
@@ -230,6 +231,11 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 			tr.EndReason = ev.EndReason
 			tr.UplinkReason = ev.UplinkReason
 			tr.ReplyKind = ev.ReplyKind
+			tr.DownFormat = ev.DownFormat
+			tr.DownBytes = ev.DownBytes
+			if ev.UpFormat != "" {
+				tr.UpFormat = ev.UpFormat
+			}
 		}
 	}
 	s.mu.Unlock()

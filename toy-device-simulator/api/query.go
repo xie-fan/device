@@ -70,6 +70,8 @@ func turnJSON(t *turnRec) map[string]any {
 		"uplink_uuid": t.UplinkUUID, "seq_before": t.SeqBefore,
 		"turn_end_reason": t.EndReason, "uplink_end_reason": t.UplinkReason,
 		"reply_kind": t.ReplyKind,
+		"up_format": t.UpFormat, "down_format": t.DownFormat,
+		"down_bytes": t.DownBytes,
 	}
 }
 

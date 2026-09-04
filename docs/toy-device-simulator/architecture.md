@@ -727,7 +727,7 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 - `stream`：元素个数 ≤ `max_stream_entries`（默认 16）。各 audio 段 duration 与各 `silence.duration_ms` 之和 ≤ `max_stream_duration_sec * 1000`（默认 60s），否则 400。`silence` 为内部全零 PCM，格式同 `audio_fp`，禁止拼接 RIFF。压缩格式设备不支持 `stream` → 400。
 - 下载：默认解码为 `audio/wav` 试听；`?raw=1` 原始字节 + 实际格式 Content-Type（Phase 5 格式感知，含 turn.json `down_format`）。CLI `--audio` 仅 Phase 1。
 - **Turn / frames / audio：** 查询参数 **必填** `instance_id`。路由 §4.2。缺 → 400。只返回该 instance 的 Turn。tombstone TTL 内且文件仍在 → 200；文件缺失 → 404。禁止只凭 `device_id`+`turn_id` 在多个 instance 目录里搜索。manager 重启后 tombstone 已随进程消失，但目录仍在 → 走盘这一档（Phase 8）。
-- **上行回放格式** 取 `turn.json` 的 `up_format` / `up_sample_rate` / `up_channels`（Phase 8），不取设备当前配置——跨重启回看时那份配置未必还是录这段时的那一套。缺这几个字段的老录音回落到设备当前配置。下行仍取 `down_format`（Phase 5e）。
+- **上行回放格式** 取 `turn.json` 的 `up_format` / `up_sample_rate` / `up_channels`（Phase 8），不取设备当前配置——跨重启回看时那份配置未必还是录这段时的那一套。缺这几个字段的老录音回落到设备当前配置。下行仍取 `down_format`（Phase 5e）。Phase 9 另记 `down_bytes`（下行 TTS 帧 `payload_len` 之和），`GET /turns` 透出。
 
 ## 5. 硬约束
 
@@ -771,10 +771,12 @@ speak_permit：仅 CAS 成功路径 Acquire；拷贝失败从未 Acquire。`term
 | Phase 5 | 多格式音频：设备可配 mp3/amr/aac、音频库、ffmpeg 转码与 `-re` 推流、下行格式感知 |
 | Phase 6 | 多格式的本地闭环：echosrv 按上行格式回 TTS（分包拟真）、音频库解码试听、mp3 去 ID3 |
 | Phase 7 | 设备定义落盘（`data/devices.yaml`）、定义与当前值两层、设备管理视图 |
+| Phase 8 | 跨重启的历史：instance 三种来源、事件落盘、`GET /instances` |
+| Phase 9 | 给 agent 的工具：`cmd/simctl`（skills + CLI）；`turn.json` 增 `down_bytes` |
 
 ## 9. 目录
 
-`protocol/` `core/` `manager/` `cmd/speak|check|fixture|manager/` `api/` `ui/` `configs/example_device.yaml` `configs/manager.yaml` `configs/registry.yaml` `configs/templates/` `testdata/` `data/assets/`
+`protocol/` `core/` `manager/` `cmd/speak|check|fixture|manager|simctl/` `api/` `ui/` `configs/example_device.yaml` `configs/manager.yaml` `configs/registry.yaml` `configs/templates/` `testdata/` `data/assets/`
 
 ## 10. 对齐基线
 

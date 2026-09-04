@@ -63,6 +63,7 @@ type turnRuntime struct {
 	// 落进 turn.json 供回放 API 按实际格式处理。
 	downFormat     string
 	downSampleRate int
+	downBytes      int // Phase 9：下行 TTS payload_len 累加
 
 	early EarlyBuf
 
@@ -311,6 +312,11 @@ func (d *DeviceInstance) terminalLocked(endReason, replyKind, uplinkIfEmpty stri
 	_, end, uplink, kind := d.slot.Snapshot()
 	turnID := d.slot.ID()
 	ev, en := d.appendEventLocked("turn_terminal", turnID, "", end, uplink, kind)
+	if d.turn != nil {
+		ev.DownFormat = d.turn.downFormat
+		ev.DownBytes = d.turn.downBytes
+		ev.UpFormat = d.cfg.Audio.Format
+	}
 	n.Event = ev
 	n.EventWaiters = en.EventWaiters
 	n.SlowSubs = en.SlowSubs
@@ -363,6 +369,7 @@ func (d *DeviceInstance) submitTurnFileLocked(ev Event) {
 		EndedAt:         recording.FormatTS(ev.At),
 		DownFormat:      d.turn.downFormat,
 		DownSampleRate:  d.turn.downSampleRate,
+		DownBytes:       d.turn.downBytes,
 		UpFormat:        d.cfg.Audio.Format,
 		UpSampleRate:    d.cfg.Audio.SampleRate,
 		UpChannels:      d.cfg.Audio.Channels,

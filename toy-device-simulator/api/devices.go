@@ -1104,6 +1104,11 @@ func (s *Server) onTurnTerminal(deviceID, turnID string, ev core.Event) {
 		tr.EndReason = ev.EndReason
 		tr.UplinkReason = ev.UplinkReason
 		tr.ReplyKind = ev.ReplyKind
+		tr.DownFormat = ev.DownFormat
+		tr.DownBytes = ev.DownBytes
+		if ev.UpFormat != "" {
+			tr.UpFormat = ev.UpFormat
+		}
 		d.lastActivity = time.Now()
 	}
 	s.mu.Unlock()

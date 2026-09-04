@@ -85,6 +85,7 @@ func (d *DeviceInstance) handleAudioDownlink(raw []byte) {
 				d.turn.downFormat = strings.TrimRight(string(h.AudioFormat[:]), "\x00")
 				d.turn.downSampleRate = int(h.SamplingRate)
 			}
+			d.turn.downBytes += len(view.Payload)
 			d.recorder.SubmitPCM(d.turn.downPath, view.Payload, false)
 		}
 		if h.NeedAck == 1 {

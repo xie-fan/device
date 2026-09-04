@@ -117,6 +117,8 @@ func (s *Server) diskInstance(v instView, deviceID, instanceID string) instView 
 			SampleRate:   row.UpSampleRate,
 			Channels:     row.UpChannels,
 			UpFormat:     row.UpFormat,
+			DownFormat:   row.DownFormat,
+			DownBytes:    row.DownBytes,
 		})
 	}
 	sort.Slice(v.turns, func(i, j int) bool { return v.turns[i].TurnID < v.turns[j].TurnID })

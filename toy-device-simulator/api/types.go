@@ -53,7 +53,9 @@ type turnRec struct {
 	Channels     int
 	OutputDir    string
 	// UpFormat 只有盘上历史会填：设备可能已改格式甚至已删除，不能再问它当前配置。
-	UpFormat string
+	UpFormat   string
+	DownFormat string
+	DownBytes  int
 }
 
 type tombstone struct {

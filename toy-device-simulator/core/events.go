@@ -19,6 +19,10 @@ type Event struct {
 	PayloadLen     int       `json:"-"`
 	ConnGeneration int       `json:"-"`
 	At             time.Time `json:"-"`
+	// 下面三字段不进事件 JSON，只随 turn_terminal 带给 HTTP / simctl。
+	DownFormat string `json:"-"`
+	DownBytes  int    `json:"-"`
+	UpFormat   string `json:"-"`
 }
 
 func (e Event) MarshalJSON() ([]byte, error) {

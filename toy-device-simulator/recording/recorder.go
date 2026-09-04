@@ -44,6 +44,8 @@ type TurnRow struct {
 	// Phase 5e：下行实际格式（首个 TTS 帧头），回放 API 据此处理；空=无下行音频。
 	DownFormat     string `json:"down_format,omitempty"`
 	DownSampleRate int    `json:"down_sample_rate,omitempty"`
+	// Phase 9：下行 TTS 帧 payload_len 之和。老录音没有这个字段，读回来是 0。
+	DownBytes int `json:"down_bytes,omitempty"`
 	// Phase 8：上行的设备线上格式。回放上行原本靠「设备现在的配置」，
 	// 跨重启回看历史时那份配置可能已经改过、设备甚至已删除，所以记进 turn.json。
 	UpFormat     string `json:"up_format,omitempty"`
