@@ -16,7 +16,7 @@ func TestIsLoopbackListen(t *testing.T) {
 		{"::1", true},
 		{":8090", false},        // 空 host = 所有网卡
 		{"0.0.0.0:8090", false}, // 显式所有网卡
-		{"192.168.6.210:8090", false},
+		{"192.168.1.5:8090", false},
 		{"[::]:8090", false},
 		{"example.com:8090", false}, // 域名解析不了就当暴露，宁可误挡
 	} {
