@@ -156,14 +156,14 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		d := s.newManaged(cfg, body.Environment)
 		s.devices[cfg.DeviceID] = d
-		s.persistDevicesLocked()
+		perr := persistWarn("devices.yaml", s.persistDevicesLocked())
 		s.mu.Unlock()
-		writeJSON(w, http.StatusCreated, map[string]any{
+		writeJSON(w, http.StatusCreated, persistErr(map[string]any{
 			"device_ids": []string{cfg.DeviceID},
 			"instances": []map[string]any{{
 				"device_id": cfg.DeviceID, "instance_id": d.instanceID,
 			}},
-		})
+		}, perr))
 		return
 	}
 	if body.TemplateID == "" || body.Count <= 0 {
@@ -214,14 +214,14 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		s.devices[id] = d
 		made = append(made, created{id, d})
 	}
-	s.persistDevicesLocked()
+	perr := persistWarn("devices.yaml", s.persistDevicesLocked())
 	deviceIDs := make([]string, 0, len(made))
 	insts := make([]map[string]any, 0, len(made))
 	for _, c := range made {
 		deviceIDs = append(deviceIDs, c.id)
 		insts = append(insts, map[string]any{"device_id": c.id, "instance_id": c.dev.instanceID})
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"device_ids": deviceIDs, "instances": insts})
+	writeJSON(w, http.StatusCreated, persistErr(map[string]any{"device_ids": deviceIDs, "instances": insts}, perr))
 }
 
 func cloneMap(m map[string]any) map[string]any {

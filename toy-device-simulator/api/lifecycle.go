@@ -353,14 +353,14 @@ func (s *Server) deleteDevice(id string) (int, any) {
 		gen:        d.gen,
 	}
 	delete(s.devices, id)
-	s.persistDevicesLocked()
+	perr := persistWarn("devices.yaml", s.persistDevicesLocked())
 	evRec := d.evRec
 	d.evRec = nil
 	s.mu.Unlock()
 	deletedNotify.NotifyHTTP()
 	// 在锁外收尾：Stop 会等队列排干，device_deleted 那一行才写得进 events.jsonl。
 	evRec.Stop()
-	return http.StatusOK, map[string]any{"device_id": id, "instance_id": ins, "deleted": true}
+	return http.StatusOK, persistErr(map[string]any{"device_id": id, "instance_id": ins, "deleted": true}, perr)
 }
 
 type batchBody struct {

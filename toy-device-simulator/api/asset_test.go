@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"net/http"
 	"testing"
 
@@ -54,5 +55,16 @@ func TestDeleteAssetThenSpeakGets404WithoutCAS(t *testing.T) {
 	turnsCode, turnsBody, _ := e.get(t, "/devices/sim_del_ast/turns?instance_id="+strField(decodeMap(t, gbody), "instance_id"))
 	if turnsCode == http.StatusOK && containsBytes(turnsBody, "trn_") {
 		t.Fatalf("404 路径不得占槽/留下 Turn，turns=%s", turnsBody)
+	}
+}
+
+// 请求体硬限制必须在读之前生效。MaxAssetBytes 原本只在 io.ReadAll 之后才查，
+// 等于先把整个上传读进内存再说「不要」——非 loopback 暴露时可被大文件压垮。
+// 小超额仍走原来的 400（在 1MB 余量内），这里测的是真正的大body。
+func TestAssetUploadRejectsOversizedBodyBeforeReading(t *testing.T) {
+	e := newEnvCfg(t, func(c *manager.Config) { c.MaxAssetBytes = 64 * 1024 })
+	code, body := e.postAsset(t, "big.wav", bytes.Repeat([]byte{0}, 4*1024*1024))
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超大请求体应 413，得到 %d body=%s", code, body)
 	}
 }

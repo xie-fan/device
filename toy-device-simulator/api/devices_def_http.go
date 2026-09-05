@@ -76,10 +76,10 @@ func (s *Server) handlePutDefinition(w http.ResponseWriter, r *http.Request) {
 		d.resetToDefinitionLocked()
 		d.playingMode = next.PlayingMode
 	}
-	s.persistDevicesLocked()
+	perr := persistWarn("devices.yaml", s.persistDevicesLocked())
 	out := configPublic(d.def, d.defEnv)
 	out["overridden"] = d.overridden()
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, persistErr(out, perr))
 }
 
 // handleResetConfig 丢弃临时修改，当前值回到定义。Running 下拒绝——

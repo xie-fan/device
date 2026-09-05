@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,7 +165,7 @@ func (s *Server) loadAssetIndex() {
 }
 
 // persistAssetIndexLocked 重写 index.json；调用方必须持 assetMu。
-func (s *Server) persistAssetIndexLocked() {
+func (s *Server) persistAssetIndexLocked() error {
 	idx := assetIndexFile{Assets: make([]assetIndexEntry, 0, len(s.assets))}
 	for _, a := range s.assets {
 		idx.Assets = append(idx.Assets, assetIndexEntry{
@@ -177,15 +178,28 @@ func (s *Server) persistAssetIndexLocked() {
 	sort.Slice(idx.Assets, func(i, j int) bool { return idx.Assets[i].ID < idx.Assets[j].ID })
 	b, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	_ = os.WriteFile(filepath.Join(s.assetsRoot(), "index.json"), b, 0o644)
+	return atomicWrite(filepath.Join(s.assetsRoot(), "index.json"), b)
 }
 
 // ---- 上传/导入 ----
 
 func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
+	// 请求体硬限制必须在读之前设。ParseMultipartForm 的参数只是「多少留内存」的
+	// 阈值，超出部分落临时文件，两者都不拦请求体大小；下面的 io.ReadAll 又会把
+	// 整个上传一次性读进内存。等读完再查 MaxAssetBytes 已经晚了——门卫站在屋里，
+	// 货早搬进来了。留 1MB 余量给 multipart 边界与 name/language 这些表单字段。
+	// MaxAssetBytes 恒 > 0：manager.LoadFile 把 0 兜成 10MB。
+	if maxBytes := s.opts.Config.MaxAssetBytes; maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
+	}
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "超过 max_asset_bytes")
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "multipart 解析失败")
 		return
 	}
@@ -333,7 +347,7 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	s.assetMu.Lock()
 	s.assets[id] = obj
-	s.persistAssetIndexLocked()
+	_ = persistWarn("index.json", s.persistAssetIndexLocked())
 	s.assetMu.Unlock()
 	resp := assetPublic(obj)
 	resp["transcoded"] = transcoded
@@ -480,7 +494,7 @@ func (s *Server) handlePatchAsset(w http.ResponseWriter, r *http.Request) {
 		if language != nil {
 			a.language = *language
 		}
-		s.persistAssetIndexLocked()
+		_ = persistWarn("index.json", s.persistAssetIndexLocked())
 		resp = assetPublic(a)
 	}
 	s.assetMu.Unlock()
@@ -553,7 +567,7 @@ func (s *Server) handleDeleteAsset(w http.ResponseWriter, r *http.Request) {
 			_ = os.Remove(vp)
 		}
 		delete(s.assets, id)
-		s.persistAssetIndexLocked()
+		_ = persistWarn("index.json", s.persistAssetIndexLocked())
 	}
 	s.assetMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)

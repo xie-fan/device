@@ -69,7 +69,7 @@ func (s *Server) loadDevices() {
 }
 
 // persistDevicesLocked 重写设备定义文件；调用方必须持 s.mu。
-func (s *Server) persistDevicesLocked() {
+func (s *Server) persistDevicesLocked() error {
 	f := devicesStoreFile{Devices: make([]deviceStoreEntry, 0, len(s.devices))}
 	for _, d := range s.devices {
 		f.Devices = append(f.Devices, deviceStoreEntry{Environment: d.defEnv, Device: d.def})
@@ -79,15 +79,9 @@ func (s *Server) persistDevicesLocked() {
 	})
 	raw, err := yaml.Marshal(f)
 	if err != nil {
-		return
+		return err
 	}
-	path := s.devicesStorePath()
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return
-		}
-	}
-	_ = os.WriteFile(path, raw, 0o644)
+	return atomicWrite(s.devicesStorePath(), raw)
 }
 
 // overridden 当前值是否偏离落盘定义。比 yaml 字节而不是 reflect.DeepEqual：
