@@ -100,6 +100,8 @@ type runStub struct {
 	resets, starts, waits, speaks int
 	state                         string
 	overridden                    bool
+	waitFails                     bool   // wait_ready 回 409 generation_gone
+	lastError                     string // GET /devices/{id} 的 last_error
 }
 
 func (s *runStub) handler() http.Handler {
@@ -125,7 +127,14 @@ func (s *runStub) handler() http.Handler {
 	})
 	mux.HandleFunc("POST /devices/{id}/wait_ready", func(w http.ResponseWriter, _ *http.Request) {
 		s.waits++
+		if s.waitFails {
+			http.Error(w, `{"error":"generation_gone"}`, 409)
+			return
+		}
 		_, _ = w.Write([]byte(`{"device_id":"sim_1","instance_id":"ins_1"}`))
+	})
+	mux.HandleFunc("GET /devices/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"device_id": "sim_1", "last_error": s.lastError})
 	})
 	mux.HandleFunc("POST /devices/{id}/speak_and_wait", func(w http.ResponseWriter, _ *http.Request) {
 		s.speaks++
@@ -179,6 +188,38 @@ func TestRunHappyAndDirty(t *testing.T) {
 	code = simctl([]string{"--listen", host, "run", "--asset", "ast_x", "--dirty"})
 	if code != 0 {
 		t.Fatalf("--dirty 应放行 code=%d out=%s", code, out.Bytes())
+	}
+}
+
+// 真机实测出来的：设备连上了但注册没被 ack，run 只吐 generation_gone，
+// 而真正的原因（register ACK 超时）在设备的 last_error 里。不带出来 agent 就断线了。
+func TestRunNotReadyCarriesLastError(t *testing.T) {
+	stub := &runStub{state: "stopped", waitFails: true, lastError: "register ACK 超时"}
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	out := withIO(t)
+	code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "--asset", "ast_x"})
+	if code == 0 {
+		t.Fatalf("起不来应非 0 退出: %s", out.Bytes())
+	}
+	if !bytes.Contains(out.Bytes(), []byte("register ACK 超时")) {
+		t.Fatalf("错误里应带 last_error: %s", out.Bytes())
+	}
+}
+
+// 门禁拒绝不是连接问题，不该去捞 last_error 混淆视听。
+func TestDirtyErrorNotAnnotated(t *testing.T) {
+	stub := &runStub{state: "running", overridden: true, lastError: "不该出现"}
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	out := withIO(t)
+	if code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "--asset", "ast_x"}); code == 0 {
+		t.Fatalf("应拒绝: %s", out.Bytes())
+	}
+	if bytes.Contains(out.Bytes(), []byte("不该出现")) {
+		t.Fatalf("门禁错误不该带 last_error: %s", out.Bytes())
 	}
 }
 

@@ -572,7 +572,7 @@ func selectDevices(all []deviceRow, id, env, ent, dtype string) []deviceRow {
 func runDevice(listen string, d deviceRow, asset string, dirty bool) (runResult, error) {
 	ins, over, err := ensureReady(listen, d, dirty)
 	if err != nil {
-		return runResult{}, err
+		return runResult{}, annotateNotReady(listen, d.DeviceID, err)
 	}
 	var speak struct {
 		TurnID          string `json:"turn_id"`
@@ -627,6 +627,22 @@ func runDevice(listen string, d deviceRow, asset string, dirty bool) (runResult,
 		DownBytes:       turn.DownBytes,
 		Overridden:      over,
 	}, nil
+}
+
+// annotateNotReady 给起不来的错误补上原因。`generation_gone` 这类错误自己说不出
+// 连接为什么没成——答案在设备的 last_error 里（「register ACK 超时」之类）。
+// 不补的话 agent 只能拿着一个空洞的错误码，还得自己知道去翻 REST。
+func annotateNotReady(listen, id string, err error) error {
+	if errors.Is(err, errDirty) {
+		return err // 门禁拒绝，不是连接问题
+	}
+	var row struct {
+		LastError string `json:"last_error"`
+	}
+	if e := httpGet(listen, "/devices/"+url.PathEscape(id), &row); e != nil || row.LastError == "" {
+		return err
+	}
+	return fmt.Errorf("%w（last_error: %s）", err, row.LastError)
 }
 
 func ensureReady(listen string, d deviceRow, dirty bool) (instanceID string, overridden bool, err error) {
