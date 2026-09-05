@@ -140,18 +140,27 @@ func (s *Server) loadAssetIndex() {
 			}
 		}
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "index.json"))
+	ipath := filepath.Join(root, "index.json")
+	raw, err := os.ReadFile(ipath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "asset index: 读不了 %s: %v（本次启动音频库为空）\n", ipath, err)
+		}
 		return
 	}
 	var idx assetIndexFile
 	if err := json.Unmarshal(raw, &idx); err != nil {
+		fmt.Fprintf(os.Stderr, "asset index: %s 解析失败: %v（本次启动音频库为空）\n", ipath, err)
 		return
 	}
+	loaded, skipped := 0, 0
 	for _, e := range idx.Assets {
 		p := filepath.Join(root, e.File)
 		if _, err := os.Stat(p); err != nil {
-			continue // 文件丢了就丢条目
+			// 索引里有、盘上没有：条目丢掉，但别不吭声。
+			skipped++
+			fmt.Fprintf(os.Stderr, "asset index: 跳过 %s：文件不在 %s\n", e.ID, p)
+			continue
 		}
 		s.assets[e.ID] = &assetObj{
 			id: e.ID, path: p, epoch: 1,
@@ -161,7 +170,9 @@ func (s *Server) loadAssetIndex() {
 			bitrateKbps: e.BitrateKbps, createdAt: e.CreatedAt,
 			variants: map[string]string{},
 		}
+		loaded++
 	}
+	fmt.Fprintf(os.Stderr, "asset index: loaded=%d skipped=%d\n", loaded, skipped)
 }
 
 // persistAssetIndexLocked 重写 index.json；调用方必须持 assetMu。

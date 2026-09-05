@@ -14,6 +14,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,30 +43,51 @@ func (s *Server) devicesStorePath() string {
 // 任何一条读坏就跳过该条，不阻止 manager 启动——调试台不该因为一台设备的
 // 脏定义整个起不来。
 func (s *Server) loadDevices() {
-	raw, err := os.ReadFile(s.devicesStorePath())
+	path := s.devicesStorePath()
+	raw, err := os.ReadFile(path)
 	if err != nil {
+		// 首次启动没有这个文件是正常的；其它读失败（权限、损坏）必须出声。
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "devices store: 读不了 %s: %v（本次启动没有任何设备）\n", path, err)
+		}
 		return
 	}
 	var f devicesStoreFile
 	if err := yaml.Unmarshal(raw, &f); err != nil {
+		fmt.Fprintf(os.Stderr, "devices store: %s 解析失败: %v（本次启动没有任何设备）\n", path, err)
 		return
+	}
+	// 跳过脏定义不阻止启动，但必须可观测：只看到「设备少了」而不知道少了几台、
+	// 为什么少，会把数据丢失伪装成正常状态。
+	loaded, skipped := 0, 0
+	skip := func(id, why string) {
+		skipped++
+		if id == "" {
+			id = "(无 device_id)"
+		}
+		fmt.Fprintf(os.Stderr, "devices store: 跳过 %s：%s\n", id, why)
 	}
 	for _, e := range f.Devices {
 		cfg := e.Device
 		if cfg.DeviceID == "" {
+			skip("", "缺 device_id")
 			continue
 		}
 		// 运输层参数以当前 manager.yaml 为准，不用盘上的旧值。
 		cfg.Behavior.WriteQueueDepth = s.opts.Config.WriteQueueDepth
 		cfg.Behavior.WriteDrainTimeoutSec = s.opts.Config.WriteDrainTimeoutSec
 		if err := config.ValidatePhase2(cfg); err != nil {
+			skip(cfg.DeviceID, err.Error())
 			continue
 		}
 		if _, dup := s.devices[cfg.DeviceID]; dup {
+			skip(cfg.DeviceID, "device_id 重复")
 			continue
 		}
 		s.devices[cfg.DeviceID] = s.newManaged(cfg, e.Environment)
+		loaded++
 	}
+	fmt.Fprintf(os.Stderr, "devices store: loaded=%d skipped=%d\n", loaded, skipped)
 }
 
 // persistDevicesLocked 重写设备定义文件；调用方必须持 s.mu。
