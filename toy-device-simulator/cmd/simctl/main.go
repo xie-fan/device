@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	defaultConfig = "configs/manager.yaml"
-	defaultListen = "127.0.0.1:8090"
+	defaultConfig   = "configs/manager.yaml"
+	defaultListen   = "127.0.0.1:8090"
+	defaultRegistry = "configs/registry.yaml"
 	pidPath       = "data/manager.pid"
 	exePath       = "data/manager.exe"
 	logPath       = "data/manager.log"
@@ -44,6 +45,9 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
   up        后台起 manager。先 go build -o data/manager.exe ./cmd/manager 再拉起。
             幂等，不自动关。pid → data/manager.pid，日志追加 data/manager.log。
             探活 GET /devices。Windows 上 simctl 退出后进程继续活着。
+            --registry FILE  配置树，默认 configs/registry.yaml。真实环境的 url
+                             只能放 gitignore 的 configs/registry.local.yaml，
+                             跟踪版只许 loopback。
   down      按 pid 文件停 manager
   status    manager 是否活着，几台设备
   devices   列设备。过滤：--env 环境名；--enterprise / --device-type 简称（不是名称）
@@ -353,8 +357,13 @@ func killPID(pid int) error {
 
 func cmdUp(cfg, listen string, args []string) int {
 	fs := newFS("up")
+	var registry string
 	addConfig(fs, &cfg)
 	addListen(fs, &listen)
+	// 真实环境的 url 只能待在 gitignore 的 registry.local.yaml 里——跟踪版
+	// 只许 loopback（config 包的守卫测试会挡）。不给这个开关，界面上加的
+	// 真环境就只能写进跟踪版，等于逼着人违规。
+	fs.StringVar(&registry, "registry", defaultRegistry, "配置树 YAML，原样传给 manager")
 	if code, ok := parseFS(fs, args); !ok {
 		return code
 	}
@@ -375,7 +384,7 @@ func cmdUp(cfg, listen string, args []string) int {
 		return fail(err.Error())
 	}
 	defer logf.Close()
-	cmd := exec.Command(exePath, "--config", cfg, "--listen", listen)
+	cmd := exec.Command(exePath, "--config", cfg, "--listen", listen, "--registry", registry)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	detachCmd(cmd)
 	if err := cmd.Start(); err != nil {
