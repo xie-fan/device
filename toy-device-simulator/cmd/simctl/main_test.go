@@ -184,11 +184,12 @@ func TestRunHappyAndDirty(t *testing.T) {
 
 func TestTurnAudioHistory(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"turn_id":"turn_1","down_bytes":1}`))
+	// source 只在列表端点上；单条 /turns/{id} 不返，所以 turn 走列表再挑。
+	mux.HandleFunc("GET /devices/{id}/turns", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"source":"live","turns":[{"turn_id":"other"},{"turn_id":"turn_1","down_bytes":1}]}`))
 	})
 	mux.HandleFunc("GET /devices/{id}/events", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"source":"live","events":[{"turn_id":"turn_1","event_type":"turn_terminal"},{"turn_id":"other","event_type":"x"}]}`))
+		_, _ = w.Write([]byte(`{"events":[{"turn_id":"turn_1","event_type":"turn_terminal"},{"turn_id":"other","event_type":"x"}]}`))
 	})
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/frames", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
@@ -211,6 +212,13 @@ func TestTurnAudioHistory(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte(`"event_type":"turn_terminal"`)) || bytes.Contains(out.Bytes(), []byte(`"event_type":"x"`)) {
 		t.Fatalf("应按 turn_id 过滤事件: %s", out.Bytes())
+	}
+	// source 恒空是真出过的 bug：曾从 /events 读，而那个端点不返这个字段。
+	if !bytes.Contains(out.Bytes(), []byte(`"source":"live"`)) {
+		t.Fatalf("source 应取自 /turns 列表: %s", out.Bytes())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"down_bytes":1`)) {
+		t.Fatalf("应从列表里挑出 turn_1 这一轮: %s", out.Bytes())
 	}
 
 	dir := t.TempDir()

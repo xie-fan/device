@@ -8,6 +8,8 @@
 
 - 事件按 `turn_id` 过滤；同 instance 上其它轮不会混进来。
 - 帧日志方向是 `outbound`（设备→服务端，上行）和 `inbound`（服务端→设备，下行），不是 up/down 这两个词。
+- **帧日志异步落盘**：`run` 刚返回就查 `turn`，帧统计可能少最后一两条。轮的终态字段（`verdict` / `turn_end_reason`）在 `run` 的返回里就是准的，别拿帧数去判断这一轮完没完。
+- `frames.inbound_bytes` 含非音频的下行帧，`turn.down_bytes` 只算 TTS payload。两者不等是正常的。
 - `source` 为 `live` / `tomb` / `disk`：盘上历史没有 TTL，墓碑有。别把「manager 重启后还能查」理解成墓碑。
 
 ## audio

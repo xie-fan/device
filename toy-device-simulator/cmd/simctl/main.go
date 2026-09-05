@@ -691,13 +691,30 @@ func cmdTurn(listen string, args []string) int {
 	}
 	esc := url.PathEscape(dev)
 	q := "?instance_id=" + url.QueryEscape(ins)
-	var meta json.RawMessage
-	if err := httpGet(listen, "/devices/"+esc+"/turns/"+url.PathEscape(turnID)+q, &meta); err != nil {
+	// source（live/tomb/disk）只在列表端点上，单条 /turns/{id} 不返。
+	// 所以取列表再挑这一轮：HTTP 调用次数不变，source 才有值。
+	var tlist struct {
+		Turns  []json.RawMessage `json:"turns"`
+		Source string            `json:"source"`
+	}
+	if err := httpGet(listen, "/devices/"+esc+"/turns"+q, &tlist); err != nil {
 		return fail(err.Error())
+	}
+	var meta json.RawMessage
+	for _, t := range tlist.Turns {
+		var row struct {
+			TurnID string `json:"turn_id"`
+		}
+		if json.Unmarshal(t, &row) == nil && row.TurnID == turnID {
+			meta = t
+			break
+		}
+	}
+	if meta == nil {
+		return fail("turn 未命中：" + turnID)
 	}
 	var evWrap struct {
 		Events []map[string]any `json:"events"`
-		Source string           `json:"source"`
 	}
 	if err := httpGet(listen, "/devices/"+esc+"/events"+q, &evWrap); err != nil {
 		return fail(err.Error())
@@ -721,7 +738,7 @@ func cmdTurn(listen string, args []string) int {
 		"device_id":   dev,
 		"instance_id": ins,
 		"turn_id":     turnID,
-		"source":      evWrap.Source,
+		"source":      tlist.Source,
 		"turn":        json.RawMessage(meta),
 		"events":      filtered,
 		"frames":      st,
