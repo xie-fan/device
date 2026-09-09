@@ -51,6 +51,7 @@
       <div class="seg" role="group" aria-label="视图">
         <button type="button" class="seg__btn is-on" id="btn-view-bench" aria-pressed="true">调试台</button>
         <button type="button" class="seg__btn" id="btn-view-manage" aria-pressed="false">设备管理</button>
+        <button type="button" class="seg__btn" id="btn-view-registry" aria-pressed="false">厂商与设备类型</button>
       </div>
     </div>
 
@@ -217,6 +218,18 @@
       </div>
     </aside>
   </main>
+
+  <section class="manage" id="registry" hidden aria-labelledby="registry-title">
+    <div class="manage__bar">
+      <h2 class="manage__title" id="registry-title">厂商与设备类型</h2>
+      <span class="grow"></span>
+      <button type="button" class="btn btn--sub btn--sm" id="registry-devices">前往设备管理</button>
+    </div>
+    <div class="manage__wrap">
+      <p class="hint">从左到右三级：点一个环境，中间列出它下面的厂商；点一个厂商，右边列出它的设备类型。选中项上会出现编辑 / 删除。</p>
+      <div class="sheet" id="registry-body"></div>
+    </div>
+  </section>
 
   <!-- ——— 设备管理：编辑的是落盘的「定义」，不是本次运行的当前值 ——— -->
   <section class="manage" id="manage" hidden aria-labelledby="manage-title">

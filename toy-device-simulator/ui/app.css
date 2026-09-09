@@ -375,6 +375,36 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .lvl__add .pair{display:flex;gap:10px}
 .lvl__foot{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
+/* 配置树：环境 / 厂商 / 设备类型 三列并排，点左边一项，右边列出它下面的数据 */
+.tree{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.tcol{display:flex;flex-direction:column;min-width:0;border:1px solid var(--line);
+  border-radius:var(--r);background:var(--panel);overflow:hidden}
+.tcol__head{display:flex;align-items:center;gap:8px;padding:9px 10px;
+  border-bottom:1px solid var(--line);background:var(--panel2)}
+.tcol__label{font-size:11.5px;color:var(--dim);letter-spacing:.04em}
+.tcol__list{list-style:none;margin:0;padding:6px;display:flex;flex-direction:column;gap:2px;
+  overflow-y:auto;max-height:56vh}
+.tcol__blank{margin:0;padding:20px 12px;text-align:center;font-size:11.5px;color:var(--faint)}
+/* 编辑/删除 贴在行右侧，不另起一行——列里全是矮行，多一行就撑掉半屏 */
+.tnode{display:flex;align-items:center;gap:8px;padding:7px 9px;
+  border:1px solid transparent;border-radius:var(--r)}
+.tnode:hover{background:var(--panel2)}
+.tnode.is-on{border-color:var(--accline);background:var(--accsoft)}
+.tnode__pick{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;padding:0;font:inherit;
+  border:0;background:transparent;color:var(--fg);text-align:left;cursor:pointer}
+.tnode__t,.tnode__sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tnode__t{font-size:12.5px}
+.tnode__sub{font-family:var(--mono);font-size:10px;color:var(--faint)}
+.tnode__ops{display:flex;gap:6px;flex:none}
+.btn.is-armed{background:var(--errsoft);border-color:var(--err);color:var(--err)}
+/* 新增表单原本挂在 70px 缩进的下拉行后面，塞进窄列要收回缩进、字段竖排 */
+.tcol .lvl__add{margin:8px;padding:10px}
+.tcol .lvl__add .pair{flex-direction:column;gap:9px}
+@media (max-width:900px){
+  .tree{grid-template-columns:1fr}
+  .tcol__list{max-height:none}
+}
+
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 .fields--pad{padding-left:29px}
 .fld{display:flex;flex-direction:column;gap:6px;min-width:0}

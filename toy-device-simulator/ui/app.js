@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
 
   const state = {
-    view: "bench",          // bench = 调试台；manage = 设备管理（编辑落盘定义）
+    view: "bench",          // bench = 调试台；manage = 设备管理；registry = 厂商与设备类型
     manageQ: "",
     defTarget: null,        // 正在编辑的设备定义（GET /devices/{id}/definition）
     devices: [],
@@ -31,6 +31,7 @@
     templates: [],
     registry: [],
     regSel: { env: "", ent: "", typ: "" },
+    regEdit: "",           // 正在行内编辑的层级：env / ent / typ
     busy: false,
     filterEnv: "",
     filterEnterprise: "",
@@ -62,7 +63,8 @@
     globalWs: null,
     globalEvents: [],
     globalNewest: 0,
-    lib: { rows: [], format: "", language: "", editingId: null, armedId: null },
+    // newLang：下一次导入要标注的语言，和上面的 language（筛选用）是两回事。
+    lib: { rows: [], format: "", language: "", newLang: "", editingId: null, armedId: null },
   };
 
   // 全局带最多留这么多条；调试面板不是归档，翻更早的去 /ws/events/global 拿回放。
@@ -359,6 +361,7 @@
     if (!regTypes().some((x) => x.short_name === state.regSel.typ)) {
       state.regSel.typ = regTypes()[0] ? regTypes()[0].short_name : "";
     }
+    renderRegistry();
     if (state.drawer === "new" || state.drawer === "config") renderDrawer();
   }
 
@@ -1784,16 +1787,57 @@
   // 这里编辑的是落盘的「定义」；调试台的配置抽屉改的是本次运行的当前值。
 
   function setView(v) {
-    state.view = v === "manage" ? "manage" : "bench";
-    const manage = state.view === "manage";
-    $("manage").hidden = !manage;
-    document.querySelector("main.bench").hidden = manage;
-    $("segwrap-mode").hidden = manage;
-    for (const [id, on] of [["btn-view-bench", !manage], ["btn-view-manage", manage]]) {
-      $(id).classList.toggle("is-on", on);
-      $(id).setAttribute("aria-pressed", String(on));
+    state.view = ["manage", "registry"].includes(v) ? v : "bench";
+    closeDrawer();
+    state.adding = null;
+    state.regEdit = "";
+    $("manage").hidden = state.view !== "manage";
+    $("registry").hidden = state.view !== "registry";
+    document.querySelector("main.bench").hidden = state.view !== "bench";
+    $("segwrap-mode").hidden = state.view !== "bench";
+    for (const view of ["bench", "manage", "registry"]) {
+      const on = state.view === view;
+      $("btn-view-" + view).classList.toggle("is-on", on);
+      $("btn-view-" + view).setAttribute("aria-pressed", String(on));
     }
-    if (manage) renderManage();
+    if (state.view === "manage") renderManage();
+    if (state.view === "registry") renderRegistry();
+  }
+
+  function renderRegistry() {
+    setHTML($("registry-body"), registryHTML());
+  }
+
+  function pickTree(tree, value) {
+    if (tree === "env") state.regSel = { env: value, ent: "", typ: "" };
+    else if (tree === "ent") { state.regSel.ent = value; state.regSel.typ = ""; }
+    else state.regSel.typ = value;
+    state.adding = null;
+    state.regEdit = "";
+  }
+
+  function changeTree(t) {
+    const tree = t.getAttribute("data-tree");
+    if (!tree) return false;
+    pickTree(tree, t.value);
+    return true;
+  }
+
+  function bindRegistry() {
+    $("btn-view-registry").addEventListener("click", () => setView("registry"));
+    $("registry-devices").addEventListener("click", () => setView("manage"));
+    $("registry-body").addEventListener("click", (e) => {
+      const button = e.target.closest("button");
+      if (!button) return;
+      const d = button.dataset;
+      if (d.treePick) { pickTree(d.treePick, d.v); renderRegistry(); }
+      else if (d.treeAdd) { state.adding = state.adding === d.treeAdd ? null : d.treeAdd; state.regEdit = ""; renderRegistry(); }
+      else if (d.treeCancel) { state.adding = null; state.regEdit = ""; renderRegistry(); }
+      else if (d.treeOk) treeAdd(d.treeOk);
+      else if (d.treeRename) { state.regEdit = state.regEdit === d.treeRename ? "" : d.treeRename; state.adding = null; renderRegistry(); }
+      else if (d.treeSave) treeSave(d.treeSave);
+      else if (d.treeDel) armThen(button, () => treeDelete(d.treeDel));
+    });
   }
 
   function manageRows() {
@@ -1957,6 +2001,7 @@
   };
 
   function openDrawer(which) {
+    if (which === "new" && state.view !== "manage") setView("manage");
     if (state.drawer === "sheet" && which !== "sheet") restoreSide();
     state.drawer = which;
     state.adding = null;
@@ -1999,21 +2044,25 @@
       l1: "环境名", p1: "prod / staging / uat",
       l2: "url", p2: "ws://127.0.0.1:8089/{enterprise}",
       api: "POST /registry/environments",
+      empty: "还没有环境",
     },
     {
       key: "ent", label: "厂商",
       l1: "名称", p1: "Acme 智能",
       l2: "简称（wire 值）", p2: "acme",
       api: "POST /registry/environments/{env}/enterprises",
+      empty: "该环境下还没有厂商",
     },
     {
       key: "typ", label: "设备类型",
       l1: "名称", p1: "迷你音箱",
       l2: "简称（wire 值）", p2: "speaker-mini",
       api: "POST …/enterprises/{short}/device_types",
+      empty: "该厂商下还没有设备类型",
     },
   ];
 
+  // 新建抽屉里的三级下拉；增删改在「厂商与设备类型」页的配置树上。
   function treeHTML() {
     const sel = state.regSel;
     const envNode = regEnv();
@@ -2037,34 +2086,88 @@
       },
     ];
     const missing = [!sel.env && "环境", !sel.ent && "厂商", !sel.typ && "设备类型"].filter(Boolean);
-    return rows.map((r) => {
-      const k = r.cfg.key;
-      const adding = state.adding === k;
-      return `<div class="lvl">
+    return rows.map((r) => `<div class="lvl">
         <div class="lvl__row">
           <span class="lvl__label">${esc(r.cfg.label)}</span>
-          <select data-tree="${k}"${r.disabled ? " disabled" : ""}>${selOpts(r.opts, r.value, r.ph)}</select>
-          <button type="button" class="btn btn--ghost" data-tree-add="${k}">＋ 新增</button>
-          <button type="button" class="btn btn--ghost" data-tree-rename="${k}"${r.value ? "" : " disabled"}>${k === "env" ? "改 url" : "改名"}</button>
-          <button type="button" class="btn btn--ghost" data-tree-del="${k}"${r.value ? "" : " disabled"}>删除</button>
+          <select data-tree="${r.cfg.key}"${r.disabled ? " disabled" : ""}>${selOpts(r.opts, r.value, r.ph)}</select>
         </div>
         ${r.hint ? `<div class="lvl__hint">${esc(r.hint)}</div>` : ""}
-        ${adding ? `<div class="lvl__add">
+      </div>`).join("") + (missing.length
+      ? `<p class="warnbar" style="margin-left:29px">三级要选全才能建设备：${esc(missing.join(" / "))} 还没选。</p>`
+      : "");
+  }
+
+  // 配置树：环境 / 厂商 / 设备类型 三列并排，点中一列的某一项，右边那列就列出它下面的数据。
+  function registryHTML() {
+    const s = state.regSel;
+    const cols = [
+      {
+        cfg: TREE_LEVELS[0], cur: s.env, blocked: "",
+        rows: state.registry.map((r) => ({ v: r.name, t: r.name, sub: r.url })),
+      },
+      {
+        cfg: TREE_LEVELS[1], cur: s.ent, blocked: s.env ? "" : "先选一个环境",
+        rows: regEnts().map((r) => ({ v: r.short_name, t: r.name, sub: r.short_name })),
+      },
+      {
+        cfg: TREE_LEVELS[2], cur: s.typ, blocked: s.ent ? "" : "先选一个厂商",
+        rows: regTypes().map((r) => ({ v: r.short_name, t: r.name, sub: r.short_name })),
+      },
+    ];
+    return `<div class="tree">` + cols.map((c) => {
+      const k = c.cfg.key;
+      const list = c.blocked
+        ? `<p class="tcol__blank">${esc(c.blocked)}</p>`
+        : c.rows.length
+          ? `<ul class="tcol__list">` + c.rows.map((r) => {
+            const on = String(r.v) === String(c.cur);
+            return `<li>
+              <div class="tnode${on ? " is-on" : ""}">
+                <button type="button" class="tnode__pick" data-tree-pick="${k}" data-v="${esc(r.v)}" aria-pressed="${on}">
+                  <span class="tnode__t">${esc(r.t)}</span>
+                  ${r.sub ? `<span class="tnode__sub">${esc(r.sub)}</span>` : ""}
+                </button>
+                ${on ? `<span class="tnode__ops">
+                  <button type="button" class="btn btn--ghost" data-tree-rename="${k}">编辑</button>
+                  <button type="button" class="btn btn--ghost" data-tree-del="${k}" data-armed="0" title="再点一次确认删除">删除</button>
+                </span>` : ""}
+              </div>
+              ${on && state.regEdit === k ? `<div class="lvl__add">
+                <label class="fld">
+                  <span class="fld__name">${esc(k === "env" ? c.cfg.l2 : c.cfg.l1)}</span>
+                  <input data-edit="1" value="${esc(k === "env" ? (r.sub || "") : r.t)}">
+                </label>
+                <div class="lvl__foot">
+                  <button type="button" class="btn btn--primary btn--sm" data-tree-save="${k}">保存</button>
+                  <button type="button" class="btn btn--ghost" data-tree-cancel="1">取消</button>
+                  <span class="grow"></span>
+                  <span class="api">${esc(k === "env" ? "简称即主键，改不了" : "简称是 wire 值，改不了")}</span>
+                </div>
+              </div>` : ""}
+            </li>`;
+          }).join("") + `</ul>`
+          : `<p class="tcol__blank">${esc(c.cfg.empty)}</p>`;
+      return `<section class="tcol">
+        <header class="tcol__head">
+          <span class="tcol__label">${esc(c.cfg.label)}</span>
+          <span class="tag tag--pill">${c.blocked ? 0 : c.rows.length}</span>
+          <span class="grow"></span>
+          <button type="button" class="btn btn--ghost" data-tree-add="${k}"${c.blocked ? " disabled" : ""}>＋ 新增</button>
+        </header>
+        ${state.adding === k ? `<div class="lvl__add">
           <div class="pair">
-            <label class="fld"><span class="fld__name">${esc(r.cfg.l1)}</span><input data-add="1" placeholder="${esc(r.cfg.p1)}"></label>
-            <label class="fld"><span class="fld__name">${esc(r.cfg.l2)}</span><input data-add="2" placeholder="${esc(r.cfg.p2)}" value="${k === "env" ? esc(r.cfg.p2) : ""}"></label>
+            <label class="fld"><span class="fld__name">${esc(c.cfg.l1)}</span><input data-add="1" placeholder="${esc(c.cfg.p1)}"></label>
+            <label class="fld"><span class="fld__name">${esc(c.cfg.l2)}</span><input data-add="2" placeholder="${esc(c.cfg.p2)}" value="${k === "env" ? esc(c.cfg.p2) : ""}"></label>
           </div>
           <div class="lvl__foot">
             <button type="button" class="btn btn--primary btn--sm" data-tree-ok="${k}">确认新增</button>
             <button type="button" class="btn btn--ghost" data-tree-cancel="1">取消</button>
-            <span class="grow"></span>
-            <span class="api">${esc(r.cfg.api)}</span>
           </div>
+          <span class="api">${esc(c.cfg.api)}</span>
         </div>` : ""}
-      </div>`;
-    }).join("") + (missing.length
-      ? `<p class="warnbar" style="margin-left:29px">三级要选全才能建设备：${esc(missing.join(" / "))} 还没选。</p>`
-      : "");
+        ${list}
+      </section>`;
+    }).join("") + `</div>`;
   }
 
   const NEW_FIELDS = [
@@ -2112,7 +2215,8 @@
           <span class="step__n">1</span><span class="step__t">挂到配置树上</span>
           <span class="step__hint">环境 → 厂商 → 设备类型</span>
         </div>
-        ${treeHTML()}
+        <div id="new-tree">${treeHTML()}</div>
+        <p class="hint">这里只选择已有配置；缺少厂商或类型，请先到「厂商与设备类型」页面配置。</p>
       </div>
       <div class="rule"></div>
       <div class="step">
@@ -2233,15 +2337,29 @@
     </form>`;
   }
 
+  // 音频库语言表。后端不校验这个字段，这里只是别让人手打错 zh/zh-CN/中文 三种写法。
+  const LANGS = [
+    { v: "zh", t: "zh 中文" },
+    { v: "en", t: "en 英语" },
+    { v: "ja", t: "ja 日语" },
+    { v: "ko", t: "ko 韩语" },
+    { v: "id", t: "id 印尼语" },
+    { v: "ar", t: "ar 阿拉伯语" },
+  ];
+
   function assetsDrawerHTML() {
     const rows = state.lib.rows;
     return `<div class="sheet sheet--tight">
       <div class="bar">
         <select data-lib="format" style="width:140px">${selOpts(
           ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })), state.lib.format, "全部格式")}</select>
-        <input data-lib="lang" value="${esc(state.lib.language)}" placeholder="语言，如 zh" class="mono" style="width:130px;padding:7px 10px;border-radius:var(--r);border:1px solid var(--line);background:var(--well);font-size:11.5px">
+        <select data-lib="lang" style="width:140px">${selOpts(LANGS, state.lib.language, "全部语言")}</select>
         <span class="grow"></span>
-        <label class="btn btn--primary btn--sm">＋ 导入<input type="file" id="lib-file" accept=".wav,.mp3,.amr,.aac,audio/*" hidden></label>
+        <span style="display:flex;align-items:center;gap:8px;flex:none">
+          <span class="dim" style="font-size:11.5px">导入语言</span>
+          <select data-lib="newlang" style="width:118px" title="写进新素材的 language 字段，不是筛选">${selOpts(LANGS, state.lib.newLang, "不标注")}</select>
+          <label class="btn btn--primary btn--sm">＋ 导入<input type="file" id="lib-file" accept=".wav,.mp3,.amr,.aac,audio/*" hidden></label>
+        </span>
       </div>
       <p class="hint">POST /assets（multipart）· wav / mp3 / amr / aac · 上限 10 MB / 60 秒</p>
       <div class="list">
@@ -2252,7 +2370,7 @@
             return `<div class="row" data-id="${esc(a.asset_id)}">
               <div class="fields">
                 <label class="fld"><span class="fld__name">名称</span><input data-edit="name" value="${esc(a.name)}"></label>
-                <label class="fld"><span class="fld__name">语言</span><input data-edit="language" value="${esc(a.language || "")}"></label>
+                <label class="fld"><span class="fld__name">语言</span><select data-edit="language">${selOpts(LANGS, a.language || "", "不标注")}</select></label>
               </div>
               <div class="bar">
                 <button type="button" class="btn btn--primary btn--sm" data-asset="save">保存</button>
@@ -2653,7 +2771,7 @@
   }
 
   async function treeAdd(k) {
-    const body = $("drawer-body");
+    const body = $("registry-body");
     const v1 = (body.querySelector('[data-add="1"]') || {}).value || "";
     const v2 = (body.querySelector('[data-add="2"]') || {}).value || "";
     const a = v1.trim();
@@ -2687,36 +2805,27 @@
   }
 
   // 后端只开了两种改法：环境改 url，厂商/设备类型改 name（简称是主键，改不了）。
-  async function treeEdit(k) {
-    const s = state.regSel;
-    if (k === "env") {
-      const node = regEnv();
-      const url = prompt("环境 " + s.env + " 的新 url（可含 {enterprise}）", node ? node.url : "");
-      if (url == null || !url.trim()) return;
-      try {
-        await api("PUT", treeNodePath(k), { url: url.trim() });
-        await loadRegistry();
-        flash("PUT /registry/environments/" + s.env + " · 已改 url", "ok");
-      } catch (err) {
-        apiErr(err);
-      }
+  // 行内表单而不是 prompt()：预览窗格和一些内嵌 webview 直接把 prompt/confirm 抛错。
+  async function treeSave(k) {
+    const input = $("registry-body").querySelector('[data-edit="1"]');
+    const v = ((input || {}).value || "").trim();
+    if (!v) {
+      flash(k === "env" ? "url 不能空" : "名称不能空", "err");
       return;
     }
-    const node = k === "ent" ? regEnt() : regTypes().find((x) => x.short_name === s.typ);
-    const name = prompt("新的名称（简称是 wire 值，改不了）", node ? node.name : "");
-    if (name == null || !name.trim()) return;
     try {
-      await api("PUT", treeNodePath(k), { name: name.trim() });
+      await api("PUT", treeNodePath(k), k === "env" ? { url: v } : { name: v });
+      state.regEdit = "";
       await loadRegistry();
-      flash("已改名 " + name.trim(), "ok");
+      flash(k === "env" ? "已改 url " + v : "已改名 " + v, "ok");
     } catch (err) {
       apiErr(err);
     }
   }
 
+  // 两击确认（armThen），同样是为了不依赖 confirm()。
   async function treeDelete(k) {
     const cur = { env: state.regSel.env, ent: state.regSel.ent, typ: state.regSel.typ }[k];
-    if (!confirm(`删除 ${cur}？被设备引用的节点删不掉。`)) return;
     try {
       await api("DELETE", treeNodePath(k));
       if (k === "env") state.regSel = { env: "", ent: "", typ: "" };
@@ -3197,15 +3306,6 @@
       };
       const mode = hit("data-newmode");
       if (mode) { state.newMode = mode; renderDrawer(); return; }
-      const add = hit("data-tree-add");
-      if (add) { state.adding = state.adding === add ? null : add; renderDrawer(); return; }
-      if (hit("data-tree-cancel")) { state.adding = null; renderDrawer(); return; }
-      const ok = hit("data-tree-ok");
-      if (ok) { treeAdd(ok); return; }
-      const rn = hit("data-tree-rename");
-      if (rn) { treeEdit(rn); return; }
-      const del = hit("data-tree-del");
-      if (del) { treeDelete(del); return; }
       const asset = hit("data-asset");
       if (asset) {
         const row = t.closest("[data-id]");
@@ -3237,32 +3337,22 @@
     });
     body.addEventListener("change", (e) => {
       const t = e.target;
-      const tree = t.getAttribute && t.getAttribute("data-tree");
-      if (tree) {
-        if (tree === "env") state.regSel = { env: t.value, ent: "", typ: "" };
-        else if (tree === "ent") { state.regSel.ent = t.value; state.regSel.typ = ""; }
-        else state.regSel.typ = t.value;
-        state.adding = null;
-        renderDrawer();
+      if (changeTree(t)) {
+        setHTML($("new-tree"), treeHTML());
         return;
       }
       const lib = t.getAttribute && t.getAttribute("data-lib");
       if (lib === "format") { state.lib.format = t.value; loadLibrary().catch(() => {}); return; }
+      if (lib === "lang") { state.lib.language = t.value; loadLibrary().catch(() => {}); return; }
+      if (lib === "newlang") { state.lib.newLang = t.value; return; }
       if (t.id === "lib-file" && t.files[0]) {
         const f = t.files[0];
-        importAsset(f, f.name.replace(/\.[^.]+$/, ""), "").catch(apiErr);
+        importAsset(f, f.name.replace(/\.[^.]+$/, ""), state.lib.newLang).catch(apiErr);
         return;
       }
       if (t.name === "environment") cascadeConfig("env");
       else if (t.name === "enterprise") cascadeConfig("ent");
     });
-    body.addEventListener("input", debounce((e) => {
-      const t = e.target;
-      if (t.getAttribute && t.getAttribute("data-lib") === "lang") {
-        state.lib.language = t.value.trim();
-        loadLibrary().catch(() => {});
-      }
-    }, 250));
     body.addEventListener("submit", (e) => {
       e.preventDefault();
       if (e.target.id === "form-config") saveConfig(e);
@@ -3317,6 +3407,7 @@
     bindSide();
     bindDrawer();
     bindManage();
+    bindRegistry();
     bindKeys();
     setFollow(true);
     setMode("bubble");
