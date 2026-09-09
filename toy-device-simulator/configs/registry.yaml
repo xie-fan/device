@@ -1,12 +1,17 @@
-# 配置树：环境 → 厂商 → 设备类型。设备创建时引用三级路径（phase2.md §6.10）。
-# 键（环境名、两级简称）创建后不可改；wire 上的 enterprise/device_type 与
-# url 占位符（{enterprise}/{device_type}/{device_id}）代入的都是简称。
 environments:
-  - name: 本地
-    url: ws://127.0.0.1:8089/
-    enterprises:
-      - name: 演示厂商
-        short_name: demo
-        device_types:
-          - name: A3 音箱
-            short_name: A3
+    - name: 本地
+      url: ws://127.0.0.1:8089/
+      enterprises:
+        - name: 演示厂商
+          short_name: demo
+          device_types:
+            - name: A3 音箱
+              short_name: A3
+    - name: 新加坡
+      url: ws://aichatbotws-sgp.eye4.cn/{enterprise}
+      enterprises:
+        - name: 欧堡
+          short_name: GDOBZND
+          device_types:
+            - name: MH8W
+              short_name: MH8W-GDOBZND-EN
