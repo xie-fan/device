@@ -32,7 +32,7 @@ func TestHelpListsVerbs(t *testing.T) {
 	s := errb.String()
 	for _, v := range []string{
 		"up", "down", "status", "devices", "assets", "run", "turn", "audio", "history",
-		"--asset", "--parallel", "--dirty", "--env", "--enterprise", "--device-type",
+		"--asset", "--parallel", "--dirty", "--force", "--env", "--enterprise", "--device-type",
 		"--side", "--instance", "--listen", "--config",
 	} {
 		if !strings.Contains(s, v) {
@@ -98,20 +98,53 @@ func TestRunZeroDevices(t *testing.T) {
 
 type runStub struct {
 	resets, starts, waits, speaks int
+	leaseTries, releases          int
 	state                         string
 	overridden                    bool
-	waitFails                     bool   // wait_ready 回 409 generation_gone
-	lastError                     string // GET /devices/{id} 的 last_error
+	waitFails                     bool            // wait_ready 回 409 generation_gone
+	speakFails                    bool            // speak_and_wait 回 500
+	lastError                     string          // GET /devices/{id} 的 last_error
+	devices                       []deviceRow     // 空 = 只有 sim_1 那台（老用法）
+	busy                          map[string]bool // 这些 device_id 的租约回 409
+}
+
+// rows 空 devices 时合成老的单台 sim_1，保住既有用例不用改。
+func (s *runStub) rows() []deviceRow {
+	if len(s.devices) > 0 {
+		return s.devices
+	}
+	return []deviceRow{{
+		DeviceID: "sim_1", InstanceID: "ins_1", InstanceState: s.state,
+		ConnGeneration: 1, Environment: "local", Enterprise: "vp",
+		DeviceType: "spk", Overridden: s.overridden,
+	}}
 }
 
 func (s *runStub) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /devices", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"devices": []deviceRow{{
-			DeviceID: "sim_1", InstanceID: "ins_1", InstanceState: s.state,
-			ConnGeneration: 1, Environment: "local", Enterprise: "vp",
-			DeviceType: "spk", Overridden: s.overridden,
-		}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"devices": s.rows()})
+	})
+	mux.HandleFunc("POST /devices/{id}/lease", func(w http.ResponseWriter, r *http.Request) {
+		s.leaseTries++
+		id := r.PathValue("id")
+		if s.busy[id] {
+			http.Error(w, `{"error":"lease_held","owner":"other"}`, 409)
+			return
+		}
+		var row deviceRow
+		for _, d := range s.rows() {
+			if d.DeviceID == id {
+				row = d
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"device_id": id, "lease_id": "lse_" + id, "device": row,
+		})
+	})
+	mux.HandleFunc("DELETE /devices/{id}/lease", func(w http.ResponseWriter, _ *http.Request) {
+		s.releases++
+		_, _ = w.Write([]byte(`{"released":true}`))
 	})
 	mux.HandleFunc("POST /devices/{id}/config/reset", func(w http.ResponseWriter, _ *http.Request) {
 		s.resets++
@@ -138,6 +171,10 @@ func (s *runStub) handler() http.Handler {
 	})
 	mux.HandleFunc("POST /devices/{id}/speak_and_wait", func(w http.ResponseWriter, _ *http.Request) {
 		s.speaks++
+		if s.speakFails {
+			http.Error(w, `{"error":"speak 炸了"}`, 500)
+			return
+		}
 		_, _ = w.Write([]byte(`{"turn_id":"turn_1","instance_id":"ins_1","turn_end_reason":"idle","uplink_end_reason":"complete","reply_kind":"tts"}`))
 	})
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}", func(w http.ResponseWriter, r *http.Request) {
@@ -279,5 +316,186 @@ func TestTurnAudioHistory(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte("ins_old")) {
 		t.Fatalf("%s", out.Bytes())
+	}
+}
+
+// ——— 选择语义：过滤粒度决定跑几台 ———
+
+func poolStub(t *testing.T) (*runStub, string) {
+	t.Helper()
+	stub := &runStub{devices: []deviceRow{
+		{DeviceID: "a1", InstanceID: "ins_a1", InstanceState: "running", ConnGeneration: 1,
+			Environment: "local", Enterprise: "vp", DeviceType: "A3"},
+		{DeviceID: "a2", InstanceID: "ins_a2", InstanceState: "running", ConnGeneration: 1,
+			Environment: "local", Enterprise: "vp", DeviceType: "A3"},
+		{DeviceID: "a3", InstanceID: "ins_a3", InstanceState: "running", ConnGeneration: 1,
+			Environment: "local", Enterprise: "vp", DeviceType: "A3"},
+		{DeviceID: "b1", InstanceID: "ins_b1", InstanceState: "running", ConnGeneration: 1,
+			Environment: "local", Enterprise: "vp", DeviceType: "MIC"},
+	}, busy: map[string]bool{}}
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	return stub, strings.TrimPrefix(srv.URL, "http://")
+}
+
+func decodeRows(t *testing.T, out *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json %v out=%s", err, out.Bytes())
+	}
+	return rows
+}
+
+func TestRunRandomOneOfType(t *testing.T) {
+	stub, host := poolStub(t)
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	rows := decodeRows(t, out)
+	if len(rows) != 1 {
+		t.Fatalf("--device-type 应只跑一台，得到 %d 台: %s", len(rows), out.Bytes())
+	}
+	got, _ := rows[0]["device_id"].(string)
+	if got != "a1" && got != "a2" && got != "a3" {
+		t.Fatalf("跑的应是 A3 类型里的一台，得到 %q", got)
+	}
+	if stub.speaks != 1 || stub.releases != 1 {
+		t.Fatalf("speaks=%d releases=%d，应各 1 次", stub.speaks, stub.releases)
+	}
+}
+
+func TestRunRandomSpreadsOverCandidates(t *testing.T) {
+	in := []deviceRow{{DeviceID: "a1"}, {DeviceID: "a2"}, {DeviceID: "a3"}}
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		seen[shuffled(in)[0].DeviceID] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("50 次洗牌首选应不止一台，得到 %v", seen)
+	}
+	// 洗牌不得改动入参。
+	if in[0].DeviceID != "a1" || in[2].DeviceID != "a3" {
+		t.Fatalf("shuffled 污染了入参: %v", in)
+	}
+}
+
+// 三台里只留 a3 空闲，跑 5 次都必须落到 a3。洗牌把 a3 排第一的概率是 1/3，
+// 所以不跳台的实现有 1-(1/3)^5 ≈ 99.6% 会在这里挂；正确实现则永远绿。
+// 不断言 leaseTries 的具体值——它取决于洗牌顺序，钉死了就是 flaky。
+func TestRunRandomHopsOnBusy(t *testing.T) {
+	stub, host := poolStub(t)
+	stub.busy["a1"], stub.busy["a2"] = true, true
+	for i := 0; i < 5; i++ {
+		out := withIO(t)
+		if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code != 0 {
+			t.Fatalf("第 %d 次应换到空闲那台，code=%d out=%s", i, code, out.Bytes())
+		}
+		rows := decodeRows(t, out)
+		if len(rows) != 1 || rows[0]["device_id"] != "a3" {
+			t.Fatalf("第 %d 次应落到 a3: %s", i, out.Bytes())
+		}
+	}
+	if stub.speaks != 5 || stub.releases != 5 {
+		t.Fatalf("speaks=%d releases=%d，应各 5 次", stub.speaks, stub.releases)
+	}
+}
+
+func TestRunRandomAllBusy(t *testing.T) {
+	stub, host := poolStub(t)
+	stub.busy["a1"], stub.busy["a2"], stub.busy["a3"] = true, true, true
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code == 0 {
+		t.Fatalf("全被占应非 0 退出: %s", out.Bytes())
+	}
+	if !bytes.Contains(out.Bytes(), []byte("lease_held")) || stub.speaks != 0 {
+		t.Fatalf("应报全被占且一次都没送话: speaks=%d out=%s", stub.speaks, out.Bytes())
+	}
+}
+
+// 只对争用跳台，绝不对失败跳台——否则一台真起不来会被安静换掉，故障就藏起来了。
+func TestRunRandomDoesNotHopOnRealFailure(t *testing.T) {
+	stub, host := poolStub(t)
+	stub.speakFails = true
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code == 0 {
+		t.Fatalf("送话失败应非 0 退出: %s", out.Bytes())
+	}
+	if stub.speaks != 1 {
+		t.Fatalf("失败不该换台重试，speaks=%d", stub.speaks)
+	}
+	rows := decodeRows(t, out)
+	if len(rows) != 1 || rows[0]["error"] == nil {
+		t.Fatalf("应是带 error 的单元素数组: %s", out.Bytes())
+	}
+}
+
+// 回归钉：批量语义没被随机改掉。
+func TestRunFilterOnlyEnterpriseStillRunsAll(t *testing.T) {
+	stub, host := poolStub(t)
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "run", "--enterprise", "vp", "--asset", "x"}); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	if rows := decodeRows(t, out); len(rows) != 4 {
+		t.Fatalf("只给 --enterprise 应全跑 4 台，得到 %d: %s", len(rows), out.Bytes())
+	}
+	if stub.speaks != 4 || stub.releases != 4 {
+		t.Fatalf("speaks=%d releases=%d，应各 4 次", stub.speaks, stub.releases)
+	}
+}
+
+func TestRunBatchBusyIsErrorElement(t *testing.T) {
+	stub, host := poolStub(t)
+	stub.busy["a1"] = true
+	out := withIO(t)
+	code := simctl([]string{"--listen", host, "run", "--env", "local", "--asset", "x"})
+	if code == 0 {
+		t.Fatalf("有一台被占应非 0 退出: %s", out.Bytes())
+	}
+	rows := decodeRows(t, out)
+	if len(rows) != 4 {
+		t.Fatalf("数组要和选中集一一对应（4 台），得到 %d: %s", len(rows), out.Bytes())
+	}
+	var errs int
+	for _, r := range rows {
+		if r["error"] != nil {
+			errs++
+		}
+	}
+	if errs != 1 || stub.speaks != 3 {
+		t.Fatalf("应正好 1 个 error 元素、3 台真跑：errs=%d speaks=%d", errs, stub.speaks)
+	}
+}
+
+func TestRunReleasesLeaseOnFailure(t *testing.T) {
+	stub, host := poolStub(t)
+	stub.speakFails = true
+	out := withIO(t)
+	simctl([]string{"--listen", host, "run", "a1", "--asset", "x"})
+	if stub.releases != 1 {
+		t.Fatalf("失败路径也要还租约，releases=%d out=%s", stub.releases, out.Bytes())
+	}
+}
+
+// 点名了就是那台，被占直接报错，不换台。
+func TestRunSingleDeviceLeaseHeld(t *testing.T) {
+	stub, host := poolStub(t)
+	stub.busy["a1"] = true
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "run", "a1", "--asset", "x"}); code == 0 {
+		t.Fatalf("点名那台被占应非 0 退出: %s", out.Bytes())
+	}
+	if stub.leaseTries != 1 || stub.speaks != 0 {
+		t.Fatalf("不该换台：leaseTries=%d speaks=%d", stub.leaseTries, stub.speaks)
+	}
+}
+
+// --force 漏进 boolFlag 白名单的话，sim_1 会被当成它的值吞掉，静默跑错设备。
+func TestFlagsFirstForceIsBool(t *testing.T) {
+	got := flagsFirst([]string{"sim_1", "--force", "--asset", "ast_x"})
+	if got[len(got)-1] != "sim_1" {
+		t.Fatalf("--force 后的位置参数被吞了: %v", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -53,13 +54,22 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
   devices   列设备。过滤：--env 环境名；--enterprise / --device-type 简称（不是名称）
   assets    列音频库
   run       选设备 → 送话 → 读判语（核心）
-            位置参数 = device_id（可省，靠过滤选 N 台；选中 0 台报错退出）
+            过滤粒度决定选几台，没有 --random / --all 这种开关：
+              给了 device_id          → 就那一台
+              只给到 --device-type    → 从该类型下随机挑一台
+              只给 --env/--enterprise → 命中的全部都跑
+              什么都不给              → 全部都跑
+            选中 0 台报错退出；输出始终是数组
             --asset ID           必填，音频库资产
             --env NAME           环境名
             --enterprise SHORT   厂商简称
             --device-type SHORT  设备类型简称
-            --parallel           N 台并行（默认串行）；输出始终是数组
+            --parallel           批量档 N 台并行（默认串行）；随机档只跑一台，忽略
             --dirty              Running 且 overridden 时放行，否则报错不动它
+            --force              抢占别的 run 的租约（确认那个 run 已经死了再用）
+            跑之前先 POST /devices/{id}/lease 占住，跑完还——两个并发 run 不会
+            撞同一台。随机档撞上被占的会换下一台；跑失败不换台，故障照报。
+            租约不挡人在调试台上的操作，只在 run 之间生效。
             Created/Stopped 且 overridden 时自动 POST /config/reset 再 start（无声）
             没启动就 start + wait_ready
   turn      一轮的事件流与帧统计
@@ -89,6 +99,9 @@ type deviceRow struct {
 	Enterprise      string `json:"enterprise"`
 	DeviceType      string `json:"device_type"`
 	Overridden      bool   `json:"overridden"`
+	// 被别的 run 占着时才有值。devices 动词要能答「为什么我的 run 说全被占了」。
+	LeasedUntil string `json:"leased_until,omitempty"`
+	LeaseOwner  string `json:"lease_owner,omitempty"`
 	Audio           struct {
 		Format      string  `json:"format"`
 		SampleRate  int     `json:"sample_rate"`
@@ -185,7 +198,7 @@ func parseFS(fs *flag.FlagSet, args []string) (code int, ok bool) {
 // flagsFirst 把位置参数挪到后面。stdlib flag 碰到第一个非 flag 就停，
 // 但规格写法是 `simctl run sim_1 --asset ast_xxx`。
 func flagsFirst(args []string) []string {
-	boolFlag := map[string]bool{"parallel": true, "dirty": true, "help": true, "h": true}
+	boolFlag := map[string]bool{"parallel": true, "dirty": true, "force": true, "help": true, "h": true}
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -486,12 +499,13 @@ func cmdAssets(listen string, args []string) int {
 func cmdRun(listen string, args []string) int {
 	fs := newFS("run")
 	var env, ent, dtype, asset string
-	var parallel, dirty bool
+	var parallel, dirty, force bool
 	addListen(fs, &listen)
 	addFilter(fs, &env, &ent, &dtype)
 	fs.StringVar(&asset, "asset", "", "音频库资产 id")
 	fs.BoolVar(&parallel, "parallel", false, "N 台并行")
 	fs.BoolVar(&dirty, "dirty", false, "Running 且 overridden 时放行")
+	fs.BoolVar(&force, "force", false, "抢占别的 run 的租约")
 	if code, ok := parseFS(fs, args); !ok {
 		return code
 	}
@@ -506,10 +520,21 @@ func cmdRun(listen string, args []string) int {
 	if len(selected) == 0 {
 		return fail("选中 0 台设备（--enterprise / --device-type 用简称不是名称；打错简称最常见）")
 	}
+	// 过滤粒度决定行为：给了 device_id 就那一台；只给到 --device-type 就从该类型
+	// 下随机挑一台；更粗的过滤（--env / --enterprise / 什么都不给）保持批量全跑。
+	if fs.Arg(0) == "" && dtype != "" {
+		return runRandomOne(listen, selected, asset, dirty, force)
+	}
 	results := make([]any, len(selected))
 	var failed int
 	runOne := func(i int, d deviceRow) {
-		r, err := runDevice(listen, d, asset, dirty)
+		r, busy, err := runOneLeased(listen, d, asset, dirty, force)
+		if busy {
+			// 批量档不跳过被占的：数组要和选中集一一对应，否则读的人分不清
+			// 「这台没跑」和「这台跑了没回话」。
+			results[i] = map[string]any{"device_id": d.DeviceID, "error": err.Error()}
+			return
+		}
 		if err != nil {
 			results[i] = map[string]any{"device_id": d.DeviceID, "error": err.Error()}
 			return
@@ -546,6 +571,92 @@ func cmdRun(listen string, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// runRandomOne 洗牌后逐台试租，第一台租到的就是它。
+//
+// 纪律：只对争用跳台，绝不对失败跳台。一台设备真起不来就该把那个错报出来——
+// 安静换一台跑成功会把故障藏起来，--dirty 门禁和 last_error 那两个诊断全白费。
+func runRandomOne(listen string, candidates []deviceRow, asset string, dirty, force bool) int {
+	order := shuffled(candidates)
+	for _, d := range order {
+		r, busy, err := runOneLeased(listen, d, asset, dirty, force)
+		if busy {
+			continue
+		}
+		if err != nil {
+			_ = json.NewEncoder(stdout).Encode([]any{
+				map[string]any{"device_id": d.DeviceID, "error": err.Error()},
+			})
+			return 1
+		}
+		_ = json.NewEncoder(stdout).Encode([]any{r})
+		return 0
+	}
+	return fail(fmt.Sprintf("命中 %d 台，全部被别的 run 占着（lease_held）；确认那些 run 已经死了可加 --force 抢占", len(order)))
+}
+
+// shuffled 用 math/rand/v2：挑设备要的是分散不是不可预测。ID 生成那边继续用
+// crypto/rand，两者用途不同，别混。
+func shuffled(in []deviceRow) []deviceRow {
+	out := append([]deviceRow(nil), in...)
+	rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	return out
+}
+
+type leaseHandle struct {
+	ID     string    `json:"lease_id"`
+	Device deviceRow `json:"device"`
+}
+
+// runOneLeased 先租再跑，跑完必还。busy=true 表示被别的 run 占着——随机档据此换台，
+// 批量档把它当成这一台的 error 元素。
+func runOneLeased(listen string, d deviceRow, asset string, dirty, force bool) (runResult, bool, error) {
+	l, busy, err := tryLease(listen, d.DeviceID, force)
+	if busy || err != nil {
+		return runResult{}, busy, err
+	}
+	// 释放失败不看：manager 挂了、网断了都有 TTL 兜底，多写一个分支是纯负债。
+	defer releaseLease(listen, d.DeviceID, l.ID)
+	// 用租约回的新鲜行，不用列表里那份——列表到 start 之间设备状态可能已经变了。
+	row := l.Device
+	if row.DeviceID == "" {
+		row = d
+	}
+	r, err := runDevice(listen, row, asset, dirty)
+	return r, false, err
+}
+
+func tryLease(listen, id string, steal bool) (leaseHandle, bool, error) {
+	var l leaseHandle
+	code, b, _, err := httpRaw("POST", listen, "/devices/"+id+"/lease",
+		map[string]any{"owner": leaseOwner(), "steal": steal})
+	if err != nil {
+		return l, false, err
+	}
+	if code == http.StatusConflict {
+		return l, true, errors.New(decodeErr(b, code))
+	}
+	if code >= 400 {
+		return l, false, errors.New(decodeErr(b, code))
+	}
+	if err := json.Unmarshal(b, &l); err != nil {
+		return l, false, err
+	}
+	return l, false, nil
+}
+
+func releaseLease(listen, id, leaseID string) {
+	if leaseID == "" {
+		return
+	}
+	_, _, _, _ = httpRaw("DELETE", listen, "/devices/"+id+"/lease?lease_id="+url.QueryEscape(leaseID), nil)
+}
+
+// leaseOwner 只为让 409 的报错说得出「被谁占着」，不是身份凭证。
+func leaseOwner() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("simctl@%s/%d", host, os.Getpid())
 }
 
 func listDevices(listen string) ([]deviceRow, error) {
