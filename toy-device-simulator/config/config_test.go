@@ -103,14 +103,12 @@ func TestTrackedConfigYAMLsHaveNoMHAndLoopbackOnly(t *testing.T) {
 			// manager.yaml 由 manager 包 LoadFile 校验，避免 config 测试 import 循环。
 			continue
 		case base == "registry.yaml":
-			// 配置树由 manager 包 LoadRegistry 校验（import 循环，不在这测）；
-			// 这里只做门禁：环境 url loopback、简称不带 MH 前缀。
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Errorf("%s: %v", rel, err)
-				continue
-			}
-			assertRegistryNoMHAndLoopback(t, rel, raw)
+			// 配置树由 manager 包 LoadRegistry 校验（import 循环，不在这测）。
+			// 这里原本还压了两条门禁：环境 url 必须 loopback、类型简称不得带 MH。
+			// 两条都去掉了——树里现在放真实环境和真实机型（如 MH8W），是有意的：
+			// 地址不算敏感，而 MH 真正的危害（Seq 用例假通过）已经拦在 bad_seq
+			// 注入那一步（phase10.md §5）。设备 YAML 那两条仍在。
+			continue
 		case strings.Contains(slash, "/templates/"):
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -194,45 +192,6 @@ func fillTemplateIdentity(raw []byte, id string) ([]byte, error) {
 	beh["write_queue_depth"] = 256
 	beh["write_drain_timeout_sec"] = 2
 	return yaml.Marshal(root)
-}
-
-// assertRegistryNoMHAndLoopback 用轻量解析扫配置树门禁项。
-func assertRegistryNoMHAndLoopback(t *testing.T, rel string, raw []byte) {
-	t.Helper()
-	var tree struct {
-		Environments []struct {
-			Name        string `yaml:"name"`
-			URL         string `yaml:"url"`
-			Enterprises []struct {
-				ShortName   string `yaml:"short_name"`
-				DeviceTypes []struct {
-					ShortName string `yaml:"short_name"`
-				} `yaml:"device_types"`
-			} `yaml:"enterprises"`
-		} `yaml:"environments"`
-	}
-	if err := yaml.Unmarshal(raw, &tree); err != nil {
-		t.Errorf("%s: %v", rel, err)
-		return
-	}
-	for _, env := range tree.Environments {
-		u, err := url.Parse(env.URL)
-		if err != nil {
-			t.Errorf("%s: 环境 %s url 解析: %v", rel, env.Name, err)
-			continue
-		}
-		host := u.Hostname()
-		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-			t.Errorf("%s: 环境 %s url 必须是 loopback", rel, env.Name)
-		}
-		for _, ent := range env.Enterprises {
-			for _, typ := range ent.DeviceTypes {
-				if strings.HasPrefix(typ.ShortName, "MH") {
-					t.Errorf("%s: 类型简称 %s 不得以 MH 开头", rel, typ.ShortName)
-				}
-			}
-		}
-	}
 }
 
 func yamlHasKey(raw []byte, key string) bool {
