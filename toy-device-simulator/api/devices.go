@@ -926,6 +926,13 @@ func (s *Server) handleFaults(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "仅 Created/Stopped 可设 fault")
 		return
 	}
+	// 服务端对 MH 机型有 Seq 不重置例外：错误序号不会被丢，bad_seq 会假通过。
+	// 宁可这里 400，也不给一个骗人的绿。
+	if f == core.FaultBadSeq && config.IsSeqExemptDeviceType(d.cfg.DeviceType) {
+		writeErr(w, http.StatusBadRequest,
+			"device_type "+d.cfg.DeviceType+" 命中服务端 Seq 不重置例外，bad_seq 用例会假通过；换一个非 MH 机型跑")
+		return
+	}
 	d.fault = f
 	writeJSON(w, http.StatusOK, map[string]any{"fault": body.Fault})
 }

@@ -182,16 +182,20 @@ func ValidatePhase2(d Device) error {
 	return nil
 }
 
+// IsSeqExemptDeviceType 报告该机型是否命中服务端的 Seq 不重置例外
+// （ai-creates-wealth 的 isNonResetSequenceNumberDeviceType，判据就是 MH 前缀）。
+// 这类机型上错误序号不会被丢，bad_seq 用例会假通过——所以拦在跑用例的地方，
+// 而不是拦在建配置的地方：模拟真实 MH 机型本身是正当需求。
+func IsSeqExemptDeviceType(deviceType string) bool {
+	return strings.HasPrefix(deviceType, "MH")
+}
+
 func validateCommon(d Device) error {
 	if d.Enterprise == "" || d.DeviceType == "" || d.DeviceID == "" {
 		return fmt.Errorf("enterprise/device_type/device_id 必填")
 	}
 	if err := ValidatePathComponent(d.DeviceID); err != nil {
 		return fmt.Errorf("device_id: %w", err)
-	}
-	// MH 前缀会命中 core 的 Seq 不重置例外，用例会假通过；硬拒绝，不可绕过。
-	if strings.HasPrefix(d.DeviceType, "MH") {
-		return fmt.Errorf("device_type 不得以 MH 前缀开头（否则 Seq 用例会假通过）")
 	}
 	if d.Action != "chatbot" {
 		return fmt.Errorf("action 必须为 chatbot")

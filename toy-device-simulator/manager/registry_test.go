@@ -33,8 +33,6 @@ func TestLoadRegistryRejectsHandEditedBadTree(t *testing.T) {
 		"environments:\n  - name: a\n    url: ws://h/\n  - name: a\n    url: ws://h/\n",
 		// 未知占位符
 		"environments:\n  - name: a\n    url: ws://h/{vendor}\n",
-		// 类型简称 MH 前缀
-		"environments:\n  - name: a\n    url: ws://h/\n    enterprises:\n      - name: n\n        short_name: s\n        device_types:\n          - name: t\n            short_name: MH9\n",
 	}
 	for i, raw := range cases {
 		p := filepath.Join(t.TempDir(), "r.yaml")

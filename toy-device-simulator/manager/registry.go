@@ -135,10 +135,8 @@ func validateDeviceType(name, short string) error {
 	if err := config.ValidatePathComponent(short); err != nil {
 		return fmt.Errorf("类型简称: %w", err)
 	}
-	// MH 前缀命中 core 的 Seq 不重置例外，用例会假通过；与设备校验同一条硬规则。
-	if strings.HasPrefix(short, "MH") {
-		return fmt.Errorf("类型简称不得以 MH 前缀开头")
-	}
+	// MH 机型这里不拦：模拟真机是正当需求。服务端的 Seq 不重置例外只让
+	// bad_seq 用例假通过，拦在注入那一步（api.handleFaults）。
 	return nil
 }
 

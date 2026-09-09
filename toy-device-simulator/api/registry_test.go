@@ -90,10 +90,11 @@ func TestRegistryValidation(t *testing.T) {
 	}); code != http.StatusBadRequest {
 		t.Fatalf("厂商简称带 / 应 400，得到 %d %s", code, body)
 	}
+	// MH 机型可以建：拦的是在它上面跑 bad_seq，见 TestBadSeqRejectedOnMHDeviceType。
 	if code, body := e.post(t, "/registry/environments/local/enterprises/demo/device_types", map[string]any{
 		"name": "海思", "short_name": "MH1",
-	}); code != http.StatusBadRequest {
-		t.Fatalf("类型简称 MH 前缀应 400，得到 %d %s", code, body)
+	}); code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("MH 类型应可建，得到 %d %s", code, body)
 	}
 	if code, body := e.post(t, "/registry/environments/local/enterprises", map[string]any{
 		"name": "", "short_name": "ok1",
@@ -287,5 +288,31 @@ func TestEnvURLUpdateAppliesOnRestart(t *testing.T) {
 	server, _ := decodeMap(t, cfgRaw)["server"].(map[string]any)
 	if strField(server, "url") != "ws://127.0.0.1:7/" {
 		t.Fatalf("config server.url 应跟随环境更新: %s", cfgRaw)
+	}
+}
+
+// MH 机型能建、能挂设备；只有 bad_seq 注入被拦——服务端的 Seq 不重置例外
+// 会让这条负向用例假通过。
+func TestBadSeqRejectedOnMHDeviceType(t *testing.T) {
+	e := newEnv(t)
+	if code, body := e.post(t, "/registry/environments/local/enterprises/demo/device_types", map[string]any{
+		"name": "海思 8W", "short_name": "MH8W",
+	}); code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("MH 类型应可建，得到 %d %s", code, body)
+	}
+	create := e.createBody(e.deviceBody("sim_mh"))
+	create["device_type"] = "MH8W"
+	if code, body := e.post(t, "/devices", create); code != http.StatusCreated {
+		t.Fatalf("MH 机型应能建设备，得到 %d %s", code, body)
+	}
+	if code, body := e.post(t, "/devices/sim_mh/faults", map[string]any{"fault": "bad_seq"}); code != http.StatusBadRequest {
+		t.Fatalf("MH 机型上 bad_seq 应 400，得到 %d %s", code, body)
+	}
+	if code, body := e.post(t, "/devices/sim_mh/faults", map[string]any{"fault": "skip_register"}); code != http.StatusOK {
+		t.Fatalf("其余 fault 不该被牵连，得到 %d %s", code, body)
+	}
+	e.createDevice(t, "sim_a3")
+	if code, body := e.post(t, "/devices/sim_a3/faults", map[string]any{"fault": "bad_seq"}); code != http.StatusOK {
+		t.Fatalf("非 MH 机型 bad_seq 应 200，得到 %d %s", code, body)
 	}
 }

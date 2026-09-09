@@ -60,7 +60,6 @@ func TestValidateRejectsPhase1IllegalConfigs(t *testing.T) {
 		{"depth 小于 2", func(d *Device) { d.Behavior.WriteQueueDepth = 1 }, "write_queue_depth"},
 		{"drain 为 0", func(d *Device) { d.Behavior.WriteDrainTimeoutSec = 0 }, "write_drain_timeout_sec"},
 		{"action 非 chatbot", func(d *Device) { d.Action = "ipc" }, "chatbot"},
-		{"MH 前缀", func(d *Device) { d.DeviceType = "MH6W" }, "MH"},
 		{"channels 非 1", func(d *Device) { d.Audio.Channels = 2 }, "channels"},
 		{"sample_format 非 s16le", func(d *Device) { d.Audio.SampleFormat = "f32" }, "sample_format"},
 		{"slice_ms 为 0", func(d *Device) { d.Audio.SliceMs = 0 }, "slice_ms"},
