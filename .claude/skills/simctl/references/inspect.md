@@ -1,6 +1,6 @@
 # inspect：事件、帧、音频、历史
 
-查某一轮或某一次运行时用。参数见 `simctl --help`。所有查询端点都要 `instance_id`——device_id 跨启停长期存在，instance 是这一次运行，查错 instance 会 404 或看到别人的轮。
+查某一轮或某一次运行时用。参数见 `simctl --help`。`turn` / `audio` 要同时使用目标轮的 `instance_id` 和 `turn_id`；`history` 只需 `device_id`。设备跨启停长期存在，Manager 重启才换新实例，stop/start 只换连接代次。沿用结果返回的 ID，不拿当前实例 ID 代替历史实例 ID。
 
 ## turn
 
