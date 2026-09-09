@@ -85,6 +85,9 @@ func New(opts Options) (http.Handler, error) {
 	mux.HandleFunc("GET /devices/{id}/definition", s.handleGetDefinition)
 	mux.HandleFunc("PUT /devices/{id}/definition", s.handlePutDefinition)
 
+	mux.HandleFunc("POST /devices/{id}/lease", s.handlePostLease)
+	mux.HandleFunc("DELETE /devices/{id}/lease", s.handleDeleteLease)
+
 	mux.HandleFunc("POST /devices/{id}/start", s.handleStart)
 	mux.HandleFunc("POST /devices/{id}/wait_ready", s.handleWaitReady)
 	mux.HandleFunc("POST /devices/{id}/stop", s.handleStop)

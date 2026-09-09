@@ -39,6 +39,12 @@ type managedDevice struct {
 	// evRec 事件落盘的异步写入器（Phase 8）。与 core 里按 turn 写帧/音频的那个
 	// Recorder 不是同一个：这份按 instance 走，且不受 recording.* 开关影响。
 	evRec *recording.Recorder
+	// 租约（Phase 10）：run 之间的协作锁，只活在内存里，随 manager 重启消失。
+	// 挂在这里而不是独立的 s.leases map——delete(s.devices, id) 一执行租约
+	// 随对象消失，删除路径不用补清理。
+	leaseID      string
+	leaseOwner   string
+	leaseExpires time.Time
 }
 
 type turnRec struct {
@@ -103,13 +109,22 @@ func (d *managedDevice) connState() string {
 	return d.inst.ConnectionState().String()
 }
 
+// deviceView 调用方须持 s.mu（handleListDevices / handleGetDevice 都持）——
+// leaseHeldLocked 会就地清掉过期租约。
 func deviceView(d *managedDevice) map[string]any {
 	d.syncRunning()
 	backlog := 0
 	if d.inst != nil {
 		backlog = d.inst.BacklogLen()
 	}
+	// lease_id 是释放凭证，不进视图：否则谁 GET 一下就能释放别人的租约。
+	leasedUntil := ""
+	if leaseHeldLocked(d) {
+		leasedUntil = d.leaseExpires.UTC().Format(time.RFC3339Nano)
+	}
 	return map[string]any{
+		"leased_until": leasedUntil,
+		"lease_owner":  d.leaseOwner,
 		"device_id":         d.id,
 		"instance_id":       d.instanceID,
 		"instance_state":    d.state,
