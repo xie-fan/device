@@ -87,11 +87,11 @@ func TestRunZeroDevices(t *testing.T) {
 	t.Cleanup(srv.Close)
 	out := withIO(t)
 	host := strings.TrimPrefix(srv.URL, "http://")
-	code := simctl([]string{"--listen", host, "run", "--asset", "ast_x"})
+	code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "ast_x"})
 	if code == 0 {
 		t.Fatalf("want 非 0, out=%s", out.Bytes())
 	}
-	if !bytes.Contains(out.Bytes(), []byte("选中 0 台")) {
+	if !bytes.Contains(out.Bytes(), []byte("设备册是空的")) {
 		t.Fatalf("out=%s", out.Bytes())
 	}
 }
@@ -194,7 +194,7 @@ func TestRunHappyAndDirty(t *testing.T) {
 	host := strings.TrimPrefix(srv.URL, "http://")
 
 	out := withIO(t)
-	code := simctl([]string{"--listen", host, "run", "--asset", "ast_x"})
+	code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "ast_x"})
 	if code != 0 {
 		t.Fatalf("code=%d out=%s", code, out.Bytes())
 	}
@@ -216,13 +216,13 @@ func TestRunHappyAndDirty(t *testing.T) {
 
 	stub.state, stub.overridden = "running", true
 	out = withIO(t)
-	code = simctl([]string{"--listen", host, "run", "--asset", "ast_x"})
+	code = simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "ast_x"})
 	if code == 0 || !bytes.Contains(out.Bytes(), []byte("我不动它")) {
 		t.Fatalf("dirty 应报错, code=%d out=%s", code, out.Bytes())
 	}
 
 	out = withIO(t)
-	code = simctl([]string{"--listen", host, "run", "--asset", "ast_x", "--dirty"})
+	code = simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "ast_x", "--dirty"})
 	if code != 0 {
 		t.Fatalf("--dirty 应放行 code=%d out=%s", code, out.Bytes())
 	}
@@ -236,7 +236,7 @@ func TestRunNotReadyCarriesLastError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	out := withIO(t)
-	code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "--asset", "ast_x"})
+	code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "ast_x"})
 	if code == 0 {
 		t.Fatalf("起不来应非 0 退出: %s", out.Bytes())
 	}
@@ -252,7 +252,7 @@ func TestDirtyErrorNotAnnotated(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	out := withIO(t)
-	if code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "--asset", "ast_x"}); code == 0 {
+	if code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "ast_x"}); code == 0 {
 		t.Fatalf("应拒绝: %s", out.Bytes())
 	}
 	if bytes.Contains(out.Bytes(), []byte("不该出现")) {
@@ -347,19 +347,19 @@ func decodeRows(t *testing.T, out *bytes.Buffer) []map[string]any {
 	return rows
 }
 
-func TestRunRandomOneOfType(t *testing.T) {
+func TestRunRandomOneFromBook(t *testing.T) {
 	stub, host := poolStub(t)
 	out := withIO(t)
-	if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code != 0 {
+	if code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "x"}); code != 0 {
 		t.Fatalf("code=%d out=%s", code, out.Bytes())
 	}
 	rows := decodeRows(t, out)
 	if len(rows) != 1 {
-		t.Fatalf("--device-type 应只跑一台，得到 %d 台: %s", len(rows), out.Bytes())
+		t.Fatalf("不给 device_id 应只跑一台，得到 %d 台: %s", len(rows), out.Bytes())
 	}
 	got, _ := rows[0]["device_id"].(string)
-	if got != "a1" && got != "a2" && got != "a3" {
-		t.Fatalf("跑的应是 A3 类型里的一台，得到 %q", got)
+	if got != "a1" && got != "a2" && got != "a3" && got != "b1" {
+		t.Fatalf("跑的应是设备册里的一台，得到 %q", got)
 	}
 	if stub.speaks != 1 || stub.releases != 1 {
 		t.Fatalf("speaks=%d releases=%d，应各 1 次", stub.speaks, stub.releases)
@@ -386,10 +386,10 @@ func TestRunRandomSpreadsOverCandidates(t *testing.T) {
 // 不断言 leaseTries 的具体值——它取决于洗牌顺序，钉死了就是 flaky。
 func TestRunRandomHopsOnBusy(t *testing.T) {
 	stub, host := poolStub(t)
-	stub.busy["a1"], stub.busy["a2"] = true, true
+	stub.busy["a1"], stub.busy["a2"], stub.busy["b1"] = true, true, true
 	for i := 0; i < 5; i++ {
 		out := withIO(t)
-		if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code != 0 {
+		if code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "x"}); code != 0 {
 			t.Fatalf("第 %d 次应换到空闲那台，code=%d out=%s", i, code, out.Bytes())
 		}
 		rows := decodeRows(t, out)
@@ -404,9 +404,9 @@ func TestRunRandomHopsOnBusy(t *testing.T) {
 
 func TestRunRandomAllBusy(t *testing.T) {
 	stub, host := poolStub(t)
-	stub.busy["a1"], stub.busy["a2"], stub.busy["a3"] = true, true, true
+	stub.busy["a1"], stub.busy["a2"], stub.busy["a3"], stub.busy["b1"] = true, true, true, true
 	out := withIO(t)
-	if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code == 0 {
+	if code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "x"}); code == 0 {
 		t.Fatalf("全被占应非 0 退出: %s", out.Bytes())
 	}
 	if !bytes.Contains(out.Bytes(), []byte("lease_held")) || stub.speaks != 0 {
@@ -419,7 +419,7 @@ func TestRunRandomDoesNotHopOnRealFailure(t *testing.T) {
 	stub, host := poolStub(t)
 	stub.speakFails = true
 	out := withIO(t)
-	if code := simctl([]string{"--listen", host, "run", "--device-type", "A3", "--asset", "x"}); code == 0 {
+	if code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "x"}); code == 0 {
 		t.Fatalf("送话失败应非 0 退出: %s", out.Bytes())
 	}
 	if stub.speaks != 1 {
@@ -431,15 +431,15 @@ func TestRunRandomDoesNotHopOnRealFailure(t *testing.T) {
 	}
 }
 
-// 回归钉：批量语义没被随机改掉。
-func TestRunFilterOnlyEnterpriseStillRunsAll(t *testing.T) {
+// --count 0 = 整册全跑。
+func TestRunCountZeroRunsWholeBook(t *testing.T) {
 	stub, host := poolStub(t)
 	out := withIO(t)
-	if code := simctl([]string{"--listen", host, "run", "--enterprise", "vp", "--asset", "x"}); code != 0 {
+	if code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--count", "0", "--asset", "x"}); code != 0 {
 		t.Fatalf("code=%d out=%s", code, out.Bytes())
 	}
 	if rows := decodeRows(t, out); len(rows) != 4 {
-		t.Fatalf("只给 --enterprise 应全跑 4 台，得到 %d: %s", len(rows), out.Bytes())
+		t.Fatalf("--count 0 应全跑 4 台，得到 %d: %s", len(rows), out.Bytes())
 	}
 	if stub.speaks != 4 || stub.releases != 4 {
 		t.Fatalf("speaks=%d releases=%d，应各 4 次", stub.speaks, stub.releases)
@@ -450,7 +450,7 @@ func TestRunBatchBusyIsErrorElement(t *testing.T) {
 	stub, host := poolStub(t)
 	stub.busy["a1"] = true
 	out := withIO(t)
-	code := simctl([]string{"--listen", host, "run", "--env", "local", "--asset", "x"})
+	code := simctl([]string{"--listen", host, "run", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--count", "0", "--asset", "x"})
 	if code == 0 {
 		t.Fatalf("有一台被占应非 0 退出: %s", out.Bytes())
 	}
@@ -473,7 +473,7 @@ func TestRunReleasesLeaseOnFailure(t *testing.T) {
 	stub, host := poolStub(t)
 	stub.speakFails = true
 	out := withIO(t)
-	simctl([]string{"--listen", host, "run", "a1", "--asset", "x"})
+	simctl([]string{"--listen", host, "run", "a1", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "x"})
 	if stub.releases != 1 {
 		t.Fatalf("失败路径也要还租约，releases=%d out=%s", stub.releases, out.Bytes())
 	}
@@ -484,7 +484,7 @@ func TestRunSingleDeviceLeaseHeld(t *testing.T) {
 	stub, host := poolStub(t)
 	stub.busy["a1"] = true
 	out := withIO(t)
-	if code := simctl([]string{"--listen", host, "run", "a1", "--asset", "x"}); code == 0 {
+	if code := simctl([]string{"--listen", host, "run", "a1", "--env", "local", "--enterprise", "vp", "--device-type", "A3", "--asset", "x"}); code == 0 {
 		t.Fatalf("点名那台被占应非 0 退出: %s", out.Bytes())
 	}
 	if stub.leaseTries != 1 || stub.speaks != 0 {

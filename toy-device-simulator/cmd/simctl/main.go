@@ -26,9 +26,9 @@ const (
 	defaultConfig   = "configs/manager.yaml"
 	defaultListen   = "127.0.0.1:8090"
 	defaultRegistry = "configs/registry.yaml"
-	pidPath       = "data/manager.pid"
-	exePath       = "data/manager.exe"
-	logPath       = "data/manager.log"
+	pidPath         = "data/manager.pid"
+	exePath         = "data/manager.exe"
+	logPath         = "data/manager.log"
 )
 
 const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON 到 stdout，没有 --json 开关。
@@ -53,18 +53,18 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
   status    manager 是否活着，几台设备
   devices   列设备。过滤：--env 环境名；--enterprise / --device-type 简称（不是名称）
   assets    列音频库
-  run       选设备 → 送话 → 读判语（核心）
-            过滤粒度决定选几台，没有 --random / --all 这种开关：
-              给了 device_id          → 就那一台
-              只给到 --device-type    → 从该类型下随机挑一台
-              只给 --env/--enterprise → 命中的全部都跑
-              什么都不给              → 全部都跑
-            选中 0 台报错退出；输出始终是数组
+  run       挑设备 → 挂靠 → 送话 → 读判语（核心）
+            设备册条目不带挂靠，三级是「这次挂成什么」，必须给全：
+            --env / --enterprise / --device-type 缺一个就报错。
+              给了 device_id → 就那一台
+              没给           → 从设备册随机挑（--count 决定几台）
+            输出始终是数组
             --asset ID           必填，音频库资产
-            --env NAME           环境名
-            --enterprise SHORT   厂商简称
-            --device-type SHORT  设备类型简称
-            --parallel           批量档 N 台并行（默认串行）；随机档只跑一台，忽略
+            --env NAME           环境名（挂靠，不是筛选）
+            --enterprise SHORT   厂商简称（挂靠）
+            --device-type SHORT  设备类型简称（挂靠）
+            --count N            没给 device_id 时随机挑几台，默认 1，0=整册全跑
+            --parallel           多台时并行（默认串行）
             --dirty              Running 且 overridden 时放行，否则报错不动它
             --force              抢占别的 run 的租约（确认那个 run 已经死了再用）
             跑之前先 POST /devices/{id}/lease 占住，跑完还——两个并发 run 不会
@@ -102,7 +102,7 @@ type deviceRow struct {
 	// 被别的 run 占着时才有值。devices 动词要能答「为什么我的 run 说全被占了」。
 	LeasedUntil string `json:"leased_until,omitempty"`
 	LeaseOwner  string `json:"lease_owner,omitempty"`
-	Audio           struct {
+	Audio       struct {
 		Format      string  `json:"format"`
 		SampleRate  int     `json:"sample_rate"`
 		BitrateKbps float64 `json:"bitrate_kbps"`
@@ -499,10 +499,12 @@ func cmdAssets(listen string, args []string) int {
 func cmdRun(listen string, args []string) int {
 	fs := newFS("run")
 	var env, ent, dtype, asset string
+	var count int
 	var parallel, dirty, force bool
 	addListen(fs, &listen)
 	addFilter(fs, &env, &ent, &dtype)
 	fs.StringVar(&asset, "asset", "", "音频库资产 id")
+	fs.IntVar(&count, "count", 1, "随机挑几台（0=全部）")
 	fs.BoolVar(&parallel, "parallel", false, "N 台并行")
 	fs.BoolVar(&dirty, "dirty", false, "Running 且 overridden 时放行")
 	fs.BoolVar(&force, "force", false, "抢占别的 run 的租约")
@@ -512,30 +514,45 @@ func cmdRun(listen string, args []string) int {
 	if asset == "" {
 		return fail("run 需要 --asset")
 	}
+	// Phase 11：三级不再是筛设备的条件，而是「这次挂成什么」，必须给全。
+	if env == "" || ent == "" || dtype == "" {
+		return fail("run 需要 --env / --enterprise / --device-type 三级给全（挂靠，不是筛选；简称不是名称）")
+	}
+	b := bind{Env: env, Ent: ent, Typ: dtype}
 	devs, err := listDevices(listen)
 	if err != nil {
 		return fail(err.Error())
 	}
-	selected := selectDevices(devs, fs.Arg(0), env, ent, dtype)
-	if len(selected) == 0 {
-		return fail("选中 0 台设备（--enterprise / --device-type 用简称不是名称；打错简称最常见）")
-	}
-	// 过滤粒度决定行为：给了 device_id 就那一台；只给到 --device-type 就从该类型
-	// 下随机挑一台；更粗的过滤（--env / --enterprise / 什么都不给）保持批量全跑。
-	if fs.Arg(0) == "" && dtype != "" {
-		return runRandomOne(listen, selected, asset, dirty, force)
+	// 设备册条目不带三级，所以只按 device_id 挑；给了就是那一台，没给就整册随机。
+	var selected []deviceRow
+	if id := fs.Arg(0); id != "" {
+		for _, d := range devs {
+			if d.DeviceID == id {
+				selected = append(selected, d)
+			}
+		}
+		if len(selected) == 0 {
+			return fail("设备册里没有 " + id)
+		}
+	} else {
+		if len(devs) == 0 {
+			return fail("设备册是空的，先建一台设备")
+		}
+		if count == 1 {
+			return runRandomOne(listen, shuffled(devs), b, asset, dirty, force)
+		}
+		selected = shuffled(devs)
+		if count > 0 && count < len(selected) {
+			selected = selected[:count]
+		}
 	}
 	results := make([]any, len(selected))
 	var failed int
 	runOne := func(i int, d deviceRow) {
-		r, busy, err := runOneLeased(listen, d, asset, dirty, force)
-		if busy {
-			// 批量档不跳过被占的：数组要和选中集一一对应，否则读的人分不清
+		r, busy, err := runOneLeased(listen, d, b, asset, dirty, force)
+		if busy || err != nil {
+			// 被占的不跳过：数组要和选中集一一对应，否则读的人分不清
 			// 「这台没跑」和「这台跑了没回话」。
-			results[i] = map[string]any{"device_id": d.DeviceID, "error": err.Error()}
-			return
-		}
-		if err != nil {
 			results[i] = map[string]any{"device_id": d.DeviceID, "error": err.Error()}
 			return
 		}
@@ -577,10 +594,9 @@ func cmdRun(listen string, args []string) int {
 //
 // 纪律：只对争用跳台，绝不对失败跳台。一台设备真起不来就该把那个错报出来——
 // 安静换一台跑成功会把故障藏起来，--dirty 门禁和 last_error 那两个诊断全白费。
-func runRandomOne(listen string, candidates []deviceRow, asset string, dirty, force bool) int {
-	order := shuffled(candidates)
+func runRandomOne(listen string, order []deviceRow, b bind, asset string, dirty, force bool) int {
 	for _, d := range order {
-		r, busy, err := runOneLeased(listen, d, asset, dirty, force)
+		r, busy, err := runOneLeased(listen, d, b, asset, dirty, force)
 		if busy {
 			continue
 		}
@@ -611,7 +627,7 @@ type leaseHandle struct {
 
 // runOneLeased 先租再跑，跑完必还。busy=true 表示被别的 run 占着——随机档据此换台，
 // 批量档把它当成这一台的 error 元素。
-func runOneLeased(listen string, d deviceRow, asset string, dirty, force bool) (runResult, bool, error) {
+func runOneLeased(listen string, d deviceRow, b bind, asset string, dirty, force bool) (runResult, bool, error) {
 	l, busy, err := tryLease(listen, d.DeviceID, force)
 	if busy || err != nil {
 		return runResult{}, busy, err
@@ -623,7 +639,7 @@ func runOneLeased(listen string, d deviceRow, asset string, dirty, force bool) (
 	if row.DeviceID == "" {
 		row = d
 	}
-	r, err := runDevice(listen, row, asset, dirty)
+	r, err := runDevice(listen, row, b, asset, dirty)
 	return r, false, err
 }
 
@@ -689,8 +705,8 @@ func selectDevices(all []deviceRow, id, env, ent, dtype string) []deviceRow {
 	return out
 }
 
-func runDevice(listen string, d deviceRow, asset string, dirty bool) (runResult, error) {
-	ins, over, err := ensureReady(listen, d, dirty)
+func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (runResult, error) {
+	ins, over, err := ensureReady(listen, d, b, dirty)
 	if err != nil {
 		return runResult{}, annotateNotReady(listen, d.DeviceID, err)
 	}
@@ -765,7 +781,10 @@ func annotateNotReady(listen, id string, err error) error {
 	return fmt.Errorf("%w（last_error: %s）", err, row.LastError)
 }
 
-func ensureReady(listen string, d deviceRow, dirty bool) (instanceID string, overridden bool, err error) {
+// bind 是这次 run 的挂靠三级。Phase 11：设备册条目不带挂靠，start 时必须给。
+type bind struct{ Env, Ent, Typ string }
+
+func ensureReady(listen string, d deviceRow, b bind, dirty bool) (instanceID string, overridden bool, err error) {
 	over := d.Overridden
 	idPath := "/devices/" + url.PathEscape(d.DeviceID)
 	switch d.InstanceState {
@@ -780,7 +799,9 @@ func ensureReady(listen string, d deviceRow, dirty bool) (instanceID string, ove
 			InstanceID     string `json:"instance_id"`
 			ConnGeneration int    `json:"conn_generation"`
 		}
-		if err := httpPost(listen, idPath+"/start", nil, &st); err != nil {
+		if err := httpPost(listen, idPath+"/start", map[string]any{
+			"environment": b.Env, "enterprise": b.Ent, "device_type": b.Typ,
+		}, &st); err != nil {
 			return "", over, err
 		}
 		if st.InstanceID == "" {
