@@ -544,6 +544,10 @@
     }
 
     setHTML($("attach-bar"), attachBarHTML());
+    // 靠 2 秒一次的名册轮询把静默倒计时推着走——下行静默那段时间没有任何事件
+    // 进来，不主动重画的话界面会停在最后一包上不动。renderConv 按签名增量重画，
+    // 没变化时是空转，所以这里不加条件（加了反而漏：occupiedTurnId 不一定在）。
+    renderConv();
     setDisabled($("btn-start"), !has || state.tombstone || state.busy || !identityEditable());
     setDisabled($("btn-stop"), !has || state.tombstone || state.busy);
     setDisabled($("btn-delete"), !has || state.tombstone || state.busy);
@@ -642,6 +646,28 @@
     ].filter(Boolean).join("");
   }
 
+  // 气泡主行原本永远在讲 asr_result——而这些服务端根本不发这条（协议 §8.2：
+  // 没有稳定的下行 Stage=2，也没规定必发 asr_result）。真正在变的是「收到哪了、
+  // 还差几秒收尾」，所以主行改讲状态，asr 只在真有的时候占主行。
+  function replyPhase(t) {
+    if (t.hasAsr) {
+      return { sub: "asr_result", line: "服务端已返回 asr_result（协议不带识别文本，原文见右栏事件）" };
+    }
+    if (t.done) {
+      return { sub: "已收尾", line: `本轮没有 asr_result；下行 ${t.down} 包 · ${fmtBytes(t.downBytes)}` };
+    }
+    if (t.down) {
+      const idle = idleNoteFor(t.id);
+      return {
+        sub: "接收中",
+        line: idle
+          ? `正在接收下行 · 已 ${t.down} 包 · ${fmtBytes(t.downBytes)}${idle}`
+          : `正在接收下行 · 已 ${t.down} 包 · ${fmtBytes(t.downBytes)}`,
+      };
+    }
+    return { sub: "等回话", line: "已送完上行，等服务端回话…" };
+  }
+
   function bubbleHTML(t) {
     const upMeta = t.up
       ? `${t.up} 包 · ${fmtBytes(t.upBytes)}`
@@ -654,13 +680,9 @@
         <div class="bub__in">
           <div class="bub__head">
             <span class="bub__who">设备回复</span>
-            <span class="bub__sub">${t.hasAsr ? "asr_result" : (t.done ? "无 asr_result" : "尚无 asr_result")}</span>
+            <span class="bub__sub">${esc(replyPhase(t).sub)}</span>
           </div>
-          <p class="bub__asr${t.hasAsr ? "" : " bub__asr--none"}">${t.hasAsr
-            ? "服务端已返回 asr_result（协议不带识别文本，原文见右栏事件）"
-            : (t.done
-              ? "本轮服务端没回 asr_result——不是还没到，是这一轮就没有。有的服务端只发 vad + tts，不发这条。"
-              : "服务端还没有回 asr_result")}</p>
+          <p class="bub__asr${t.hasAsr || !t.done ? "" : " bub__asr--none"}">${esc(replyPhase(t).line)}</p>
           <div class="bub__rule"></div>
           ${bars(t.down, 30, t.phase === "tts", " bars--tts")}
           <div class="bub__meta"><span>${esc(ttsMeta)}</span></div>
@@ -773,6 +795,8 @@
     const sigs = rows.map((t) => [
       bubble ? "b" : "c", t.id, t.up, t.upBytes, t.down, t.downBytes,
       t.hasAsr ? 1 : 0, t.done ? 1 : 0, t.phase || "", t.kind, t.end, t.uplinkEnd, t.evCount, t.file,
+      // 静默倒计时进签名，否则没有新事件时这一格永远不重画。
+      t.done ? "" : idleNoteFor(t.id),
     ].join("|"));
     const stick = box.parentElement.scrollHeight - box.parentElement.scrollTop - box.parentElement.clientHeight <= 80;
     const html = (t) => (bubble ? bubbleHTML(t) : cardHTML(t));
@@ -1533,10 +1557,14 @@
   // downlink_idle_timeout_sec」再收尾。那段等待里界面只说「等 turn_terminal」，
   // 看着像卡死——把已经静默了多久摆出来。
   function downIdleNote() {
+    return idleNoteFor(state.occupiedTurnId);
+  }
+
+  function idleNoteFor(turnId) {
     let lastDown = 0;
     for (let i = state.events.length - 1; i >= 0; i--) {
       const ev = state.events[i];
-      if (ev.turn_id !== state.occupiedTurnId) continue;
+      if (ev.turn_id !== turnId) continue;
       if (ev.event_type === "tts_chunk" || ev.event_type === "tts_done") {
         lastDown = Date.parse(ev.ts);
         break;
