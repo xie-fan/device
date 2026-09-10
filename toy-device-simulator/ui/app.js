@@ -1498,7 +1498,9 @@
         report_echo_timeout_sec: 5,
         register_ack_timeout_sec: 5,
         first_reply_timeout_sec: 90,
-        downlink_idle_timeout_sec: 40,
+        // 20 秒对齐现网脚本与 configs/templates/default_a3.yaml；协议没有稳定的
+        // 下行 Stage=2，这个 idle 就是本轮的收尾判据（协议文档 §8.2）。
+        downlink_idle_timeout_sec: 20,
         non_audio_followup_sec: 5,
         post_final_asr_silence_sec: 5,
         wait_timeout_slack_sec: 5,
