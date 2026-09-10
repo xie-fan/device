@@ -249,6 +249,10 @@ func instanceSummary(dir, ins, src string) map[string]any {
 	}
 	if first, ok := readTurnRow(filepath.Join(dir, names[0], "turn.json")); ok {
 		out["started_at"] = first.StartedAt
+		// Phase 11：这次运行把设备挂成了什么。老录音没有这几个字段，读回来是空。
+		out["enterprise"] = first.Enterprise
+		out["device_type"] = first.DeviceType
+		out["server_url"] = first.ServerURL
 	}
 	if last, ok := readTurnRow(filepath.Join(dir, names[len(names)-1], "turn.json")); ok {
 		out["ended_at"] = last.EndedAt

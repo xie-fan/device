@@ -373,6 +373,9 @@ func (d *DeviceInstance) submitTurnFileLocked(ev Event) {
 		UpFormat:        d.cfg.Audio.Format,
 		UpSampleRate:    d.cfg.Audio.SampleRate,
 		UpChannels:      d.cfg.Audio.Channels,
+		Enterprise:      d.cfg.Enterprise,
+		DeviceType:      d.cfg.DeviceType,
+		ServerURL:       d.cfg.Server.URL,
 	})
 }
 

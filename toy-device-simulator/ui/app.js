@@ -543,6 +543,7 @@
         : `instance_id ${state.instanceId || "—"} · 事件与 turn 只读 · TTL 24 小时`);
     }
 
+    setHTML($("attach-bar"), attachBarHTML());
     setDisabled($("btn-start"), !has || state.tombstone || state.busy || !identityEditable());
     setDisabled($("btn-stop"), !has || state.tombstone || state.busy);
     setDisabled($("btn-delete"), !has || state.tombstone || state.busy);
@@ -1512,15 +1513,32 @@
     };
   }
 
+  // 挂靠条（phase11）：设备册条目不带三级，启动时才决定这台挂成什么。
+  // 复用配置树页那套 state.regSel / changeTree，选中项跨页面共用一份。
+  function attachBarHTML() {
+    const sel = state.regSel;
+    const opt = (rows, cur, ph, dis) =>
+      `<select data-tree="${dis.k}"${dis.off ? " disabled" : ""}>${selOpts(rows, cur, ph)}</select>`;
+    return `<span class="attach__label">挂靠</span>` +
+      opt(state.registry.map((r) => ({ v: r.name, t: r.name })), sel.env, "环境", { k: "env", off: false }) +
+      opt(regEnts().map((r) => ({ v: r.short_name, t: r.short_name })), sel.ent, "厂商", { k: "ent", off: !sel.env }) +
+      opt(regTypes().map((r) => ({ v: r.short_name, t: r.short_name })), sel.typ, "类型", { k: "typ", off: !sel.ent });
+  }
+
   // ——— 生命周期 ———
 
   async function startAndWait() {
     if (!state.selectedId) return;
+    const refs = attachRefs();
+    if (!refs.environment || !refs.enterprise || !refs.device_type) {
+      flash("先在「挂靠」里把 环境 / 厂商 / 设备类型 选全", "err");
+      return;
+    }
     state.busy = true;
     renderStage();
     flash("正在启动…", "info");
     try {
-      const started = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/start`);
+      const started = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/start`, attachRefs());
       state.instanceId = started.instance_id;
       state.connGeneration = started.conn_generation;
       if (state.live) {
@@ -1618,7 +1636,16 @@
     if (!ids.length) return;
     const label = { start: "启动", stop: "停止", delete: "删除" }[kind];
     try {
-      const res = await api("POST", `/devices/batch/${kind}`, { device_ids: ids });
+      const body = { device_ids: ids };
+      if (kind === "start") {
+        const refs = attachRefs();
+        if (!refs.environment || !refs.enterprise || !refs.device_type) {
+          flash("先在「挂靠」里把 环境 / 厂商 / 设备类型 选全", "err");
+          return;
+        }
+        Object.assign(body, refs);
+      }
+      const res = await api("POST", `/devices/batch/${kind}`, body);
       const ok = (res.succeeded || []).length;
       const bad = (res.failed || []).length;
       state.checked.clear();
@@ -2212,16 +2239,7 @@
     return `<div class="sheet">
       <div class="step">
         <div class="step__head">
-          <span class="step__n">1</span><span class="step__t">挂到配置树上</span>
-          <span class="step__hint">环境 → 厂商 → 设备类型</span>
-        </div>
-        <div id="new-tree">${treeHTML()}</div>
-        <p class="hint">这里只选择已有配置；缺少厂商或类型，请先到「厂商与设备类型」页面配置。</p>
-      </div>
-      <div class="rule"></div>
-      <div class="step">
-        <div class="step__head">
-          <span class="step__n">2</span><span class="step__t">怎么建</span>
+          <span class="step__n">1</span><span class="step__t">怎么建</span>
           <span class="grow"></span>
           <span class="seg">
             <button type="button" class="seg__btn${single ? " is-on" : ""}" data-newmode="single">单个</button>
@@ -2452,7 +2470,7 @@
         steps: `batch_start ${ids.length} 台 · wait_ready`,
         ok: ids.length > 0,
         why: "先在名册里勾几台，或选中一台设备",
-        spec: { name: "batch-start", steps: [{ action: "batch_start", device_ids: ids, wait_ready: true }] },
+        spec: { name: "batch-start", steps: [{ action: "batch_start", device_ids: ids, wait_ready: true, ...attachRefs() }] },
       },
       {
         name: "单轮语音回归",
@@ -2624,12 +2642,8 @@
     return el.type === "checkbox" ? el.checked : el.value;
   }
 
+  // 建的是设备册条目，不带挂靠——挂靠在启动时给（phase11）。
   async function createFromDrawer() {
-    const refs = attachRefs();
-    if (!refs.environment || !refs.enterprise || !refs.device_type) {
-      flash("三级挂靠还没选全", "err");
-      return;
-    }
     try {
       if (state.newMode === "single") {
         const id = String(formVal("device_id") || "").trim();
@@ -2638,7 +2652,6 @@
           return;
         }
         await api("POST", "/devices", {
-          ...refs,
           device: defaultDevice(id, {
             firmware_version: String(formVal("firmware_version") || "").trim(),
             nic_type: String(formVal("nic_type") || "").trim(),
@@ -3179,6 +3192,9 @@
   }
 
   function bindStage() {
+    $("attach-bar").addEventListener("change", (e) => {
+      if (changeTree(e.target)) renderStage();
+    });
     $("btn-start").addEventListener("click", startAndWait);
     $("btn-stop").addEventListener("click", stopDevice);
     $("btn-delete").addEventListener("click", deleteDevice);

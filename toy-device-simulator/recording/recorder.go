@@ -52,6 +52,11 @@ type TurnRow struct {
 	UpFormat     string `json:"up_format,omitempty"`
 	UpSampleRate int    `json:"up_sample_rate,omitempty"`
 	UpChannels   int    `json:"up_channels,omitempty"`
+	// Phase 11：这一轮把设备挂成了什么。挂靠从设备定义搬到 start 之后，同一个
+	// device_id 昨天可以是 A 机型、今天是 B 机型，不记下来回看时分不出来。
+	Enterprise string `json:"enterprise,omitempty"`
+	DeviceType string `json:"device_type,omitempty"`
+	ServerURL  string `json:"server_url,omitempty"`
 }
 
 // 任务分两级：关键任务丢了就说不出「这一轮发生了什么」，辅助材料丢了不影响判定。

@@ -127,7 +127,8 @@
           <div class="stage__facts mono" id="talk-facts"></div>
         </div>
         <div class="stage__acts">
-          <button type="button" class="btn btn--primary btn--sm" id="btn-start" title="POST /devices/{id}/start → wait_ready(30s)">启动并等待 Ready</button>
+          <span class="attach" id="attach-bar" title="设备册条目不带挂靠；启动时才决定这台挂成什么"></span>
+          <button type="button" class="btn btn--primary btn--sm" id="btn-start" title="POST /devices/{id}/start {environment,enterprise,device_type} → wait_ready(30s)">启动并等待 Ready</button>
           <button type="button" class="btn btn--sub btn--sm" id="btn-stop">停止</button>
           <button type="button" class="btn btn--danger btn--sm" id="btn-delete" data-armed="0">删除</button>
           <button type="button" class="btn btn--icon btn--sm" id="btn-config" title="GET/PUT /devices/{id}/config">配置</button>

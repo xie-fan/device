@@ -201,6 +201,11 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .stage__facts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;font-size:11px;color:var(--dim)}
 .stage__facts .sep{color:var(--line2)}
 .stage__acts{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
+/* 挂靠条：启动时把设备挂到 环境/厂商/设备类型 上（phase11） */
+.attach{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.attach__label{font-size:11px;color:var(--faint)}
+.attach select{padding:6px 8px;border-radius:var(--r);border:1px solid var(--line);
+  background:var(--well);color:var(--fg);font-size:11.5px;max-width:132px}
 
 .stage__banners:not(:empty){display:flex;flex-direction:column}
 .banner{margin:0;padding:11px 13px;display:flex;gap:11px;align-items:flex-start;border-bottom:1px solid var(--line)}
