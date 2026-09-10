@@ -148,7 +148,7 @@
     box.hidden = !msg;
     // 出错的话留着让人看清；成功提示自己退场。
     if (msg && kind !== "err") {
-      state.flashTimer = setTimeout(() => { box.hidden = true; }, 6000);
+      state.flashTimer = setTimeout(() => { box.hidden = true; }, 4000);
     }
   }
 
@@ -531,7 +531,7 @@
     show($("slot-banner"), slot);
     if (slot) {
       const q = backlog > 0 ? ` · 队列 ${backlog} 项` : "";
-      setText($("slot-text"), `槽占用 ${state.occupiedTurnId} · 等 turn_terminal${q}`);
+      setText($("slot-text"), `槽占用 ${state.occupiedTurnId} · 等 turn_terminal${q}${downIdleNote()}`);
     }
 
     show($("tomb-banner"), state.tombstone);
@@ -654,11 +654,13 @@
         <div class="bub__in">
           <div class="bub__head">
             <span class="bub__who">设备回复</span>
-            <span class="bub__sub">${t.hasAsr ? "asr_result" : "尚无 asr_result"}</span>
+            <span class="bub__sub">${t.hasAsr ? "asr_result" : (t.done ? "无 asr_result" : "尚无 asr_result")}</span>
           </div>
-          <p class="bub__asr bub__asr--none">${t.hasAsr
+          <p class="bub__asr${t.hasAsr ? "" : " bub__asr--none"}">${t.hasAsr
             ? "服务端已返回 asr_result（协议不带识别文本，原文见右栏事件）"
-            : "服务端还没有回 asr_result"}</p>
+            : (t.done
+              ? "本轮服务端没回 asr_result——不是还没到，是这一轮就没有。有的服务端只发 vad + tts，不发这条。"
+              : "服务端还没有回 asr_result")}</p>
           <div class="bub__rule"></div>
           ${bars(t.down, 30, t.phase === "tts", " bars--tts")}
           <div class="bub__meta"><span>${esc(ttsMeta)}</span></div>
@@ -1523,6 +1525,27 @@
       opt(state.registry.map((r) => ({ v: r.name, t: r.name })), sel.env, "环境", { k: "env", off: false }) +
       opt(regEnts().map((r) => ({ v: r.short_name, t: r.short_name })), sel.ent, "厂商", { k: "ent", off: !sel.env }) +
       opt(regTypes().map((r) => ({ v: r.short_name, t: r.short_name })), sel.typ, "类型", { k: "typ", off: !sel.ent });
+  }
+
+  // 不少服务端不发显式的「TTS 结束」标记，设备只能等「下行静默满
+  // downlink_idle_timeout_sec」再收尾。那段等待里界面只说「等 turn_terminal」，
+  // 看着像卡死——把已经静默了多久摆出来。
+  function downIdleNote() {
+    let lastDown = 0;
+    for (let i = state.events.length - 1; i >= 0; i--) {
+      const ev = state.events[i];
+      if (ev.turn_id !== state.occupiedTurnId) continue;
+      if (ev.event_type === "tts_chunk" || ev.event_type === "tts_done") {
+        lastDown = Date.parse(ev.ts);
+        break;
+      }
+    }
+    if (!lastDown) return "";
+    const idle = Math.max(0, Math.round((Date.now() - lastDown) / 1000));
+    const budget = Number(((state.config || {}).behavior || {}).downlink_idle_timeout_sec) || 0;
+    return budget
+      ? ` · 下行已静默 ${idle}s，满 ${budget}s 收尾`
+      : ` · 下行已静默 ${idle}s`;
   }
 
   // ——— 生命周期 ———
