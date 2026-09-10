@@ -113,6 +113,11 @@ func LoadPhase2(raw []byte) (Device, error) {
 	return loadWith(raw, ValidatePhase2)
 }
 
+// LoadBookEntry 供 API 建设备册条目：不要求身份三级与 server.url。
+func LoadBookEntry(raw []byte) (Device, error) {
+	return loadWith(raw, ValidateBookEntry)
+}
+
 func loadWith(raw []byte, validate func(Device) error) (Device, error) {
 	var f File
 	if err := yaml.Unmarshal(raw, &f); err != nil {
@@ -165,8 +170,18 @@ func Validate(d Device) error {
 }
 
 // ValidatePhase2 允许 json ACK 与非零 SleepMs；其余与 Phase 1 相同。
+// 校验的是**挂靠后**的设备——身份三级与 server.url 必须齐。
 func ValidatePhase2(d Device) error {
-	if err := validateCommon(d); err != nil {
+	if err := validateBinding(d); err != nil {
+		return err
+	}
+	return ValidateBookEntry(d)
+}
+
+// ValidateBookEntry 校验设备册条目：只看属性，不要求身份三级与 server.url。
+// 设备册里的条目还没挂靠，那三样是 start 时才写进去的（phase11.md）。
+func ValidateBookEntry(d Device) error {
+	if err := validateAttrs(d); err != nil {
 		return err
 	}
 	mode := d.Behavior.DownlinkAck.Mode
@@ -190,9 +205,39 @@ func IsSeqExemptDeviceType(deviceType string) bool {
 	return strings.HasPrefix(deviceType, "MH")
 }
 
+// Phase 11 把「设备册条目」和「挂靠后的设备」分开了：
+//   - 属性（音频、behavior、固件、ICCID…）属于设备册条目，任何时候都要合法
+//   - 身份三级与 server.url 是 start 时按配置树挂靠才产生的，设备册里是空的
+//
+// validateBinding 只管后者。
+// WithoutBinding 抹掉身份三级与 server.url——设备册里存的、以及比较「当前值是否
+// 偏离定义」时看的，都是这个形状。environment 本来就不在 Device 里。
+func WithoutBinding(d Device) Device {
+	d.Enterprise, d.DeviceType = "", ""
+	d.Server = Server{}
+	return d
+}
+
+func validateBinding(d Device) error {
+	if d.Enterprise == "" || d.DeviceType == "" {
+		return fmt.Errorf("enterprise/device_type 必填")
+	}
+	if d.Server.URL == "" {
+		return fmt.Errorf("server.url 必填")
+	}
+	return nil
+}
+
 func validateCommon(d Device) error {
-	if d.Enterprise == "" || d.DeviceType == "" || d.DeviceID == "" {
-		return fmt.Errorf("enterprise/device_type/device_id 必填")
+	if err := validateBinding(d); err != nil {
+		return err
+	}
+	return validateAttrs(d)
+}
+
+func validateAttrs(d Device) error {
+	if d.DeviceID == "" {
+		return fmt.Errorf("device_id 必填")
 	}
 	if err := ValidatePathComponent(d.DeviceID); err != nil {
 		return fmt.Errorf("device_id: %w", err)
@@ -242,9 +287,6 @@ func validateCommon(d Device) error {
 	}
 	if d.UUID.Min < 1 || d.UUID.Max > 2147483647 || d.UUID.Min > d.UUID.Max {
 		return fmt.Errorf("uuid 范围非法")
-	}
-	if d.Server.URL == "" {
-		return fmt.Errorf("server.url 必填")
 	}
 	return nil
 }

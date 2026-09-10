@@ -74,18 +74,9 @@ func prepDeviceMap(raw json.RawMessage) (map[string]any, error) {
 	return m, nil
 }
 
-// parseDeviceLocked 解析树引用、注入派生身份并做全量校验。
-// 调用方须持 s.mu：Resolve 与类型节点删除的引用检查在同一临界区互斥。
-func (s *Server) parseDeviceLocked(m map[string]any, refs createBody) (config.Device, error) {
-	id, _ := m["device_id"].(string)
-	resolved, err := s.reg.Resolve(refs.Environment, refs.Enterprise, refs.DeviceType, id)
-	if err != nil {
-		return config.Device{}, err
-	}
+// parseBookEntry 解析设备册条目：只有属性，不碰身份三级——挂靠是 start 时的事。
+func (s *Server) parseBookEntry(m map[string]any) (config.Device, error) {
 	m = cloneMap(m)
-	m["enterprise"] = refs.Enterprise
-	m["device_type"] = refs.DeviceType
-	m["server"] = map[string]any{"url": resolved}
 	beh, _ := m["behavior"].(map[string]any)
 	if beh == nil {
 		beh = map[string]any{}
@@ -99,7 +90,7 @@ func (s *Server) parseDeviceLocked(m map[string]any, refs createBody) (config.De
 	if err != nil {
 		return config.Device{}, err
 	}
-	cfg, err := config.LoadPhase2(wrapped)
+	cfg, err := config.LoadBookEntry(wrapped)
 	if err != nil {
 		return config.Device{}, err
 	}
@@ -116,6 +107,8 @@ func refErrStatus(err error) int {
 	return http.StatusBadRequest
 }
 
+// createBody 建的是设备册条目。Environment/Enterprise/DeviceType 留在这里只为
+// 认出老调用方并给一句像样的错——挂靠已经移到 start（phase11.md）。
 type createBody struct {
 	Environment string          `json:"environment"`
 	Enterprise  string          `json:"enterprise"`
@@ -132,8 +125,9 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if body.Environment == "" || body.Enterprise == "" || body.DeviceType == "" {
-		writeErr(w, http.StatusBadRequest, "缺 environment/enterprise/device_type（树引用）")
+	if body.Environment != "" || body.Enterprise != "" || body.DeviceType != "" {
+		writeErr(w, http.StatusBadRequest,
+			"设备册条目不带挂靠：environment/enterprise/device_type 请在 start 时给（phase11）")
 		return
 	}
 	if len(body.Device) > 0 && string(body.Device) != "null" {
@@ -143,7 +137,7 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mu.Lock()
-		cfg, err := s.parseDeviceLocked(m, body)
+		cfg, err := s.parseBookEntry(m)
 		if err != nil {
 			s.mu.Unlock()
 			writeErr(w, refErrStatus(err), err.Error())
@@ -154,7 +148,7 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "device_id 冲突")
 			return
 		}
-		d := s.newManaged(cfg, body.Environment)
+		d := s.newManaged(cfg)
 		s.devices[cfg.DeviceID] = d
 		perr := persistWarn("devices.yaml", s.persistDevicesLocked())
 		s.mu.Unlock()
@@ -205,12 +199,12 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		cfg, err := s.parseDeviceLocked(m, body)
+		cfg, err := s.parseBookEntry(m)
 		if err != nil {
 			writeErr(w, refErrStatus(err), err.Error())
 			return
 		}
-		d := s.newManaged(cfg, body.Environment)
+		d := s.newManaged(cfg)
 		s.devices[id] = d
 		made = append(made, created{id, d})
 	}
@@ -232,7 +226,9 @@ func cloneMap(m map[string]any) map[string]any {
 	return out
 }
 
-func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
+// newManaged 建的是**未挂靠**的设备册条目：cfg 里没有 enterprise/device_type/
+// server.url，envName 为空。挂靠在 start 时发生，见 binding.go。
+func (s *Server) newManaged(cfg config.Device) *managedDevice {
 	ins := newInstanceID()
 	log := core.NewEventLog(cfg.DeviceID, ins)
 	log.SetMaxEntries(s.opts.Config.EventLogMaxEntries)
@@ -245,10 +241,8 @@ func (s *Server) newManaged(cfg config.Device, envName string) *managedDevice {
 	return &managedDevice{
 		id:           cfg.DeviceID,
 		instanceID:   ins,
-		envName:      envName,
 		cfg:          cfg,
 		def:          cfg,
-		defEnv:       envName,
 		state:        stCreated,
 		committed:    map[int]bool{},
 		log:          log,
@@ -411,6 +405,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Phase 11：挂靠归 start。这里改了也会被下次 start 覆盖，不如直接拒绝，
+	// 免得给人一种「改成功了」的错觉。
+	if hasAnyKey(raw, "environment", "enterprise", "device_type") {
+		writeErr(w, http.StatusBadRequest, "挂靠请在 start 时给，PUT /config 不改 environment/enterprise/device_type")
+		return
+	}
 	running := d.state == stStarting || d.state == stRunning || d.state == stStopping
 	if running {
 		for k := range raw {
@@ -420,52 +420,37 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	next, newEnv, code, msg := s.patchConfigLocked(d, d.cfg, d.envName, raw)
+	next, code, msg := s.patchConfigLocked(d.cfg, raw)
 	if code != 0 {
 		writeErr(w, code, msg)
 		return
 	}
 	// 只改内存里的当前值，不落盘：抽屉是「试这一次」，manager 重启回到定义。
 	d.cfg = next
-	d.envName = newEnv
 	if !running {
 		d.playingMode = next.PlayingMode
 	}
 	writeJSON(w, http.StatusOK, configPublic(d.cfg, d.envName))
 }
 
-// patchConfigLocked 把 PUT body 打到 base 上，返回新配置与新环境名；
-// code!=0 表示失败。调用方须持 s.mu（Resolve 是叶子锁）。
-func (s *Server) patchConfigLocked(d *managedDevice, base config.Device, baseEnv string, raw map[string]any) (config.Device, string, int, string) {
+// patchConfigLocked 把 PUT body 打到 base 上；code!=0 表示失败。调用方须持 s.mu。
+// Phase 11：这里不再管挂靠——三级是 start 的入参，PUT 改了也会被下次 start 覆盖，
+// 留着就是第二条做同一件事的路。带三级的 PUT 在 handlePutConfig 里直接拒。
+func (s *Server) patchConfigLocked(base config.Device, raw map[string]any) (config.Device, int, string) {
 	next := base
-	newEnv := baseEnv
-	// 树引用重新挂靠：可部分给出，缺省沿用当前。
-	if hasAnyKey(raw, "environment", "enterprise", "device_type") {
-		env, ent, typ := baseEnv, base.Enterprise, base.DeviceType
-		if err := takeStringKey(raw, "environment", &env); err != nil {
-			return next, newEnv, http.StatusBadRequest, err.Error()
-		}
-		if err := takeStringKey(raw, "enterprise", &ent); err != nil {
-			return next, newEnv, http.StatusBadRequest, err.Error()
-		}
-		if err := takeStringKey(raw, "device_type", &typ); err != nil {
-			return next, newEnv, http.StatusBadRequest, err.Error()
-		}
-		resolved, err := s.reg.Resolve(env, ent, typ, d.id)
-		if err != nil {
-			return next, newEnv, refErrStatus(err), err.Error()
-		}
-		next.Enterprise, next.DeviceType = ent, typ
-		next.Server.URL = resolved
-		newEnv = env
-	}
 	if err := applyPutAllowlist(&next, raw); err != nil {
-		return next, newEnv, http.StatusBadRequest, err.Error()
+		return next, http.StatusBadRequest, err.Error()
 	}
-	if err := config.ValidatePhase2(next); err != nil {
-		return next, newEnv, http.StatusBadRequest, err.Error()
+	// PUT /config 改的是挂靠后的当前值（要全量校验）；PUT /definition 改的是
+	// 设备册条目，本来就没有身份三级——按 next 是否带挂靠自己挑。
+	validate := config.ValidateBookEntry
+	if next.Enterprise != "" || next.DeviceType != "" || next.Server.URL != "" {
+		validate = config.ValidatePhase2
 	}
-	return next, newEnv, 0, ""
+	if err := validate(next); err != nil {
+		return next, http.StatusBadRequest, err.Error()
+	}
+	return next, 0, ""
 }
 
 func hasAnyKey(m map[string]any, keys ...string) bool {

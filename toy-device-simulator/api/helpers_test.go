@@ -391,13 +391,14 @@ func (e *testEnv) deviceBody(id string) map[string]any {
 }
 
 // createBody 给设备体包上 seed 的树引用（local/demo/A3）。
+// Phase 11：建设备册条目不带挂靠；挂靠在 start 时给（seedBinding）。
 func (e *testEnv) createBody(dev map[string]any) map[string]any {
-	return map[string]any{
-		"environment": "local",
-		"enterprise":  "demo",
-		"device_type": "A3",
-		"device":      dev,
-	}
+	return map[string]any{"device": dev}
+}
+
+// seedBinding 是 seedRegistry 建出来的那棵树上的三级，测试默认都挂这里。
+func (e *testEnv) seedBinding() map[string]any {
+	return map[string]any{"environment": "local", "enterprise": "demo", "device_type": "A3"}
 }
 
 func (e *testEnv) createDevice(t *testing.T, id string) (instanceID string) {
@@ -422,7 +423,7 @@ func (e *testEnv) createDevice(t *testing.T, id string) (instanceID string) {
 func (e *testEnv) startDevice(t *testing.T, id string) (instanceID string, gen int) {
 	t.Helper()
 	start := time.Now()
-	code, body := e.post(t, "/devices/"+id+"/start", nil)
+	code, body := e.post(t, "/devices/"+id+"/start", e.seedBinding())
 	if code != http.StatusAccepted {
 		t.Fatalf("POST start 应 202，得到 %d body=%s", code, body)
 	}

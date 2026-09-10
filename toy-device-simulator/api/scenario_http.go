@@ -138,7 +138,10 @@ func (s *Server) execStep(st scenario.Step, prev stepResult) (stepResult, error)
 }
 
 func (s *Server) execBatchStart(st scenario.Step) (stepResult, error) {
-	body := map[string]any{"device_ids": st.DeviceIDs, "stagger_ms": st.StaggerMs}
+	body := map[string]any{
+		"device_ids": st.DeviceIDs, "stagger_ms": st.StaggerMs,
+		"environment": st.Environment, "enterprise": st.Enterprise, "device_type": st.DeviceType,
+	}
 	code, raw := s.internalJSON(http.MethodPost, "/devices/batch/start", body)
 	m := map[string]any{}
 	_ = json.Unmarshal(raw, &m)

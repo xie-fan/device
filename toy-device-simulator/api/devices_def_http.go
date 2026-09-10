@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+
+	"toy-device-simulator/config"
 )
 
 func (s *Server) handleGetDefinition(w http.ResponseWriter, r *http.Request) {
@@ -18,9 +20,10 @@ func (s *Server) handleGetDefinition(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "device 不存在")
 		return
 	}
-	def, env, over := d.def, d.defEnv, d.overridden()
+	// 定义里没有挂靠——环境名传空串。
+	def, over := d.def, d.overridden()
 	s.mu.Unlock()
-	out := configPublic(def, env)
+	out := configPublic(def, "")
 	out["overridden"] = over
 	writeJSON(w, http.StatusOK, out)
 }
@@ -66,18 +69,18 @@ func (s *Server) handlePutDefinition(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "device 不存在")
 		return
 	}
-	next, newEnv, code, msg := s.patchConfigLocked(d, d.def, d.defEnv, raw)
+	next, code, msg := s.patchConfigLocked(d.def, raw)
 	if code != 0 {
 		writeErr(w, code, msg)
 		return
 	}
-	d.def, d.defEnv = next, newEnv
+	d.def = config.WithoutBinding(next)
 	if d.state == stCreated || d.state == stStopped {
 		d.resetToDefinitionLocked()
 		d.playingMode = next.PlayingMode
 	}
 	perr := persistWarn("devices.yaml", s.persistDevicesLocked())
-	out := configPublic(d.def, d.defEnv)
+	out := configPublic(d.def, "")
 	out["overridden"] = d.overridden()
 	writeJSON(w, http.StatusOK, persistErr(out, perr))
 }

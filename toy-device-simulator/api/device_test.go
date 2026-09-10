@@ -36,9 +36,6 @@ func TestPostDevicesBatchIDConflict409WholeBatch(t *testing.T) {
 	}
 	e.createDevice(t, "sim_cf_1")
 	code, body = e.post(t, "/devices", map[string]any{
-		"environment": "local",
-		"enterprise":  "demo",
-		"device_type": "A3",
 		"template_id": "default_a3",
 		"count":       2,
 		"id_prefix":   "sim_cf",
@@ -61,9 +58,6 @@ func TestPostDevicesBatchIDPrefixUsesUnderscore(t *testing.T) {
 		t.Fatalf("POST /templates 应 201，得到 %d body=%s", code, body)
 	}
 	code, body = e.post(t, "/devices", map[string]any{
-		"environment": "local",
-		"enterprise":  "demo",
-		"device_type": "A3",
 		"template_id": "default_a3",
 		"count":       1,
 		"id_prefix":   "sim",
@@ -164,7 +158,9 @@ func TestTemplatePathTraversalRejected(t *testing.T) {
 
 func TestListDevicesIncludesEnterpriseAndType(t *testing.T) {
 	e := newEnv(t)
+	// Phase 11：三级是挂靠后才有的运行态，没 start 的设备这三项是空的。
 	e.createDevice(t, "sim_flt_1")
+	e.startDevice(t, "sim_flt_1")
 	code, body, _ := e.get(t, "/devices")
 	if code != http.StatusOK {
 		t.Fatalf("GET /devices 应 200，得到 %d body=%s", code, body)

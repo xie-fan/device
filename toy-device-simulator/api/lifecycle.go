@@ -5,43 +5,33 @@ import (
 	"net/http"
 	"time"
 
+	"toy-device-simulator/config"
 	"toy-device-simulator/core"
 )
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.mu.Lock()
-	d, ok := s.devices[id]
-	if !ok {
-		s.mu.Unlock()
-		writeErr(w, http.StatusNotFound, "device 不存在")
+	// Phase 11：挂靠在这里发生，不再是建设备时焊死的。三级必给，没有默认值。
+	var body struct {
+		Environment string `json:"environment"`
+		Enterprise  string `json:"enterprise"`
+		DeviceType  string `json:"device_type"`
+	}
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "JSON 非法")
+			return
+		}
+	}
+	if body.Environment == "" || body.Enterprise == "" || body.DeviceType == "" {
+		writeErr(w, http.StatusBadRequest, "start 需要 environment/enterprise/device_type（挂靠三级）")
 		return
 	}
-	if d.state != stCreated && d.state != stStopped {
-		s.mu.Unlock()
-		writeErr(w, http.StatusConflict, "仅 Created/Stopped 可 start")
+	code, ins, gen, errMsg := s.startOne(id, body.Environment, body.Enterprise, body.DeviceType)
+	if code != http.StatusAccepted {
+		writeErr(w, code, errMsg)
 		return
 	}
-	if !s.acquireConnLocked() {
-		s.mu.Unlock()
-		writeErr(w, http.StatusTooManyRequests, "conn_permit")
-		return
-	}
-	s.refreshServerURLLocked(d)
-	d.gen++
-	d.state = stStarting
-	d.lastError = ""
-	d.permitHeld = true
-	d.committed[d.gen] = false
-	d.lastActivity = time.Now()
-	inst := s.spawnInstance(d)
-	d.inst = inst
-	gen := d.gen
-	ins := d.instanceID
-	s.mu.Unlock()
-
-	go s.runStart(d, inst, gen)
-
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"device_id":       id,
 		"instance_id":     ins,
@@ -66,14 +56,6 @@ func (s *Server) interruptOnWSAbort(id string) {
 		return
 	}
 	_, _ = inst.Interrupt("")
-}
-
-// refreshServerURLLocked 启动前按环境重解析 url：环境 url 更新后重启生效。
-// 删除有引用守卫，解析理论上不会失败；防御性保留旧值。调用方须持 s.mu。
-func (s *Server) refreshServerURLLocked(d *managedDevice) {
-	if u, err := s.reg.Resolve(d.envName, d.cfg.Enterprise, d.cfg.DeviceType, d.id); err == nil {
-		d.cfg.Server.URL = u
-	}
 }
 
 func (s *Server) spawnInstance(d *managedDevice) *core.DeviceInstance {
@@ -366,6 +348,10 @@ func (s *Server) deleteDevice(id string) (int, any) {
 type batchBody struct {
 	DeviceIDs []string `json:"device_ids"`
 	StaggerMs int      `json:"stagger_ms"`
+	// Phase 11：批量 start 也要给挂靠三级，整批共用一组。stop/delete 用不上。
+	Environment string `json:"environment"`
+	Enterprise  string `json:"enterprise"`
+	DeviceType  string `json:"device_type"`
 }
 
 type batchOK struct {
@@ -393,7 +379,7 @@ func (s *Server) handleBatchStart(w http.ResponseWriter, r *http.Request) {
 		if i > 0 && stagger > 0 {
 			time.Sleep(time.Duration(stagger) * time.Millisecond)
 		}
-		code, ins, gen, errMsg := s.startOne(id)
+		code, ins, gen, errMsg := s.startOne(id, body.Environment, body.Enterprise, body.DeviceType)
 		if code == http.StatusAccepted {
 			succ = append(succ, batchOK{DeviceID: id, InstanceID: ins, ConnGeneration: gen})
 		} else {
@@ -404,7 +390,11 @@ func (s *Server) handleBatchStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, st, map[string]any{"succeeded": succ, "failed": fail})
 }
 
-func (s *Server) startOne(id string) (code int, ins string, gen int, errMsg string) {
+// startOne 挂靠 + 启动。Phase 11：三级挂靠是 start 的入参，不再来自设备定义。
+func (s *Server) startOne(id, envName, enterprise, deviceType string) (code int, ins string, gen int, errMsg string) {
+	if envName == "" || enterprise == "" || deviceType == "" {
+		return http.StatusBadRequest, "", 0, "start 需要 environment/enterprise/device_type（挂靠三级）"
+	}
 	s.mu.Lock()
 	d, ok := s.devices[id]
 	if !ok {
@@ -415,13 +405,26 @@ func (s *Server) startOne(id string) (code int, ins string, gen int, errMsg stri
 		s.mu.Unlock()
 		return http.StatusConflict, d.instanceID, d.gen, "仅 Created/Stopped 可 start"
 	}
+	// Resolve 与「类型节点删除时的引用检查」在同一临界区互斥。
+	resolved, err := s.reg.Resolve(envName, enterprise, deviceType, id)
+	if err != nil {
+		s.mu.Unlock()
+		return refErrStatus(err), d.instanceID, d.gen, err.Error()
+	}
+	bound := bindDevice(d.cfg, envName, enterprise, deviceType, resolved)
+	if err := config.ValidatePhase2(bound); err != nil {
+		s.mu.Unlock()
+		return http.StatusBadRequest, d.instanceID, d.gen, err.Error()
+	}
 	if !s.acquireConnLocked() {
 		s.mu.Unlock()
 		return http.StatusTooManyRequests, d.instanceID, d.gen, "conn_permit"
 	}
-	s.refreshServerURLLocked(d)
+	d.cfg = bound
+	d.envName = envName
 	d.gen++
 	d.state = stStarting
+	d.lastError = ""
 	d.permitHeld = true
 	d.committed[d.gen] = false
 	d.lastActivity = time.Now()

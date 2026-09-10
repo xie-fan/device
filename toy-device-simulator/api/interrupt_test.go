@@ -152,9 +152,10 @@ func TestPUTDeviceIDOrWriteQueue400(t *testing.T) {
 func TestPUTIdentityWhileRunning409(t *testing.T) {
 	e := newEnv(t)
 	e.createStartReady(t, "sim_id")
+	// Phase 11：挂靠归 start，PUT /config 碰它一律 400，不分运行状态。
 	code, body := e.put(t, "/devices/sim_id/config", map[string]any{"enterprise": "other"})
-	if code != http.StatusConflict {
-		t.Fatalf("Running PUT 身份字段应 409，得到 %d body=%s", code, body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("PUT 挂靠字段应 400，得到 %d body=%s", code, body)
 	}
 	code, body = e.put(t, "/devices/sim_id/config", map[string]any{"playing_mode": 2})
 	if code != http.StatusConflict {

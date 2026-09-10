@@ -296,7 +296,7 @@ func TestDisconnectAfterRunningReleasesPermitAndAllowsRestart(t *testing.T) {
 	if !stopped {
 		t.Fatal("连接异常收口后 Manager 应标 Stopped 并释放 permit")
 	}
-	code, body := e.post(t, "/devices/sim_drop/start", nil)
+	code, body := e.post(t, "/devices/sim_drop/start", e.seedBinding())
 	if code != http.StatusAccepted {
 		t.Fatalf("permit 释放后再次 start 应 202 不是 409，得到 %d %s", code, body)
 	}
@@ -319,7 +319,10 @@ func TestScenarioExecutesBatchStartSpeakAssert(t *testing.T) {
 	code, raw := e.post(t, "/scenarios/run", map[string]any{
 		"name": "batch-hello",
 		"steps": []any{
-			map[string]any{"action": "batch_start", "device_ids": []string{"sim_sc1", "sim_sc2"}, "stagger_ms": 10},
+			map[string]any{
+				"action": "batch_start", "device_ids": []string{"sim_sc1", "sim_sc2"}, "stagger_ms": 10,
+				"environment": "local", "enterprise": "demo", "device_type": "A3",
+			},
 			map[string]any{"action": "speak", "device_id": "sim_sc1", "asset_id": assetID, "wait": true},
 			map[string]any{
 				"action":          "assert",

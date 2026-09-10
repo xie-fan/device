@@ -146,9 +146,16 @@ func (s *Server) handleDeleteDeviceType(w http.ResponseWriter, r *http.Request) 
 	// 与设备创建/挂靠的 Resolve 同在 s.mu 临界区，检查-删除不与建表交错。
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Phase 11：设备册条目不再引用任何类型，只有**正在跑的**设备挂在类型上。
+	// 所以这道守卫只挡在跑的——停着的设备删掉类型不影响它，它下次 start 时
+	// 会自己因为 Resolve 失败而报错。
 	for _, d := range s.devices {
+		d.syncRunning()
+		if d.state != stStarting && d.state != stRunning {
+			continue
+		}
 		if d.envName == env && d.cfg.Enterprise == short && d.cfg.DeviceType == tshort {
-			writeErr(w, http.StatusConflict, "类型仍被设备引用: "+d.id)
+			writeErr(w, http.StatusConflict, "类型正被运行中的设备使用: "+d.id)
 			return
 		}
 	}

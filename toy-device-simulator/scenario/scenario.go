@@ -23,6 +23,10 @@ type Step struct {
 	WaitReady     *bool           `json:"wait_ready"`
 	AfterEventSeq json.RawMessage `json:"after_event_seq"`
 	StaggerMs     int             `json:"stagger_ms"`
+	// Phase 11：batch_start 要给挂靠三级——设备册条目本身不带挂靠了。
+	Environment string `json:"environment"`
+	Enterprise  string `json:"enterprise"`
+	DeviceType  string `json:"device_type"`
 }
 
 type Spec struct {

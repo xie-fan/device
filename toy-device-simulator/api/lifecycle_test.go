@@ -12,11 +12,11 @@ import (
 func TestStartOnlyCreatedOrStoppedElse409(t *testing.T) {
 	e := newEnv(t)
 	e.createDevice(t, "sim_st")
-	code, body := e.post(t, "/devices/sim_st/start", nil)
+	code, body := e.post(t, "/devices/sim_st/start", e.seedBinding())
 	if code != http.StatusAccepted {
 		t.Fatalf("Created 上 start 应 202，得到 %d body=%s", code, body)
 	}
-	code, body = e.post(t, "/devices/sim_st/start", nil)
+	code, body = e.post(t, "/devices/sim_st/start", e.seedBinding())
 	if code != http.StatusConflict {
 		t.Fatalf("非 Created/Stopped 再 start 应 409 且不 TryAcquire，得到 %d body=%s", code, body)
 	}
@@ -26,7 +26,7 @@ func TestStartReturns202DoesNotWaitReady(t *testing.T) {
 	e := newEnv(t)
 	e.createDevice(t, "sim_nr")
 	start := time.Now()
-	code, body := e.post(t, "/devices/sim_nr/start", nil)
+	code, body := e.post(t, "/devices/sim_nr/start", e.seedBinding())
 	elapsed := time.Since(start)
 	if code != http.StatusAccepted {
 		t.Fatalf("start 应 202，得到 %d body=%s", code, body)

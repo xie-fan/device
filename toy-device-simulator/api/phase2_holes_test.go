@@ -140,8 +140,6 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 		t.Fatalf("PUT server 应 400，得到 %d %s", code, body)
 	}
 	code, body := e.put(t, "/devices/sim_putw/config", map[string]any{
-		"enterprise":       "acme",
-		"device_type":      "A3",
 		"playing_mode":     2,
 		"action":           "chatbot",
 		"firmware_version": "9.9.9",
@@ -161,11 +159,12 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 		t.Fatalf("GET config %d %s", gcode, gbody)
 	}
 	m := decodeMap(t, gbody)
-	if strField(m, "enterprise") != "acme" || intField(m, "playing_mode") != 2 {
-		t.Fatalf("enterprise/playing_mode 未写入: %s", gbody)
+	if intField(m, "playing_mode") != 2 {
+		t.Fatalf("playing_mode 未写入: %s", gbody)
 	}
-	if strField(m, "environment") != "local" {
-		t.Fatalf("config 应含 environment: %s", gbody)
+	// Phase 11：没 start 就没挂靠，三级是空的。
+	if strField(m, "environment") != "" {
+		t.Fatalf("未挂靠的设备 environment 应为空: %s", gbody)
 	}
 	if strField(m, "firmware_version") != "9.9.9" || strField(m, "nic_type") != "4g" {
 		t.Fatalf("firmware/nic 未写入: %s", gbody)
@@ -174,9 +173,10 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 	if intField(audio, "slice_ms") != 50 {
 		t.Fatalf("audio.slice_ms 未写入: %s", gbody)
 	}
+	// server.url 也是挂靠派生的，没 start 就是空。
 	server, _ := m["server"].(map[string]any)
-	if strField(server, "url") != "ws://127.0.0.1:1/" {
-		t.Fatalf("server.url 应为环境派生结果: %s", gbody)
+	if strField(server, "url") != "" {
+		t.Fatalf("未挂靠的设备 server.url 应为空: %s", gbody)
 	}
 	uuid, _ := m["uuid"].(map[string]any)
 	if intField(uuid, "min") != 10 || intField(uuid, "max") != 20 {

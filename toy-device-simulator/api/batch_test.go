@@ -12,6 +12,7 @@ func TestBatchStartAllSuccess202(t *testing.T) {
 	e.createDevice(t, "sim_b1")
 	e.createDevice(t, "sim_b2")
 	code, body := e.post(t, "/devices/batch/start", map[string]any{
+		"environment": "local", "enterprise": "demo", "device_type": "A3",
 		"device_ids": []string{"sim_b1", "sim_b2"}, "stagger_ms": 10,
 	})
 	if code != http.StatusAccepted {
@@ -29,6 +30,7 @@ func TestBatchPartialSuccess207(t *testing.T) {
 	e := newEnv(t)
 	e.createDevice(t, "sim_p1")
 	code, body := e.post(t, "/devices/batch/start", map[string]any{
+		"environment": "local", "enterprise": "demo", "device_type": "A3",
 		"device_ids": []string{"sim_p1", "sim_missing"},
 	})
 	if code != http.StatusMultiStatus {
@@ -47,6 +49,7 @@ func TestBatchAllPermitExhausted429(t *testing.T) {
 	e.createDevice(t, "sim_pe1")
 	e.createDevice(t, "sim_pe2")
 	code, body := e.post(t, "/devices/batch/start", map[string]any{
+		"environment": "local", "enterprise": "demo", "device_type": "A3",
 		"device_ids": []string{"sim_pe1", "sim_pe2"},
 	})
 	if code != http.StatusTooManyRequests {
@@ -58,11 +61,11 @@ func TestConnPermitExceeded429(t *testing.T) {
 	e := newEnvCfg(t, func(c *manager.Config) { c.MaxConnections = 1 })
 	e.createDevice(t, "sim_c1")
 	e.createDevice(t, "sim_c2")
-	code, body := e.post(t, "/devices/sim_c1/start", nil)
+	code, body := e.post(t, "/devices/sim_c1/start", e.seedBinding())
 	if code != http.StatusAccepted {
 		t.Fatalf("第一台 start 应 202，得到 %d body=%s", code, body)
 	}
-	code, body = e.post(t, "/devices/sim_c2/start", nil)
+	code, body = e.post(t, "/devices/sim_c2/start", e.seedBinding())
 	if code != http.StatusTooManyRequests {
 		t.Fatalf("conn_permit 不足应 429，得到 %d body=%s", code, body)
 	}
@@ -73,6 +76,7 @@ func TestBatchAllFailAny429Is429(t *testing.T) {
 	e.createStartReady(t, "sim_mx_a")
 	e.createDevice(t, "sim_mx_b")
 	code, body := e.post(t, "/devices/batch/start", map[string]any{
+		"environment": "local", "enterprise": "demo", "device_type": "A3",
 		"device_ids": []string{"sim_mx_a", "sim_mx_b"},
 	})
 	if code != http.StatusTooManyRequests {

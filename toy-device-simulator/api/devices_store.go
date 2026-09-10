@@ -24,9 +24,12 @@ import (
 	"toy-device-simulator/config"
 )
 
+// deviceStoreEntry 设备册的一条：只有这台机子自己的东西，没有身份三级。
+// Phase 11 之前这里还有 environment，且 device 里带 enterprise/device_type/server；
+// 挂靠改成 start 时才发生，那三样成了运行态，不再落盘。旧文件里的这些字段
+// yaml 解析时直接忽略——这就是迁移，不需要单独的迁移代码。
 type deviceStoreEntry struct {
-	Environment string        `yaml:"environment"`
-	Device      config.Device `yaml:"device"`
+	Device config.Device `yaml:"device"`
 }
 
 type devicesStoreFile struct {
@@ -68,7 +71,9 @@ func (s *Server) loadDevices() {
 		fmt.Fprintf(os.Stderr, "devices store: 跳过 %s：%s\n", id, why)
 	}
 	for _, e := range f.Devices {
-		cfg := e.Device
+		// 旧文件的 device 体里可能还带着 enterprise/device_type/server，抹掉：
+		// 它们现在是 start 时才产生的运行态。
+		cfg := config.WithoutBinding(e.Device)
 		if cfg.DeviceID == "" {
 			skip("", "缺 device_id")
 			continue
@@ -76,7 +81,7 @@ func (s *Server) loadDevices() {
 		// 运输层参数以当前 manager.yaml 为准，不用盘上的旧值。
 		cfg.Behavior.WriteQueueDepth = s.opts.Config.WriteQueueDepth
 		cfg.Behavior.WriteDrainTimeoutSec = s.opts.Config.WriteDrainTimeoutSec
-		if err := config.ValidatePhase2(cfg); err != nil {
+		if err := config.ValidateBookEntry(cfg); err != nil {
 			skip(cfg.DeviceID, err.Error())
 			continue
 		}
@@ -84,7 +89,7 @@ func (s *Server) loadDevices() {
 			skip(cfg.DeviceID, "device_id 重复")
 			continue
 		}
-		s.devices[cfg.DeviceID] = s.newManaged(cfg, e.Environment)
+		s.devices[cfg.DeviceID] = s.newManaged(cfg)
 		loaded++
 	}
 	fmt.Fprintf(os.Stderr, "devices store: loaded=%d skipped=%d\n", loaded, skipped)
@@ -94,7 +99,7 @@ func (s *Server) loadDevices() {
 func (s *Server) persistDevicesLocked() error {
 	f := devicesStoreFile{Devices: make([]deviceStoreEntry, 0, len(s.devices))}
 	for _, d := range s.devices {
-		f.Devices = append(f.Devices, deviceStoreEntry{Environment: d.defEnv, Device: d.def})
+		f.Devices = append(f.Devices, deviceStoreEntry{Device: config.WithoutBinding(d.def)})
 	}
 	sort.Slice(f.Devices, func(i, j int) bool {
 		return f.Devices[i].Device.DeviceID < f.Devices[j].Device.DeviceID
@@ -108,12 +113,10 @@ func (s *Server) persistDevicesLocked() error {
 
 // overridden 当前值是否偏离落盘定义。比 yaml 字节而不是 reflect.DeepEqual：
 // Behavior 里有 *bool，比指针的语义不是我们要的。调用方须持 s.mu。
+// 只比属性：挂靠（三级 + url）是运行态，def 里本来就没有，比进去必然「偏离」。
 func (d *managedDevice) overridden() bool {
-	if d.envName != d.defEnv {
-		return true
-	}
-	a, err1 := yaml.Marshal(d.cfg)
-	b, err2 := yaml.Marshal(d.def)
+	a, err1 := yaml.Marshal(config.WithoutBinding(d.cfg))
+	b, err2 := yaml.Marshal(config.WithoutBinding(d.def))
 	if err1 != nil || err2 != nil {
 		return false
 	}
@@ -121,7 +124,7 @@ func (d *managedDevice) overridden() bool {
 }
 
 // resetToDefinitionLocked 丢弃临时修改，回到落盘定义。调用方须持 s.mu。
+// 只回滚属性——挂靠是这一次运行的身份，不是「临时修改」，reset 不该把它抹掉。
 func (d *managedDevice) resetToDefinitionLocked() {
-	d.cfg = d.def
-	d.envName = d.defEnv
+	d.cfg = bindDevice(d.def, d.envName, d.cfg.Enterprise, d.cfg.DeviceType, d.cfg.Server.URL)
 }

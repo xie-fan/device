@@ -23,8 +23,7 @@ type managedDevice struct {
 	cfg          config.Device
 	// def 是落盘的「设备定义」（基线）；cfg 是本次运行的当前值。
 	// PUT /config 只改 cfg（试这一次），PUT /definition 改 def 并落盘。
-	def    config.Device
-	defEnv string
+	def config.Device
 	state        string
 	gen          int
 	committed    map[int]bool
