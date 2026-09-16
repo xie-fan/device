@@ -30,6 +30,7 @@ type Device struct {
 	UUID            UUIDRange `yaml:"uuid"`
 	Server          Server    `yaml:"server"`
 	Recording       Recording `yaml:"recording"`
+	Features        Features  `yaml:"features"`
 }
 
 type Audio struct {

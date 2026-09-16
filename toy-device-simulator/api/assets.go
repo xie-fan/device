@@ -22,8 +22,14 @@ import (
 	"toy-device-simulator/media"
 )
 
-// assetObj 音频库条目。Phase 5c：持久化 + name/language/format 元数据 +
+const (
+	assetKindAudio = "audio"
+	assetKindImage = "image"
+)
+
+// assetObj 素材库条目。Phase 5c：持久化 + name/language/format 元数据 +
 // 按目标规格的转码派生副本缓存（variants，不持久化，重启后按需重建）。
+// Phase 12：kind=image 为 jpg/png/bmp，不走音频管线。
 type assetObj struct {
 	id           string
 	path         string
@@ -35,7 +41,8 @@ type assetObj struct {
 	sampleFormat string // wav 资产为 s16le；压缩格式无意义（空）
 	name         string
 	language     string
-	format       string // wav/mp3/amr/aac
+	format       string // wav/mp3/amr/aac 或 jpg/png/bmp
+	kind         string // audio | image；旧索引缺省 audio
 	bitrateKbps  float64
 	createdAt    int64             // unix ms
 	variants     map[string]string // 规格指纹 → 派生文件路径
@@ -68,6 +75,12 @@ func mimeByFormat(f string) string {
 		return "audio/amr"
 	case media.FormatAAC:
 		return "audio/aac"
+	case "jpg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "bmp":
+		return "image/bmp"
 	default:
 		return "audio/wav"
 	}
@@ -107,6 +120,7 @@ type assetIndexEntry struct {
 	Name         string  `json:"name"`
 	Language     string  `json:"language"`
 	Format       string  `json:"format"`
+	Kind         string  `json:"kind,omitempty"`
 	Bytes        int     `json:"bytes"`
 	DurationMs   int     `json:"duration_ms"`
 	SampleRate   int     `json:"sample_rate"`
@@ -162,11 +176,15 @@ func (s *Server) loadAssetIndex() {
 			fmt.Fprintf(os.Stderr, "asset index: 跳过 %s：文件不在 %s\n", e.ID, p)
 			continue
 		}
+		kind := e.Kind
+		if kind == "" {
+			kind = assetKindAudio // 旧索引没有 kind，按音频
+		}
 		s.assets[e.ID] = &assetObj{
 			id: e.ID, path: p, epoch: 1,
 			bytes: e.Bytes, durationMs: e.DurationMs,
 			sampleRate: e.SampleRate, channels: e.Channels, sampleFormat: e.SampleFormat,
-			name: e.Name, language: e.Language, format: e.Format,
+			name: e.Name, language: e.Language, format: e.Format, kind: kind,
 			bitrateKbps: e.BitrateKbps, createdAt: e.CreatedAt,
 			variants: map[string]string{},
 		}
@@ -181,7 +199,7 @@ func (s *Server) persistAssetIndexLocked() error {
 	for _, a := range s.assets {
 		idx.Assets = append(idx.Assets, assetIndexEntry{
 			ID: a.id, File: filepath.Base(a.path), Name: a.name, Language: a.language,
-			Format: a.format, Bytes: a.bytes, DurationMs: a.durationMs,
+			Format: a.format, Kind: a.kind, Bytes: a.bytes, DurationMs: a.durationMs,
 			SampleRate: a.sampleRate, Channels: a.channels, SampleFormat: a.sampleFormat,
 			BitrateKbps: a.bitrateKbps, CreatedAt: a.createdAt,
 		})
@@ -225,6 +243,18 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "读取失败")
 		return
 	}
+	name := r.FormValue("name")
+	if name == "" && hdr != nil {
+		name = hdr.Filename
+	}
+	language := r.FormValue("language")
+
+	// 图片按魔数识别，不走 ffprobe/转码/时长上限，忽略 device_id。
+	if format := detectImageFormat(data); format != "" {
+		s.postImageAsset(w, data, name, language, format)
+		return
+	}
+
 	// Phase 4c raw PCM：sample_rate/channels/sample_format 三项全给才按 raw 收，
 	// 服务端包 WAV 头后与普通上传走同一管线；缺一项 → 400。
 	if data, err = maybeWrapRawPCM(r, data); err != nil {
@@ -236,12 +266,6 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "超过 max_asset_bytes")
 		return
 	}
-
-	name := r.FormValue("name")
-	if name == "" && hdr != nil {
-		name = hdr.Filename
-	}
-	language := r.FormValue("language")
 
 	// device_id 给定 → 上传即按该设备规格转码（格式一致则直存）。
 	var target *media.Spec
@@ -352,7 +376,7 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 		id: id, path: final, epoch: 1,
 		bytes: int(st.Size()), durationMs: info.DurationMs,
 		sampleRate: info.SampleRate, channels: info.Channels, sampleFormat: sampleFormat,
-		name: name, language: language, format: info.Format,
+		name: name, language: language, format: info.Format, kind: assetKindAudio,
 		bitrateKbps: info.BitrateKbps, createdAt: time.Now().UnixMilli(),
 		variants: map[string]string{},
 	}
@@ -363,6 +387,48 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 	resp := assetPublic(obj)
 	resp["transcoded"] = transcoded
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (s *Server) postImageAsset(w http.ResponseWriter, data []byte, name, language, format string) {
+	if maxBytes := s.opts.Config.MaxAssetBytes; maxBytes > 0 && int64(len(data)) > maxBytes {
+		writeErr(w, http.StatusBadRequest, "超过 max_asset_bytes")
+		return
+	}
+	root := s.assetsRoot()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id := newAssetID()
+	final := filepath.Join(root, id+"."+format)
+	if err := os.WriteFile(final, data, 0o644); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	obj := &assetObj{
+		id: id, path: final, epoch: 1, bytes: len(data),
+		name: name, language: language, format: format, kind: assetKindImage,
+		createdAt: time.Now().UnixMilli(),
+		variants:  map[string]string{},
+	}
+	s.assetMu.Lock()
+	s.assets[id] = obj
+	_ = persistWarn("index.json", s.persistAssetIndexLocked())
+	s.assetMu.Unlock()
+	writeJSON(w, http.StatusCreated, assetPublic(obj))
+}
+
+// detectImageFormat 按魔数识别 jpg/png/bmp；非图片返回空串。
+func detectImageFormat(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
+		return "png"
+	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}):
+		return "jpg"
+	case bytes.HasPrefix(data, []byte{'B', 'M'}):
+		return "bmp"
+	}
+	return ""
 }
 
 // maybeWrapRawPCM 判定 raw PCM 上传：三项 fmt 全给 → 校验并包 WAV 头；
@@ -418,7 +484,7 @@ func assetPublic(a *assetObj) map[string]any {
 		"asset_id": a.id, "bytes": a.bytes, "duration_ms": a.durationMs,
 		"sample_rate": a.sampleRate, "channels": a.channels,
 		"sample_format": a.sampleFormat, "container": a.format,
-		"format": a.format, "name": a.name, "language": a.language,
+		"format": a.format, "kind": a.kind, "name": a.name, "language": a.language,
 		"bitrate_kbps": a.bitrateKbps, "created_at": a.createdAt, "epoch": a.epoch,
 	}
 }
@@ -426,6 +492,7 @@ func assetPublic(a *assetObj) map[string]any {
 func (s *Server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	fmtQ := r.URL.Query().Get("format")
 	langQ := r.URL.Query().Get("language")
+	kindQ := r.URL.Query().Get("kind")
 	s.assetMu.Lock()
 	list := make([]*assetObj, 0, len(s.assets))
 	for _, a := range s.assets {
@@ -433,6 +500,9 @@ func (s *Server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if langQ != "" && a.language != langQ {
+			continue
+		}
+		if kindQ != "" && a.kind != kindQ {
 			continue
 		}
 		list = append(list, a)
@@ -520,9 +590,9 @@ func (s *Server) handleGetAssetContent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.assetMu.Lock()
 	a, ok := s.assets[id]
-	path, format := "", ""
+	path, format, kind := "", "", ""
 	if ok {
-		path, format = a.path, a.format
+		path, format, kind = a.path, a.format, a.kind
 	}
 	s.assetMu.Unlock()
 	if !ok {
@@ -542,7 +612,8 @@ func (s *Server) handleGetAssetContent(w http.ResponseWriter, r *http.Request) {
 	}
 	// decode=1：解码成 wav 再给浏览器。amr 与裸 pcm 的原始字节 <audio> 放不出来，
 	// 而 manager 在 turn 回放那条路上早就有同一套 ffmpeg 解码能力（Phase 6）。
-	if r.URL.Query().Get("decode") == "1" && format != media.FormatWAV && format != media.FormatPCM {
+	// 图片忽略 decode，原字节返回。
+	if kind != assetKindImage && r.URL.Query().Get("decode") == "1" && format != media.FormatWAV && format != media.FormatPCM {
 		if s.opts.Media == nil {
 			writeErr(w, http.StatusBadRequest, "解码试听需要 ffmpeg；去掉 decode 取原始字节")
 			return
@@ -623,6 +694,10 @@ func (s *Server) resolveAssetFile(ctx context.Context, id string, spec media.Spe
 		s.assetMu.Unlock()
 		return "", 0, http.StatusNotFound, "asset 不存在或 epoch 已变"
 	}
+	if a.kind == assetKindImage {
+		s.assetMu.Unlock()
+		return "", 0, http.StatusBadRequest, "图片资产不能用于送话"
+	}
 	if assetMatchesSpec(a.format, a.sampleRate, a.channels, a.sampleFormat, spec) {
 		p, d := a.path, a.durationMs
 		s.assetMu.Unlock()
@@ -679,6 +754,9 @@ func (s *Server) resolveAssetWAV(ctx context.Context, id string, sr, ch int) (co
 	if !ok {
 		return core.PCM{}, 0, http.StatusNotFound, "asset 不存在或 epoch 已变"
 	}
+	if a.kind == assetKindImage {
+		return core.PCM{}, 0, http.StatusBadRequest, "图片资产不能用于送话"
+	}
 	if matched {
 		raw, _, err := s.copyAsset(id)
 		if err != nil {
@@ -704,4 +782,22 @@ func (s *Server) resolveAssetWAV(ctx context.Context, id string, sr, ch int) (co
 		return core.PCM{}, 0, http.StatusInternalServerError, "转码产物非 WAV"
 	}
 	return p, wavDurationMs(p), 0, ""
+}
+
+func (s *Server) isImageAsset(id string) bool {
+	s.assetMu.Lock()
+	a, ok := s.assets[id]
+	s.assetMu.Unlock()
+	return ok && a.kind == assetKindImage
+}
+
+func (s *Server) readPhotoImage(id string) ([]byte, string, error) {
+	data, a, err := s.copyAsset(id)
+	if err != nil {
+		return nil, "", err
+	}
+	if a.kind != assetKindImage {
+		return nil, "", fmt.Errorf("不是图片资产")
+	}
+	return data, a.format, nil
 }

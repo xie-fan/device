@@ -119,20 +119,14 @@ func TestSpeakPermitReleasedOnTurnTerminal(t *testing.T) {
 	}
 }
 
-func TestPUTAllowlistWritesOnCreated(t *testing.T) {
+func TestPUTAllowlistWritesOnStopped(t *testing.T) {
 	e := newEnv(t)
-	// PUT 的树引用重新挂靠要求 (env, ent, type) 三级都在树上。
-	if code, body := e.post(t, "/registry/environments/local/enterprises", map[string]any{
-		"name": "acme 厂", "short_name": "acme",
-	}); code != http.StatusCreated {
-		t.Fatalf("建 acme 厂商应 201，得到 %d %s", code, body)
+	// Phase 12：临时覆盖以产品为参照，没 start 过的设备 PUT /config 是 409
+	// （见 start_product_test.go）。这里先起一次、停下来再改。
+	e.createStartReady(t, "sim_putw")
+	if code, body := e.post(t, "/devices/sim_putw/stop", nil); code != http.StatusOK {
+		t.Fatalf("stop 应 200，得到 %d %s", code, body)
 	}
-	if code, body := e.post(t, "/registry/environments/local/enterprises/acme/device_types", map[string]any{
-		"name": "A3 音箱", "short_name": "A3",
-	}); code != http.StatusCreated {
-		t.Fatalf("建 acme/A3 类型应 201，得到 %d %s", code, body)
-	}
-	e.createDevice(t, "sim_putw")
 	// server 已出 allowlist：url 由环境派生，直设 → 400。
 	if code, body := e.put(t, "/devices/sim_putw/config", map[string]any{
 		"server": map[string]any{"url": "ws://127.0.0.1:9/"},
@@ -162,21 +156,12 @@ func TestPUTAllowlistWritesOnCreated(t *testing.T) {
 	if intField(m, "playing_mode") != 2 {
 		t.Fatalf("playing_mode 未写入: %s", gbody)
 	}
-	// Phase 11：没 start 就没挂靠，三级是空的。
-	if strField(m, "environment") != "" {
-		t.Fatalf("未挂靠的设备 environment 应为空: %s", gbody)
-	}
 	if strField(m, "firmware_version") != "9.9.9" || strField(m, "nic_type") != "4g" {
 		t.Fatalf("firmware/nic 未写入: %s", gbody)
 	}
 	audio, _ := m["audio"].(map[string]any)
 	if intField(audio, "slice_ms") != 50 {
 		t.Fatalf("audio.slice_ms 未写入: %s", gbody)
-	}
-	// server.url 也是挂靠派生的，没 start 就是空。
-	server, _ := m["server"].(map[string]any)
-	if strField(server, "url") != "" {
-		t.Fatalf("未挂靠的设备 server.url 应为空: %s", gbody)
 	}
 	uuid, _ := m["uuid"].(map[string]any)
 	if intField(uuid, "min") != 10 || intField(uuid, "max") != 20 {
@@ -214,11 +199,18 @@ func TestPUTAutoRegisterFalse400(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("Created PUT auto_report=false 应 400，得到 %d %s", code, body)
 	}
+	// 上面两条是静态检查，先于「选没选过产品」，所以没 start 过也是 400；
+	// 合法值要落进覆盖，得先有产品作参照。
+	ins, gen := e.startDevice(t, "sim_arf")
+	e.waitReady(t, "sim_arf", ins, gen)
+	if code, body := e.post(t, "/devices/sim_arf/stop", nil); code != http.StatusOK {
+		t.Fatalf("stop 应 200，得到 %d %s", code, body)
+	}
 	code, body = e.put(t, "/devices/sim_arf/config", map[string]any{
 		"behavior": map[string]any{"auto_register": true, "auto_report": true},
 	})
 	if code != http.StatusOK {
-		t.Fatalf("Created PUT auto_*=true 应 200，得到 %d %s", code, body)
+		t.Fatalf("Stopped PUT auto_*=true 应 200，得到 %d %s", code, body)
 	}
 }
 
@@ -233,14 +225,14 @@ func TestPUTAutoRegisterFalseOnRunning400Not409(t *testing.T) {
 	}
 }
 
-func TestPOSTDeviceAutoRegisterFalse400(t *testing.T) {
+// Phase 12：属性不再随建设备走，auto_register=false 改由 start 的覆盖拦。
+func TestStartOverrideAutoRegisterFalse400(t *testing.T) {
 	e := newEnv(t)
-	dev := e.deviceBody("sim_arfp")
-	beh, _ := dev["behavior"].(map[string]any)
-	beh["auto_register"] = false
-	code, body := e.post(t, "/devices", e.createBody(dev))
-	if code != http.StatusBadRequest {
-		t.Fatalf("POST /devices auto_register=false 应 400，得到 %d %s", code, body)
+	e.createDevice(t, "sim_arfp")
+	req := e.seedBinding()
+	req["overrides"] = map[string]any{"behavior.auto_register": false}
+	if code, body := e.post(t, "/devices/sim_arfp/start", req); code != http.StatusBadRequest {
+		t.Fatalf("start 覆盖 auto_register=false 应 400，得到 %d %s", code, body)
 	}
 }
 

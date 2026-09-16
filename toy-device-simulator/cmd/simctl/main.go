@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -52,26 +53,32 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
   down      按 pid 文件停 manager
   status    manager 是否活着，几台设备
   devices   列设备。过滤：--env 环境名；--enterprise / --device-type 简称（不是名称）
-  assets    列音频库
+  assets    列素材库
+  products  列产品
   run       挑设备 → 挂靠 → 送话 → 读判语（核心）
-            设备册条目不带挂靠，三级是「这次挂成什么」，必须给全：
+            设备册条目只有 device_id，三级是「这次挂成什么」，必须给全：
             --env / --enterprise / --device-type 缺一个就报错。
               给了 device_id → 就那一台
               没给           → 从设备册随机挑（--count 决定几台）
             输出始终是数组
-            --asset ID           必填，音频库资产
+            --asset ID           必填，素材库里的音频资产
             --env NAME           环境名（挂靠，不是筛选）
             --enterprise SHORT   厂商简称（挂靠）
             --device-type SHORT  设备类型简称（挂靠）
+            --product P          产品 id；不给则 start 不带，服务端用类型默认产品
+            --set 路径=值        临时覆盖，可重复。值先按 JSON 解析，失败当字符串。
+                                 带引号才是字符串（nic_iccid="8986"）
             --count N            没给 device_id 时随机挑几台，默认 1，0=整册全跑
             --parallel           多台时并行（默认串行）
-            --dirty              Running 且 overridden 时放行，否则报错不动它
+            --dirty              在跑且覆盖≠这次 --set 时放行，否则报错不动它
             --force              抢占别的 run 的租约（确认那个 run 已经死了再用）
             跑之前先 POST /devices/{id}/lease 占住，跑完还——两个并发 run 不会
             撞同一台。随机档撞上被占的会换下一台；跑失败不换台，故障照报。
             租约不挡人在调试台上的操作，只在 run 之间生效。
-            Created/Stopped 且 overridden 时自动 POST /config/reset 再 start（无声）
+            Created/Stopped 且有覆盖时自动 POST /config/reset 再 start（无声）
             没启动就 start + wait_ready
+            在跑：覆盖与这次 --set 不同才报脏；挂靠/产品/--set 静默不生效
+            换产品或改 ICCID 会让真实服务端重新校验这台设备
   turn      一轮的事件流与帧统计
             位置参数 device_id；--turn ID --instance ID 必填
   audio     把上行或下行音频落到文件（stdout 仍是 JSON 指针）
@@ -87,18 +94,20 @@ var (
 	httpc  *http.Client // nil = http.DefaultClient
 )
 
-var errDirty = errors.New("这台在跑且当前值≠定义，我不动它")
+var errDirty = errors.New("这台在跑，身上的临时覆盖和这次 --set 不一致，我不动它")
 
 type deviceRow struct {
-	DeviceID        string `json:"device_id"`
-	InstanceID      string `json:"instance_id"`
-	InstanceState   string `json:"instance_state"`
-	ConnectionState string `json:"connection_state"`
-	ConnGeneration  int    `json:"conn_generation"`
-	Environment     string `json:"environment"`
-	Enterprise      string `json:"enterprise"`
-	DeviceType      string `json:"device_type"`
-	Overridden      bool   `json:"overridden"`
+	DeviceID        string         `json:"device_id"`
+	InstanceID      string         `json:"instance_id"`
+	InstanceState   string         `json:"instance_state"`
+	ConnectionState string         `json:"connection_state"`
+	ConnGeneration  int            `json:"conn_generation"`
+	Environment     string         `json:"environment"`
+	Enterprise      string         `json:"enterprise"`
+	DeviceType      string         `json:"device_type"`
+	Overridden      bool           `json:"overridden"`
+	Product         string         `json:"product"`
+	Overrides       map[string]any `json:"overrides"`
 	// 被别的 run 占着时才有值。devices 动词要能答「为什么我的 run 说全被占了」。
 	LeasedUntil string `json:"leased_until,omitempty"`
 	LeaseOwner  string `json:"lease_owner,omitempty"`
@@ -110,17 +119,26 @@ type deviceRow struct {
 }
 
 type runResult struct {
-	DeviceID        string `json:"device_id"`
-	InstanceID      string `json:"instance_id"`
-	TurnID          string `json:"turn_id"`
-	Verdict         string `json:"verdict"`
-	TurnEndReason   string `json:"turn_end_reason"`
-	UplinkEndReason string `json:"uplink_end_reason"`
-	ReplyKind       string `json:"reply_kind"`
-	UpFormat        string `json:"up_format"`
-	DownFormat      string `json:"down_format"`
-	DownBytes       int    `json:"down_bytes"`
-	Overridden      bool   `json:"overridden"`
+	DeviceID        string         `json:"device_id"`
+	InstanceID      string         `json:"instance_id"`
+	TurnID          string         `json:"turn_id"`
+	Verdict         string         `json:"verdict"`
+	TurnEndReason   string         `json:"turn_end_reason"`
+	UplinkEndReason string         `json:"uplink_end_reason"`
+	ReplyKind       string         `json:"reply_kind"`
+	UpFormat        string         `json:"up_format"`
+	DownFormat      string         `json:"down_format"`
+	DownBytes       int            `json:"down_bytes"`
+	Overridden      bool           `json:"overridden"`
+	Product         string         `json:"product"`
+	Overrides       map[string]any `json:"overrides"`
+	Photo           photoSummary   `json:"photo"`
+}
+
+type photoSummary struct {
+	Command  bool   `json:"command"`
+	Uploaded bool   `json:"uploaded"`
+	Skipped  string `json:"skipped"`
 }
 
 func main() { os.Exit(simctl(os.Args[1:])) }
@@ -146,6 +164,8 @@ func simctl(args []string) int {
 		return cmdDevices(listen, rest)
 	case "assets":
 		return cmdAssets(listen, rest)
+	case "products":
+		return cmdProducts(listen, rest)
 	case "run":
 		return cmdRun(listen, rest)
 	case "turn":
@@ -496,17 +516,63 @@ func cmdAssets(listen string, args []string) int {
 	return 0
 }
 
+func cmdProducts(listen string, args []string) int {
+	fs := newFS("products")
+	addListen(fs, &listen)
+	if code, ok := parseFS(fs, args); !ok {
+		return code
+	}
+	var raw json.RawMessage
+	if err := httpGet(listen, "/products", &raw); err != nil {
+		return fail(err.Error())
+	}
+	_, _ = stdout.Write(raw)
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		fmt.Fprintln(stdout)
+	}
+	return 0
+}
+
+// setFlag 收集可重复的 --set。
+type setFlag []string
+
+func (s *setFlag) String() string { return strings.Join(*s, ", ") }
+func (s *setFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// parseSets 只按第一个 = 切。值先按 JSON 解析，失败当字符串。
+func parseSets(vals []string) (map[string]any, error) {
+	out := make(map[string]any, len(vals))
+	for _, v := range vals {
+		path, val, ok := strings.Cut(v, "=")
+		if !ok || path == "" {
+			return nil, fmt.Errorf("--set 要 路径=值，得到 %q", v)
+		}
+		var parsed any
+		if json.Unmarshal([]byte(val), &parsed) != nil {
+			parsed = val
+		}
+		out[path] = parsed
+	}
+	return out, nil
+}
+
 func cmdRun(listen string, args []string) int {
 	fs := newFS("run")
-	var env, ent, dtype, asset string
+	var env, ent, dtype, asset, product string
+	var sets setFlag
 	var count int
 	var parallel, dirty, force bool
 	addListen(fs, &listen)
 	addFilter(fs, &env, &ent, &dtype)
 	fs.StringVar(&asset, "asset", "", "音频库资产 id")
+	fs.StringVar(&product, "product", "", "产品 id")
+	fs.Var(&sets, "set", "临时覆盖 路径=值，可重复")
 	fs.IntVar(&count, "count", 1, "随机挑几台（0=全部）")
 	fs.BoolVar(&parallel, "parallel", false, "N 台并行")
-	fs.BoolVar(&dirty, "dirty", false, "Running 且 overridden 时放行")
+	fs.BoolVar(&dirty, "dirty", false, "在跑且覆盖≠这次 --set 时放行")
 	fs.BoolVar(&force, "force", false, "抢占别的 run 的租约")
 	if code, ok := parseFS(fs, args); !ok {
 		return code
@@ -518,7 +584,11 @@ func cmdRun(listen string, args []string) int {
 	if env == "" || ent == "" || dtype == "" {
 		return fail("run 需要 --env / --enterprise / --device-type 三级给全（挂靠，不是筛选；简称不是名称）")
 	}
-	b := bind{Env: env, Ent: ent, Typ: dtype}
+	overrides, err := parseSets(sets)
+	if err != nil {
+		return fail(err.Error())
+	}
+	b := bind{Env: env, Ent: ent, Typ: dtype, Product: product, Overrides: overrides}
 	devs, err := listDevices(listen)
 	if err != nil {
 		return fail(err.Error())
@@ -750,7 +820,7 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 	if upEnd == "" {
 		upEnd = speak.UplinkEndReason
 	}
-	return runResult{
+	r := runResult{
 		DeviceID:        d.DeviceID,
 		InstanceID:      ins,
 		TurnID:          speak.TurnID,
@@ -762,7 +832,35 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 		DownFormat:      turn.DownFormat,
 		DownBytes:       turn.DownBytes,
 		Overridden:      over,
-	}, nil
+	}
+	// 失败保持零值，不让 run 失败。既有桩没有这两个路由。
+	var snap struct {
+		Product   string         `json:"product"`
+		Overrides map[string]any `json:"overrides"`
+	}
+	if httpGet(listen, "/devices/"+url.PathEscape(d.DeviceID), &snap) == nil {
+		r.Product, r.Overrides = snap.Product, snap.Overrides
+	}
+	var evWrap struct {
+		Events []map[string]any `json:"events"`
+	}
+	eq := "/devices/" + url.PathEscape(d.DeviceID) + "/events?instance_id=" + url.QueryEscape(ins)
+	if httpGet(listen, eq, &evWrap) == nil {
+		for _, e := range evWrap.Events {
+			if s, _ := e["turn_id"].(string); s != speak.TurnID {
+				continue
+			}
+			switch e["event_type"] {
+			case "photo_command":
+				r.Photo.Command = true
+			case "photo_uploaded":
+				r.Photo.Uploaded = true
+			case "photo_skipped":
+				r.Photo.Skipped, _ = e["reason"].(string)
+			}
+		}
+	}
+	return r, nil
 }
 
 // annotateNotReady 给起不来的错误补上原因。`generation_gone` 这类错误自己说不出
@@ -781,8 +879,35 @@ func annotateNotReady(listen, id string, err error) error {
 	return fmt.Errorf("%w（last_error: %s）", err, row.LastError)
 }
 
-// bind 是这次 run 的挂靠三级。Phase 11：设备册条目不带挂靠，start 时必须给。
-type bind struct{ Env, Ent, Typ string }
+// bind 是这次 run 的挂靠三级，外加可选产品和临时覆盖（start 时带上）。
+type bind struct {
+	Env, Ent, Typ string
+	Product       string
+	Overrides     map[string]any
+}
+
+// overridesEqual：nil 与空 map 相等。JSON 数字是 float64，与 parseSets 一致。
+func overridesEqual(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return len(a) == 0 || reflect.DeepEqual(a, b)
+}
+
+// dirtyBlocked 在跑的设备要不要拦。没覆盖：静默复用。有覆盖且 ≠ 这次 --set：拦。
+// Overridden 但覆盖 map 空、--set 也空：当「当前值≠定义」，沿用既有门禁。
+func dirtyBlocked(d deviceRow, sets map[string]any, dirty bool) bool {
+	if dirty {
+		return false
+	}
+	if !d.Overridden && len(d.Overrides) == 0 {
+		return false
+	}
+	if !overridesEqual(d.Overrides, sets) {
+		return true
+	}
+	return d.Overridden && len(d.Overrides) == 0 && len(sets) == 0
+}
 
 func ensureReady(listen string, d deviceRow, b bind, dirty bool) (instanceID string, overridden bool, err error) {
 	over := d.Overridden
@@ -799,9 +924,16 @@ func ensureReady(listen string, d deviceRow, b bind, dirty bool) (instanceID str
 			InstanceID     string `json:"instance_id"`
 			ConnGeneration int    `json:"conn_generation"`
 		}
-		if err := httpPost(listen, idPath+"/start", map[string]any{
+		body := map[string]any{
 			"environment": b.Env, "enterprise": b.Ent, "device_type": b.Typ,
-		}, &st); err != nil {
+		}
+		if b.Product != "" {
+			body["product"] = b.Product
+		}
+		if len(b.Overrides) > 0 {
+			body["overrides"] = b.Overrides
+		}
+		if err := httpPost(listen, idPath+"/start", body, &st); err != nil {
 			return "", over, err
 		}
 		if st.InstanceID == "" {
@@ -814,12 +946,12 @@ func ensureReady(listen string, d deviceRow, b bind, dirty bool) (instanceID str
 		}
 		return st.InstanceID, over, nil
 	case "running":
-		if over && !dirty {
+		if dirtyBlocked(d, b.Overrides, dirty) {
 			return "", over, errDirty
 		}
 		return d.InstanceID, over, nil
 	case "starting":
-		if over && !dirty {
+		if dirtyBlocked(d, b.Overrides, dirty) {
 			return "", over, errDirty
 		}
 		if err := httpPost(listen, idPath+"/wait_ready", map[string]any{

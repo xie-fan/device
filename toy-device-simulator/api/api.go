@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -18,7 +19,6 @@ import (
 type Options struct {
 	Config        manager.Config
 	Dial          core.DialFunc
-	TemplatesDir  string
 	RecordingsDir string
 	// RegistryPath 配置树落盘路径；空则 configs/registry.yaml。
 	RegistryPath   string
@@ -30,10 +30,11 @@ type Options struct {
 }
 
 type Server struct {
-	opts Options
-	mux  *http.ServeMux
-	reg  *manager.Registry
-	bus  *globalBus
+	opts     Options
+	mux      *http.ServeMux
+	reg      *manager.Registry
+	products *manager.Products
+	bus      *globalBus
 
 	mu        sync.Mutex
 	devices   map[string]*managedDevice
@@ -55,14 +56,23 @@ func New(opts Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	assetsRoot := opts.Config.AssetsRoot
+	if assetsRoot == "" {
+		assetsRoot = filepath.Join(os.TempDir(), "toy-assets")
+	}
+	ps, err := manager.LoadProducts(filepath.Join(filepath.Dir(assetsRoot), "products.yaml"))
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
-		opts:    opts,
-		reg:     reg,
-		bus:     newGlobalBus(opts.Config.EventLogMaxEntries),
-		devices: map[string]*managedDevice{},
-		tombs:   map[string]*tombstone{},
-		assets:  map[string]*assetObj{},
-		runs:    map[string]*scenarioRun{},
+		opts:     opts,
+		reg:      reg,
+		products: ps,
+		bus:      newGlobalBus(opts.Config.EventLogMaxEntries),
+		devices:  map[string]*managedDevice{},
+		tombs:    map[string]*tombstone{},
+		assets:   map[string]*assetObj{},
+		runs:     map[string]*scenarioRun{},
 	}
 	s.loadAssetIndex()
 	s.loadDevices()
@@ -82,8 +92,6 @@ func New(opts Options) (http.Handler, error) {
 	mux.HandleFunc("GET /devices/{id}/config", s.handleGetConfig)
 	mux.HandleFunc("PUT /devices/{id}/config", s.handlePutConfig)
 	mux.HandleFunc("POST /devices/{id}/config/reset", s.handleResetConfig)
-	mux.HandleFunc("GET /devices/{id}/definition", s.handleGetDefinition)
-	mux.HandleFunc("PUT /devices/{id}/definition", s.handlePutDefinition)
 
 	mux.HandleFunc("POST /devices/{id}/lease", s.handlePostLease)
 	mux.HandleFunc("DELETE /devices/{id}/lease", s.handleDeleteLease)
@@ -110,10 +118,11 @@ func New(opts Options) (http.Handler, error) {
 	mux.HandleFunc("POST /devices/batch/stop", s.handleBatchStop)
 	mux.HandleFunc("POST /devices/batch/delete", s.handleBatchDelete)
 
-	mux.HandleFunc("POST /templates", s.handlePostTemplate)
-	mux.HandleFunc("GET /templates", s.handleListTemplates)
-	mux.HandleFunc("GET /templates/{id}", s.handleGetTemplate)
-	mux.HandleFunc("DELETE /templates/{id}", s.handleDeleteTemplate)
+	mux.HandleFunc("GET /products", s.handleListProducts)
+	mux.HandleFunc("POST /products", s.handlePostProduct)
+	mux.HandleFunc("GET /products/{id}", s.handleGetProduct)
+	mux.HandleFunc("PUT /products/{id}", s.handlePutProduct)
+	mux.HandleFunc("DELETE /products/{id}", s.handleDeleteProduct)
 
 	mux.HandleFunc("POST /wait", s.handleWait)
 	mux.HandleFunc("GET /ws/events", s.handleWSEvents)

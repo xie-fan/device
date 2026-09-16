@@ -24,9 +24,11 @@ type Step struct {
 	AfterEventSeq json.RawMessage `json:"after_event_seq"`
 	StaggerMs     int             `json:"stagger_ms"`
 	// Phase 11：batch_start 要给挂靠三级——设备册条目本身不带挂靠了。
-	Environment string `json:"environment"`
-	Enterprise  string `json:"enterprise"`
-	DeviceType  string `json:"device_type"`
+	Environment string         `json:"environment"`
+	Enterprise  string         `json:"enterprise"`
+	DeviceType  string         `json:"device_type"`
+	Product     string         `json:"product"`
+	Overrides   map[string]any `json:"overrides"`
 }
 
 type Spec struct {

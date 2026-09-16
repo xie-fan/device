@@ -5,7 +5,7 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 
 # simctl
 
-任务级 CLI，对着 manager 说话：选已有设备、送音频库素材、读判语。不是 MCP；`cmd/speak` 是独立单设备工具，不是这里的入口。
+任务级 CLI，对着 manager 说话：选已有设备、送素材库里的音频、读判语。不是 MCP；`cmd/speak` 是独立单设备工具，不是这里的入口。
 
 ## 定位与前提
 
@@ -16,8 +16,8 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 ## 首次接入
 
 1. 用 `status` 检查 Manager。已运行就复用；未运行且任务需要启动时用 `up`，再确认状态。仅查看状态的请求不启动进程。自定义地址在后续调用中保持一致。
-2. 用 `devices` 和 `assets` 获取真实 ID，确认目标设备所属环境和素材。不猜 ID；列表为空时说明缺少什么，引导用户在调试 UI 准备设备或导入素材，再重新查询。设备与素材准备不在此 CLI 的范围内。
-3. 需要送话时，先读 [references/run.md](references/run.md)，确认选择范围和配置副作用，再对选定设备执行 `run`。只读排障直接查历史或轮次，不为获得结果额外送话。
+2. 用 `devices`、`products` 和 `assets` 获取真实 ID，确认目标设备、产品和素材。不猜 ID；列表为空时说明缺少什么，引导用户在调试 UI 准备设备、产品或导入素材，再重新查询。这些准备工作不在此 CLI 的范围内。
+3. 需要送话时，先读 [references/run.md](references/run.md)，确认选择范围、产品与覆盖、配置副作用，再对选定设备执行 `run`。只读排障直接查历史或轮次，不为获得结果额外送话。
 4. 读取每台设备的结果，依据本次测试目标判断；需要证据时读 [references/inspect.md](references/inspect.md)，用返回的 `instance_id` / `turn_id` 下钻。
 
 已有 Manager、设备和素材时的最短路径（占位符必须替换为查询所得 ID）：
@@ -26,13 +26,19 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 go run ./cmd/simctl status
 go run ./cmd/simctl devices
 go run ./cmd/simctl assets
-go run ./cmd/simctl run <device_id> --asset <asset_id>
+go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --asset <asset_id>
 go run ./cmd/simctl turn <device_id> --instance <instance_id> --turn <turn_id>
 ```
 
 ## 共享环境与完成条件
 
 `up` 编译并后台启动 Manager，幂等且不自动关；探活用 `GET /devices`，没有 `/healthz`。pid 和日志在项目的 `data/manager.pid`、`data/manager.log`。真实服务地址使用本地配置树（`up --registry`，见帮助），不写入受跟踪配置。
+
+Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
+- `POST /registry/environments`，body 为 `name`、`url`，url 可带 `{enterprise}` 占位。
+- `POST /registry/environments/{env}/enterprises` 和 `POST /registry/environments/{env}/enterprises/{short}/device_types`，body 为 `name`、`short_name`；设备类型还可带 `default_product`（start 不指定产品时用它）。
+
+路径里的环境名要 URL 编码。这组接口会整份重写 `--registry` 指向的文件，文件头注释会丢，改完补回。
 
 人和 agent 共用 Manager。只在用户要求停止时用 `down`，不把它作为测试后的自动清理步骤。
 

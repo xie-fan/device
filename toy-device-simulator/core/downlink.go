@@ -1,7 +1,10 @@
 package core
 
 import (
+	"cmp"
+	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -74,7 +77,8 @@ func (d *DeviceInstance) handleAudioDownlink(raw []byte) {
 		return
 	}
 
-	matched := d.slot.Occupied() && h.UUID == d.slot.UUID()
+	photoTTS := d.turn != nil && d.turn.waitingPhoto && h.UUID == 0
+	matched := d.slot.Occupied() && (h.UUID == d.slot.UUID() || photoTTS)
 	if matched && h.Stage == protocol.StageUploading {
 		_, n := d.appendChunkLocked("tts_chunk", d.slot.ID(), len(view.Payload))
 		acc = append(acc, n)
@@ -149,11 +153,15 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 	var speak []chan SpeakableResult
 	var speakCode int
 	var speakState ConnState
+	var photoJob *photoUploadJob
 	d.deviceMu.Lock()
 	defer func() {
 		d.deviceMu.Unlock()
 		notifySpeakable(speak, speakCode, speakState)
 		d.finishCritical(acc, tn)
+		if photoJob != nil {
+			go d.runPhotoUpload(*photoJob)
+		}
 	}()
 	if err != nil {
 		_, n := d.appendEventLocked("protocol_error", "", "管理信封无法解码", "", "", "")
@@ -199,11 +207,100 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 		if cmd.NeedAck == 1 {
 			d.enqueueAckLocked(uint32(cmd.SequenceNumber), protocol.DownlinkCommand, 0, env.Topic)
 		}
+		photo, isPhoto := protocol.DecodePhotoCommand(env.Data)
+		if isPhoto {
+			photoJob = d.handlePhotoCommandLocked(photo, turnID, related, &acc)
+		}
 		if related && d.turn != nil {
 			d.turn.hasCmd = true
 			d.routeRelatedLocked(raw, &acc, &tn)
 		}
 	}
+}
+
+type photoUploadJob struct {
+	turnID      string
+	questionKey string
+	imageID     string
+	replyFormat string
+	interval    time.Duration
+
+	uuid uint32
+	tr   *turnRuntime
+}
+
+func (d *DeviceInstance) handlePhotoCommandLocked(photo protocol.PhotoCommand, turnID string, related bool, acc *[]EventNotify) *photoUploadJob {
+	_, n := d.appendEventLocked("photo_command", turnID, photo.QuestionKey, "", "", "")
+	*acc = append(*acc, n)
+	if related && d.turn != nil && photo.StartVoice != "" {
+		if raw, err := base64.StdEncoding.DecodeString(photo.StartVoice); err == nil && len(raw) > 0 {
+			path := filepath.Join(filepath.Dir(d.turn.downPath), "photo_start_voice."+d.cfg.Audio.Format)
+			d.recorder.SubmitPCM(path, raw, false)
+		}
+	}
+	feat := d.cfg.Features.Photo
+	skip := ""
+	switch {
+	case !feat.Enabled:
+		skip = "功能没开"
+	case feat.Image == "":
+		skip = "没配图"
+	case d.photoImage == nil:
+		skip = "读图失败"
+	}
+	if skip != "" {
+		_, n := d.appendEventLocked("photo_skipped", turnID, skip, "", "", "")
+		*acc = append(*acc, n)
+		return nil
+	}
+	if related && d.turn != nil {
+		d.turn.waitingPhoto = true
+		stopTimer(d.turn.followup)
+		d.turn.followup = nil
+	}
+	reply := ""
+	if !feat.ServerDefaultReply {
+		reply = d.cfg.Audio.Format
+	}
+	return &photoUploadJob{
+		turnID:      turnID,
+		questionKey: photo.QuestionKey,
+		imageID:     feat.Image,
+		replyFormat: reply,
+		interval:    time.Duration(cmp.Or(feat.SliceIntervalMs, 50)) * time.Millisecond,
+		uuid:        d.allocUUIDLocked(),
+		tr:          d.turn,
+	}
+}
+
+func (d *DeviceInstance) runPhotoUpload(job photoUploadJob) {
+	data, format, err := d.photoImage(job.imageID)
+	if err != nil || len(data) == 0 {
+		d.notePhotoSkipped(job.turnID, "读图失败")
+		return
+	}
+	frames, err := protocol.BuildImageFrames(data, format, job.questionKey, job.replyFormat, job.uuid)
+	if err != nil {
+		d.notePhotoSkipped(job.turnID, "读图失败")
+		return
+	}
+	for i, raw := range frames {
+		if i > 0 {
+			time.Sleep(job.interval)
+		}
+		d.enqueueOrFinalize(Frame{Kind: KindManage, Raw: raw, turn: job.tr})
+	}
+	d.deviceMu.Lock()
+	_, n := d.appendEventLocked("photo_uploaded", job.turnID, fmt.Sprintf("bytes=%d slices=%d", len(data), len(frames)), "", "", "")
+	d.deviceMu.Unlock()
+	d.finishCritical([]EventNotify{n}, TerminalNotify{})
+}
+
+func (d *DeviceInstance) notePhotoSkipped(turnID, reason string) {
+	d.deviceMu.Lock()
+	_, n := d.appendEventLocked("photo_skipped", turnID, reason, "", "", "")
+	d.deviceMu.Unlock()
+	d.finishCritical([]EventNotify{n}, TerminalNotify{})
 }
 
 func (d *DeviceInstance) handleUnprefixedJSON(raw []byte) {
@@ -352,7 +449,9 @@ func (d *DeviceInstance) applyWaitingTimersLocked(raw []byte) {
 	switch raw[0] {
 	case protocol.FirstAudio:
 		view := protocol.Inspect(raw)
-		if view.OKHeader && view.Header.UUID == d.slot.UUID() && view.Header.Stage == protocol.StageUploading {
+		uuidOK := view.OKHeader && view.Header.Stage == protocol.StageUploading &&
+			(view.Header.UUID == d.slot.UUID() || (d.turn.waitingPhoto && view.Header.UUID == 0))
+		if uuidOK {
 			d.armTTSIdleLocked()
 			stopTimer(d.turn.firstReply)
 			d.turn.firstReply = nil
@@ -361,6 +460,10 @@ func (d *DeviceInstance) applyWaitingTimersLocked(raw []byte) {
 		}
 	case protocol.FirstManage:
 		if d.turn.hasTTS {
+			return
+		}
+		if d.turn.waitingPhoto {
+			d.armPhotoReplyLocked()
 			return
 		}
 		d.armFollowupLocked()
@@ -498,6 +601,17 @@ func (d *DeviceInstance) armFollowupLocked() {
 	if dur <= 0 {
 		dur = 5 * time.Second
 	}
+	turnID := d.slot.ID()
+	d.turn.followup = time.AfterFunc(dur, func() { d.onFollowup(turnID) })
+}
+
+// armPhotoReplyLocked 停掉 followup，改用拍照回复超时（0 → 60s）。到期走同一条 onFollowup。
+func (d *DeviceInstance) armPhotoReplyLocked() {
+	if d.turn == nil {
+		return
+	}
+	stopTimer(d.turn.followup)
+	dur := time.Duration(cmp.Or(d.cfg.Features.Photo.ReplyTimeoutSec, 60)) * time.Second
 	turnID := d.slot.ID()
 	d.turn.followup = time.AfterFunc(dur, func() { d.onFollowup(turnID) })
 }

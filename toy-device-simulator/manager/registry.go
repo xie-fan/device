@@ -25,8 +25,9 @@ var (
 )
 
 type DeviceType struct {
-	Name      string `yaml:"name" json:"name"`
-	ShortName string `yaml:"short_name" json:"short_name"`
+	Name           string `yaml:"name" json:"name"`
+	ShortName      string `yaml:"short_name" json:"short_name"`
+	DefaultProduct string `yaml:"default_product,omitempty" json:"default_product"`
 }
 
 type Enterprise struct {
@@ -304,9 +305,19 @@ func (r *Registry) AddEnterprise(envName, name, short string) error {
 	return r.saveLocked()
 }
 
-func (r *Registry) UpdateEnterpriseName(envName, short, name string) error {
+// UpdateEnterprise 改名，newShort 非空且不同则连简称一起改。
+//
+// 简称是 wire 值，Phase 11 之前它还被焊在每条设备定义里，改了会让一堆落盘定义
+// 指向不存在的节点，所以当时禁止。现在设备册不引用配置树了（挂靠是 start 时给的），
+// 改简称只动树本身；正在跑的实例把旧值带在本次连接里，下次 start 才用新的。
+func (r *Registry) UpdateEnterprise(envName, short, name, newShort string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("厂商名称必填")
+	}
+	if newShort != "" && newShort != short {
+		if err := config.ValidatePathComponent(newShort); err != nil {
+			return fmt.Errorf("厂商简称: %w", err)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -317,6 +328,12 @@ func (r *Registry) UpdateEnterpriseName(envName, short, name string) error {
 	ent := findEntLocked(env, short)
 	if ent == nil {
 		return fmt.Errorf("%w: 厂商 %s", ErrRegistryNotFound, short)
+	}
+	if newShort != "" && newShort != short {
+		if findEntLocked(env, newShort) != nil {
+			return fmt.Errorf("%w: 厂商简称 %s 已存在", ErrRegistryConflict, newShort)
+		}
+		ent.ShortName = newShort
 	}
 	ent.Name = name
 	return r.saveLocked()
@@ -363,9 +380,15 @@ func (r *Registry) AddDeviceType(envName, entShort, name, short string) error {
 	return r.saveLocked()
 }
 
-func (r *Registry) UpdateDeviceTypeName(envName, entShort, short, name string) error {
+// UpdateDeviceType 改名，newShort 非空且不同则连简称一起改。理由同 UpdateEnterprise。
+func (r *Registry) UpdateDeviceType(envName, entShort, short, name, newShort string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("类型名称必填")
+	}
+	if newShort != "" && newShort != short {
+		if err := config.ValidatePathComponent(newShort); err != nil {
+			return fmt.Errorf("类型简称: %w", err)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -380,6 +403,12 @@ func (r *Registry) UpdateDeviceTypeName(envName, entShort, short, name string) e
 	dt := findTypeLocked(ent, short)
 	if dt == nil {
 		return fmt.Errorf("%w: 类型 %s", ErrRegistryNotFound, short)
+	}
+	if newShort != "" && newShort != short {
+		if findTypeLocked(ent, newShort) != nil {
+			return fmt.Errorf("%w: 类型简称 %s 已存在", ErrRegistryConflict, newShort)
+		}
+		dt.ShortName = newShort
 	}
 	dt.Name = name
 	return r.saveLocked()
@@ -422,4 +451,57 @@ func (r *Registry) Resolve(envName, entShort, typeShort, deviceID string) (strin
 		return "", fmt.Errorf("%w: 厂商 %s 下无类型 %s", ErrRegistryNotFound, entShort, typeShort)
 	}
 	return SubstituteURL(env.URL, entShort, typeShort, deviceID), nil
+}
+
+func (r *Registry) lookupTypeLocked(envName, entShort, typeShort string) (*DeviceType, error) {
+	env := r.findEnvLocked(envName)
+	if env == nil {
+		return nil, fmt.Errorf("%w: 环境 %s", ErrRegistryNotFound, envName)
+	}
+	ent := findEntLocked(env, entShort)
+	if ent == nil {
+		return nil, fmt.Errorf("%w: 环境 %s 下无厂商 %s", ErrRegistryNotFound, envName, entShort)
+	}
+	dt := findTypeLocked(ent, typeShort)
+	if dt == nil {
+		return nil, fmt.Errorf("%w: 厂商 %s 下无类型 %s", ErrRegistryNotFound, entShort, typeShort)
+	}
+	return dt, nil
+}
+
+func (r *Registry) SetDeviceTypeDefaultProduct(envName, entShort, typeShort, product string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dt, err := r.lookupTypeLocked(envName, entShort, typeShort)
+	if err != nil {
+		return err
+	}
+	dt.DefaultProduct = product
+	return r.saveLocked()
+}
+
+func (r *Registry) DefaultProduct(envName, entShort, typeShort string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dt, err := r.lookupTypeLocked(envName, entShort, typeShort)
+	if err != nil {
+		return "", err
+	}
+	return dt.DefaultProduct, nil
+}
+
+func (r *Registry) ProductReferences(product string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var refs []string
+	for _, env := range r.envs {
+		for _, ent := range env.Enterprises {
+			for _, dt := range ent.DeviceTypes {
+				if dt.DefaultProduct == product {
+					refs = append(refs, env.Name+"/"+ent.ShortName+"/"+dt.ShortName)
+				}
+			}
+		}
+	}
+	return refs
 }

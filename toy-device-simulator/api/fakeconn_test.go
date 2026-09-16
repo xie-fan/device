@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"sync"
@@ -124,6 +125,8 @@ func startAuto(c *fakeConn, opts autoOpts) {
 	go func() {
 		sentTTS := false
 		sentFail := false
+		sentPhoto, sentPhotoReply := false, false
+		topicPrefix := "" // 例如 demo/A3/sim_x/，从 register 的 topic 里取
 		echoed := 0
 		for {
 			select {
@@ -138,6 +141,7 @@ func startAuto(c *fakeConn, opts autoOpts) {
 						continue
 					}
 					if len(env.Topic) >= len("/register/server") && env.Topic[len(env.Topic)-len("/register/server"):] == "/register/server" {
+						topicPrefix = env.Topic[:len(env.Topic)-len("register/server")]
 						ack, _ := protocol.EncodeManage(env.Topic[:len(env.Topic)-len("server")]+"client", protocol.RegisterAck{Code: 0})
 						c.Push(ack)
 					}
@@ -153,36 +157,84 @@ func startAuto(c *fakeConn, opts autoOpts) {
 					if !view.OKHeader || view.Header.Stage != protocol.StageUploading {
 						continue
 					}
+					if opts.photoCmd && !sentPhoto && topicPrefix != "" {
+						sentPhoto = true
+						c.Push(photoCommandFrame(topicPrefix, opts))
+					}
 					if opts.failJSON && !sentFail {
 						sentFail = true
 						c.Push([]byte(`{"RequestID":"r1","Code":1,"CodeMsg":"音频处理失败，请稍后重试","Data":null}`))
 						continue
 					}
-				if opts.replyTTS && !sentTTS {
-					sentTTS = true
-					format := opts.ttsFormat
-					if format == "" {
-						format = "pcm"
+					if opts.replyTTS && !sentTTS {
+						sentTTS = true
+						format := opts.ttsFormat
+						if format == "" {
+							format = "pcm"
+						}
+						sr := opts.ttsSampleRate
+						if sr == 0 {
+							sr = 16000
+						}
+						payload := opts.ttsPayload
+						if payload == nil {
+							payload = []byte{0x01, 0x02, 0x03, 0x04}
+						}
+						h := protocol.NewAudioHeader(format, protocol.StageUploading, 0, view.Header.UUID, uint32(len(payload)), uint32(sr))
+						if opts.needAck {
+							h.NeedAck = 1
+						}
+						frame, _ := protocol.EncodeAudioFrame(h, payload)
+						c.Push(frame)
 					}
-					sr := opts.ttsSampleRate
-					if sr == 0 {
-						sr = 16000
+				case protocol.FirstImage:
+					if !opts.photoReply || sentPhotoReply || len(msg) < 1+protocol.ImageHeaderBytes {
+						continue
 					}
-					payload := opts.ttsPayload
-					if payload == nil {
-						payload = []byte{0x01, 0x02, 0x03, 0x04}
+					h, err := protocol.DecodeImageHeader(msg[1:])
+					if err != nil || h.Stage != protocol.ImageStageFinished {
+						continue
 					}
-					h := protocol.NewAudioHeader(format, protocol.StageUploading, 0, view.Header.UUID, uint32(len(payload)), uint32(sr))
-					if opts.needAck {
-						h.NeedAck = 1
-					}
-					frame, _ := protocol.EncodeAudioFrame(h, payload)
-					c.Push(frame)
-				}
+					sentPhotoReply = true
+					go pushPhotoReply(c, opts)
 				}
 			case <-c.closed:
 				return
 			}
 		}
 	}()
+}
+
+// photoCommandFrame 照真实服务端 service/skills/camera.go 的形状拼一条拍照指令。
+func photoCommandFrame(topicPrefix string, opts autoOpts) []byte {
+	key := opts.photoKey
+	if key == "" {
+		key = "0123456789abcdef"
+	}
+	movement := map[string]any{"behavior": 601, "start_text": "好的，我拍一下"}
+	if len(opts.photoStartVoice) > 0 {
+		movement["start_voice"] = base64.StdEncoding.EncodeToString(opts.photoStartVoice)
+	}
+	cmd, _ := protocol.EncodeManage(topicPrefix+"command/client", map[string]any{
+		"code": 0, "message": "", "sequence_number": 0, "total": 1,
+		"movement": movement,
+		"data":     map[string]any{"Num": 1, "QuestionKey": key},
+	})
+	return cmd
+}
+
+// pushPhotoReply 模拟服务端图片分析后的语音回复：UUID 恒为 0（module/imageModule/analysis.go）。
+func pushPhotoReply(c *fakeConn, opts autoOpts) {
+	time.Sleep(opts.photoReplyDelay)
+	payload := opts.photoReplyPayload
+	if payload == nil {
+		payload = []byte{9, 9, 9, 9}
+	}
+	h := protocol.NewAudioHeader("pcm", protocol.StageUploading, 0, 0, uint32(len(payload)), 16000)
+	frame, _ := protocol.EncodeAudioFrame(h, payload)
+	select {
+	case <-c.closed:
+	default:
+		c.Push(frame)
+	}
 }

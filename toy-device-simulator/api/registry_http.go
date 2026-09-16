@@ -8,7 +8,8 @@ import (
 	"toy-device-simulator/manager"
 )
 
-// 配置树端点。键（环境名、两级简称）创建后不可改：改键 = 删掉重建。
+// 配置树端点。环境名仍是键，创建后不可改（改 = 删掉重建）；两级简称 Phase 11 起
+// 可以改——设备册不再引用配置树，改简称只动树本身，正在跑的实例下次 start 才用新值。
 // 仅设备类型的删除需要查 live 设备引用：设备必引用完整三级路径，
 // 厂商删除被「下有类型」挡住、环境删除被「下有厂商」挡住，引用不会悬空。
 
@@ -87,17 +88,22 @@ func (s *Server) handlePostEnterprise(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePutEnterprise(w http.ResponseWriter, r *http.Request) {
 	env, short := r.PathValue("env"), r.PathValue("short")
 	var body struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		ShortName string `json:"short_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if err := s.reg.UpdateEnterpriseName(env, short, body.Name); err != nil {
+	if err := s.reg.UpdateEnterprise(env, short, body.Name, body.ShortName); err != nil {
 		writeErr(w, regErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": body.Name, "short_name": short})
+	out := short
+	if body.ShortName != "" {
+		out = body.ShortName
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": body.Name, "short_name": out})
 }
 
 func (s *Server) handleDeleteEnterprise(w http.ResponseWriter, r *http.Request) {
@@ -111,16 +117,33 @@ func (s *Server) handleDeleteEnterprise(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handlePostDeviceType(w http.ResponseWriter, r *http.Request) {
 	env, short := r.PathValue("env"), r.PathValue("short")
 	var body struct {
-		Name      string `json:"name"`
-		ShortName string `json:"short_name"`
+		Name           string  `json:"name"`
+		ShortName      string  `json:"short_name"`
+		DefaultProduct *string `json:"default_product"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
+	defProd := ""
+	if body.DefaultProduct != nil {
+		defProd = *body.DefaultProduct
+	}
+	if defProd != "" {
+		if _, ok := s.products.Get(defProd); !ok {
+			writeErr(w, http.StatusNotFound, "产品不存在")
+			return
+		}
+	}
 	if err := s.reg.AddDeviceType(env, short, body.Name, body.ShortName); err != nil {
 		writeErr(w, regErrStatus(err), err.Error())
 		return
+	}
+	if defProd != "" {
+		if err := s.reg.SetDeviceTypeDefaultProduct(env, short, body.ShortName, defProd); err != nil {
+			writeErr(w, regErrStatus(err), err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"name": body.Name, "short_name": body.ShortName})
 }
@@ -128,17 +151,35 @@ func (s *Server) handlePostDeviceType(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePutDeviceType(w http.ResponseWriter, r *http.Request) {
 	env, short, tshort := r.PathValue("env"), r.PathValue("short"), r.PathValue("tshort")
 	var body struct {
-		Name string `json:"name"`
+		Name           string  `json:"name"`
+		ShortName      string  `json:"short_name"`
+		DefaultProduct *string `json:"default_product"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if err := s.reg.UpdateDeviceTypeName(env, short, tshort, body.Name); err != nil {
+	if body.DefaultProduct != nil && *body.DefaultProduct != "" {
+		if _, ok := s.products.Get(*body.DefaultProduct); !ok {
+			writeErr(w, http.StatusNotFound, "产品不存在")
+			return
+		}
+	}
+	if err := s.reg.UpdateDeviceType(env, short, tshort, body.Name, body.ShortName); err != nil {
 		writeErr(w, regErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": body.Name, "short_name": tshort})
+	tout := tshort
+	if body.ShortName != "" {
+		tout = body.ShortName
+	}
+	if body.DefaultProduct != nil {
+		if err := s.reg.SetDeviceTypeDefaultProduct(env, short, tout, *body.DefaultProduct); err != nil {
+			writeErr(w, regErrStatus(err), err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": body.Name, "short_name": tout})
 }
 
 func (s *Server) handleDeleteDeviceType(w http.ResponseWriter, r *http.Request) {

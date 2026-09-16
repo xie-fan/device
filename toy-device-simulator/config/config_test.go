@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -9,8 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func exampleYAML(t *testing.T) []byte {
@@ -96,7 +93,6 @@ func TestTrackedConfigYAMLsHaveNoMHAndLoopbackOnly(t *testing.T) {
 	sawDevice := false
 	for _, rel := range files {
 		path := filepath.Join(root, filepath.FromSlash(rel))
-		slash := filepath.ToSlash(rel)
 		base := filepath.Base(rel)
 		switch {
 		case base == "manager.yaml":
@@ -109,37 +105,6 @@ func TestTrackedConfigYAMLsHaveNoMHAndLoopbackOnly(t *testing.T) {
 			// 地址不算敏感，而 MH 真正的危害（Seq 用例假通过）已经拦在 bad_seq
 			// 注入那一步（phase10.md §5）。设备 YAML 那两条仍在。
 			continue
-		case strings.Contains(slash, "/templates/"):
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Errorf("%s: %v", rel, err)
-				continue
-			}
-			if yamlHasKey(raw, "device_id") {
-				t.Errorf("%s: 模板禁止 device_id", rel)
-				continue
-			}
-			if yamlHasKey(raw, "write_queue_depth") || yamlHasKey(raw, "write_drain_timeout_sec") {
-				t.Errorf("%s: 模板禁止 write_queue_*", rel)
-				continue
-			}
-			for _, k := range []string{"enterprise", "device_type", "server"} {
-				if yamlHasKey(raw, k) {
-					t.Errorf("%s: 模板禁止 %s（挂靠由配置树引用决定）", rel, k)
-				}
-			}
-			// 模拟运行时从配置树注入身份后再整体校验。
-			filled, err := fillTemplateIdentity(raw, "sim_gate")
-			if err != nil {
-				t.Errorf("%s: %v", rel, err)
-				continue
-			}
-			d, err := LoadPhase2(filled)
-			if err != nil {
-				t.Errorf("%s: 注入身份后 LoadPhase2: %v", rel, err)
-				continue
-			}
-			assertNoMHAndLoopback(t, rel, d)
 		default:
 			sawDevice = true
 			d, err := LoadFile(path)
@@ -171,58 +136,6 @@ func assertNoMHAndLoopback(t *testing.T, rel string, d Device) {
 	}
 }
 
-func fillTemplateIdentity(raw []byte, id string) ([]byte, error) {
-	var root map[string]any
-	if err := yaml.Unmarshal(raw, &root); err != nil {
-		return nil, err
-	}
-	dev, _ := root["device"].(map[string]any)
-	if dev == nil {
-		return nil, fmt.Errorf("缺 device")
-	}
-	dev["device_id"] = id
-	dev["enterprise"] = "demo"
-	dev["device_type"] = "A3"
-	dev["server"] = map[string]any{"url": "ws://127.0.0.1:1/"}
-	beh, _ := dev["behavior"].(map[string]any)
-	if beh == nil {
-		beh = map[string]any{}
-		dev["behavior"] = beh
-	}
-	beh["write_queue_depth"] = 256
-	beh["write_drain_timeout_sec"] = 2
-	return yaml.Marshal(root)
-}
-
-func yamlHasKey(raw []byte, key string) bool {
-	var v any
-	if err := yaml.Unmarshal(raw, &v); err != nil {
-		return false
-	}
-	return yamlValueHasKey(v, key)
-}
-
-func yamlValueHasKey(v any, key string) bool {
-	switch t := v.(type) {
-	case map[string]any:
-		for k, val := range t {
-			if k == key {
-				return true
-			}
-			if yamlValueHasKey(val, key) {
-				return true
-			}
-		}
-	case []any:
-		for _, val := range t {
-			if yamlValueHasKey(val, key) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func listedConfigYAMLs(t *testing.T) []string {
 	t.Helper()
 	root := moduleRoot(t)
@@ -251,16 +164,8 @@ func listedConfigYAMLs(t *testing.T) []string {
 	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
 		add(line)
 	}
-	// 未跟踪的 manager.yaml / templates 也要过门禁；*.local.yaml 是本机覆盖，不扫。
+	// 未跟踪的 manager.yaml 也要过门禁；*.local.yaml 是本机覆盖，不扫。
 	add("configs/manager.yaml")
-	tmplDir := filepath.Join(root, "configs", "templates")
-	ents, _ := os.ReadDir(tmplDir)
-	for _, ent := range ents {
-		if ent.IsDir() {
-			continue
-		}
-		add(filepath.ToSlash(filepath.Join("configs", "templates", ent.Name())))
-	}
 	var outFiles []string
 	for _, rel := range files {
 		base := filepath.Base(rel)

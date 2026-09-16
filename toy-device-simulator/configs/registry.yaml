@@ -15,3 +15,19 @@ environments:
           device_types:
             - name: MH8W
               short_name: MH8W-GDOBZND-EN
+    - name: 杭州
+      url: ws://aichatbotws.eye4.cn/{enterprise}
+      enterprises:
+        - name: 乐智创展
+          short_name: STSCHQL
+          device_types:
+            - name: MH3W-STSCHQL
+              short_name: MH3W-STSCHQL
+    - name: 测试
+      url: ws://aichatbotws.eye4.cn/veepai-test
+      enterprises:
+        - name: 测试
+          short_name: veepai-test
+          device_types:
+            - name: VOICE-TEST
+              short_name: VOICE-TEST

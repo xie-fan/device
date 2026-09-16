@@ -4,9 +4,8 @@
   const $ = (id) => document.getElementById(id);
 
   const state = {
-    view: "bench",          // bench = 调试台；manage = 设备管理；registry = 厂商与设备类型
+    view: "bench",          // bench | manage | registry | products
     manageQ: "",
-    defTarget: null,        // 正在编辑的设备定义（GET /devices/{id}/definition）
     devices: [],
     selectedId: null,
     instanceId: null,
@@ -28,7 +27,9 @@
     turnMeta: {},
     ws: null,
     wsKey: "",
-    templates: [],
+    products: [],
+    productForm: null,     // null | {mode:"new"} | {mode:"edit", id}
+    attachProduct: "",
     registry: [],
     regSel: { env: "", ent: "", typ: "" },
     regEdit: "",           // 正在行内编辑的层级：env / ent / typ
@@ -56,7 +57,7 @@
     srcName: "",
     samples: [],
     syncWait: false,
-    // 抽屉：null | new | config | assets | help | scenarios | templates | faults | sheet
+    // 抽屉：null | new | config | assets | help | scenarios | faults | sheet | runs
     drawer: null,
     newMode: "single",
     adding: null,
@@ -64,7 +65,7 @@
     globalEvents: [],
     globalNewest: 0,
     // newLang：下一次导入要标注的语言，和上面的 language（筛选用）是两回事。
-    lib: { rows: [], format: "", language: "", newLang: "", editingId: null, armedId: null },
+    lib: { rows: [], format: "", language: "", kind: "", newLang: "", editingId: null, armedId: null },
   };
 
   // 全局带最多留这么多条；调试面板不是归档，翻更早的去 /ws/events/global 拿回放。
@@ -321,7 +322,7 @@
       if (state.filterEnterprise && (d.enterprise || "") !== state.filterEnterprise) return false;
       if (state.filterType && (d.device_type || "") !== state.filterType) return false;
       if (q) {
-        const hay = [d.device_id, d.environment, d.enterprise, d.device_type, d.instance_id].join(" ").toLowerCase();
+        const hay = [d.device_id, d.environment, d.enterprise, d.device_type, d.product, d.instance_id].join(" ").toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -362,7 +363,9 @@
       state.regSel.typ = regTypes()[0] ? regTypes()[0].short_name : "";
     }
     renderRegistry();
+    if (!state.attachProduct) state.attachProduct = typeDefaultProduct();
     if (state.drawer === "new" || state.drawer === "config") renderDrawer();
+    if (state.view === "bench") renderStage();
   }
 
   function attachRefs() {
@@ -373,13 +376,52 @@
     };
   }
 
-  async function loadTemplates() {
+  function typeDefaultProduct() {
+    const t = regTypes().find((x) => x.short_name === state.regSel.typ);
+    return (t && t.default_product) || "";
+  }
+
+  function productLabel(id) {
+    const p = state.products.find((x) => x.id === id);
+    return p ? (p.name ? `${p.name}（${p.id}）` : p.id) : id;
+  }
+
+  function productOpts(cur, ph) {
+    const rows = state.products.map((p) => ({ v: p.id, t: p.name ? `${p.name}（${p.id}）` : p.id }));
+    if (cur && !rows.some((r) => r.v === cur)) rows.push({ v: cur, t: cur });
+    return selOpts(rows, cur, ph);
+  }
+
+  function audioLib() {
+    return state.lib.rows.filter((a) => (a.kind || "audio") !== "image");
+  }
+
+  function imageLib() {
+    return state.lib.rows.filter((a) => a.kind === "image");
+  }
+
+  function visibleLib() {
+    return state.lib.rows.filter((a) => {
+      const kind = a.kind || "audio";
+      if (state.lib.kind && kind !== state.lib.kind) return false;
+      if (state.lib.format && a.format !== state.lib.format) return false;
+      if (state.lib.language && a.language !== state.lib.language) return false;
+      return true;
+    });
+  }
+
+  async function loadProducts() {
     try {
-      const data = await api("GET", "/templates");
-      state.templates = data.templates || [];
+      const data = await api("GET", "/products");
+      state.products = data.products || [];
     } catch {
-      state.templates = [];
+      state.products = [];
     }
+    if (!state.attachProduct) state.attachProduct = typeDefaultProduct();
+    if (state.view === "products") renderProducts();
+    if (state.view === "registry") renderRegistry();
+    if (state.view === "bench") renderStage();
+    if (state.drawer === "config") renderDrawer();
   }
 
   async function refreshList() {
@@ -483,6 +525,8 @@
           <div class="device__tags">
             <span class="${tagCls(insTone(st))}">${esc(st)}</span>
             <span class="${tagCls(connTone(d.connection_state))}">${esc(d.connection_state || "—")}</span>
+            ${d.product ? `<span class="tag tag--acc" title="${esc(d.product)}">${esc(d.product)}</span>` : ""}
+            ${d.overridden ? `<span class="tag tag--warn">已临时改</span>` : ""}
             ${d.last_error ? `<span class="tag tag--err" title="${esc(d.last_error)}">error</span>` : ""}
           </div>
         </div>
@@ -521,6 +565,8 @@
       <span title="conn_generation · 这条连接的第几代">gen ${esc(state.connGeneration ?? live.conn_generation ?? "—")}</span>
       <span class="sep">|</span>
       <span title="speak backlog 排队数">backlog ${backlog}</span>
+      ${live.product ? `<span class="sep">|</span><span class="tag tag--acc" title="本次运行的产品">${esc(live.product)}</span>` : ""}
+      ${live.overridden ? `<span class="tag tag--warn">已临时改</span>` : ""}
     `);
 
     // last_error 原来只藏在 title 里，工位上根本看不见。
@@ -548,7 +594,7 @@
     // 进来，不主动重画的话界面会停在最后一包上不动。renderConv 按签名增量重画，
     // 没变化时是空转，所以这里不加条件（加了反而漏：occupiedTurnId 不一定在）。
     renderConv();
-    setDisabled($("btn-start"), !has || state.tombstone || state.busy || !identityEditable());
+    setDisabled($("btn-start"), !has || state.tombstone || state.busy || !identityEditable() || !state.attachProduct);
     setDisabled($("btn-stop"), !has || state.tombstone || state.busy);
     setDisabled($("btn-delete"), !has || state.tombstone || state.busy);
     setDisabled($("btn-config"), !has);
@@ -579,15 +625,18 @@
       if (!tid) continue;
       let t = byId.get(tid);
       if (!t) {
-        t = { turn_id: tid, ts: ev.ts, evCount: 0, hasAsr: false, seq: ev.event_seq };
+        t = { turn_id: tid, ts: ev.ts, evCount: 0, hasAsr: false, photoCmd: "", photoUp: "", photoSkip: "", seq: ev.event_seq };
         byId.set(tid, t);
       }
       t.evCount++;
       if (ev.event_type === "asr_result") t.hasAsr = true;
+      if (ev.event_type === "photo_command") t.photoCmd = ev.reason || "拍照指令";
+      if (ev.event_type === "photo_uploaded") t.photoUp = ev.reason || "已传图";
+      if (ev.event_type === "photo_skipped") t.photoSkip = ev.reason || "跳过";
     }
     for (const rec of state.turns) {
       if (rec.turn_id && !byId.has(rec.turn_id)) {
-        byId.set(rec.turn_id, { turn_id: rec.turn_id, ts: "", evCount: 0, hasAsr: false, seq: Number.MAX_SAFE_INTEGER });
+        byId.set(rec.turn_id, { turn_id: rec.turn_id, ts: "", evCount: 0, hasAsr: false, photoCmd: "", photoUp: "", photoSkip: "", seq: Number.MAX_SAFE_INTEGER });
       }
     }
     const recById = new Map(state.turns.map((r) => [r.turn_id, r]));
@@ -608,6 +657,7 @@
         up: f.up.length, upBytes,
         down: f.down.length, downBytes,
         hasAsr: t.hasAsr,
+        photoCmd: t.photoCmd, photoUp: t.photoUp, photoSkip: t.photoSkip,
         file: meta.name || "",
         assetId: meta.assetId || "",
         kind: rec.reply_kind || "",
@@ -649,6 +699,16 @@
   // 气泡主行原本永远在讲 asr_result——而这些服务端根本不发这条（协议 §8.2：
   // 没有稳定的下行 Stage=2，也没规定必发 asr_result）。真正在变的是「收到哪了、
   // 还差几秒收尾」，所以主行改讲状态，asr 只在真有的时候占主行。
+  function photoLine(t) {
+    if (!t.photoCmd && !t.photoUp && !t.photoSkip) return "";
+    const bits = ["photo_command" + (t.photoCmd && t.photoCmd !== "拍照指令" ? " " + t.photoCmd : "")];
+    if (t.photoUp) bits.push("photo_uploaded " + t.photoUp);
+    else if (t.photoSkip) bits.push("photo_skipped " + t.photoSkip);
+    else bits.push("传图中");
+    if (t.down || String(t.kind || "").includes("tts")) bits.push("图片分析的语音回复");
+    return bits.join(" → ");
+  }
+
   function replyPhase(t) {
     if (t.hasAsr) {
       return { sub: "asr_result", line: "服务端已返回 asr_result（协议不带识别文本，原文见右栏事件）" };
@@ -675,7 +735,7 @@
     const ttsMeta = t.down
       ? `tts_chunk ${t.down} 包 · ${fmtBytes(t.downBytes)}${t.done ? " · tts_done" : ""}`
       : (t.done ? "本轮没有下行音频" : "等待下行");
-    const reply = t.hasAsr || t.down || t.done ? `
+    const reply = t.hasAsr || t.down || t.done || t.photoCmd || t.photoUp || t.photoSkip ? `
       <div class="bub bub--reply">
         <div class="bub__in">
           <div class="bub__head">
@@ -686,6 +746,7 @@
           <div class="bub__rule"></div>
           ${bars(t.down, 30, t.phase === "tts", " bars--tts")}
           <div class="bub__meta"><span>${esc(ttsMeta)}</span></div>
+          ${photoLine(t) ? `<div class="bub__meta"><span>${esc(photoLine(t))}</span></div>` : ""}
           ${t.done ? `<div class="bub__acts">${turnActs(t, "播放下行")}</div>` : ""}
         </div>
       </div>` : "";
@@ -736,6 +797,11 @@
         "asr_result",
         `<span class="stg__text stg__text--big">${t.hasAsr ? "已返回" : "—"}</span>`,
       ),
+      ...(photoLine(t) ? [stageRow(
+        t.photoSkip ? "stg--warn" : (t.photoUp ? "stg--ok" : "stg--acc"),
+        "拍照",
+        `<span class="stg__text">${esc(photoLine(t))}</span>`,
+      )] : []),
       stageRow(
         (t.down ? "stg--ok " : "") + (t.phase === "tts" ? "stg--live" : ""),
         "tts_chunk → tts_done",
@@ -843,8 +909,11 @@
     const sel = $("src-select");
     const html = `<option value="">选音频源…</option>` +
       state.samples.map((s) => `<option value="sample:${esc(s.url)}">夹具 · ${esc(s.name)}</option>`).join("") +
-      state.lib.rows.map((a) => `<option value="asset:${esc(a.asset_id)}">音频库 · ${esc(a.name)}</option>`).join("") +
+      audioLib().map((a) => `<option value="asset:${esc(a.asset_id)}">素材库 · ${esc(a.name)}</option>`).join("") +
       `<option value="local">本机文件 · 选择 .wav</option>`;
+    if (state.srcKey.startsWith("asset:") && !audioLib().some((a) => a.asset_id === state.srcKey.slice(6))) {
+      state.srcKey = "";
+    }
     if (sel.dataset.sig !== html) {
       sel.innerHTML = html;
       sel.dataset.sig = html;
@@ -1493,64 +1562,23 @@
     renderTape();
   }
 
-  // 设备体只含设备级属性；enterprise/device_type/server 由树引用派生。
-  function defaultDevice(id, extra) {
-    return {
-      device_id: id,
-      action: "chatbot",
-      firmware_version: extra.firmware_version || "1.0.0",
-      nic_type: extra.nic_type || "wifi",
-      nic_iccid: extra.nic_iccid || "8986xxxxxxxxxx",
-      playing_mode: extra.playing_mode || 1,
-      audio: {
-        format: extra.format || "pcm",
-        sample_rate: extra.sample_rate || 16000,
-        channels: 1,
-        sample_format: "s16le",
-        slice_ms: 100,
-        max_payload_size: 51200,
-        bitrate_kbps: extra.bitrate_kbps || 0,
-      },
-      behavior: {
-        auto_register: true,
-        auto_report: true,
-        // 实测联调服务端空闲约 60s 即踢线；keepalive 必须明显短于该窗口，
-        // 取 60 会与踢线同刻开火、必输竞态（每轮对话结束约 1 分钟后掉线）。
-        keepalive_interval_sec: 30,
-        keepalive_method: "report",
-        report_sequence_start: 1,
-        report_echo_timeout_sec: 5,
-        register_ack_timeout_sec: 5,
-        first_reply_timeout_sec: 90,
-        // 20 秒对齐现网脚本与 configs/templates/default_a3.yaml；协议没有稳定的
-        // 下行 Stage=2，这个 idle 就是本轮的收尾判据（协议文档 §8.2）。
-        downlink_idle_timeout_sec: 20,
-        non_audio_followup_sec: 5,
-        post_final_asr_silence_sec: 5,
-        wait_timeout_slack_sec: 5,
-        expect_downlink_need_ack: false,
-        downlink_ack: { mode: "binary", sleep_ms: 0, code: 0 },
-      },
-      uuid: { min: 1, max: 2147483647 },
-      recording: {
-        enable_frame_log: true,
-        save_uplink_audio: true,
-        save_downlink_audio: true,
-        output_dir: "./recordings",
-      },
-    };
-  }
-
-  // 挂靠条（phase11）：设备册条目不带三级，启动时才决定这台挂成什么。
+  // 挂靠条（phase11/12）：设备册条目不带三级，启动时才决定挂靠和产品。
   // 复用配置树页那套 state.regSel / changeTree，选中项跨页面共用一份。
   function attachBarHTML() {
     const sel = state.regSel;
     const opt = (rows, cur, ph, dis) =>
       `<select data-tree="${dis.k}"${dis.off ? " disabled" : ""}>${selOpts(rows, cur, ph)}</select>`;
+    const live = state.live || {};
+    const warn = live.product && state.attachProduct && live.product !== state.attachProduct && live.overridden
+      ? `<span class="attach__warn">启动后临时覆盖会清空</span>` : "";
+    const mustPick = sel.typ && !typeDefaultProduct();
     return `<span class="attach__label">挂靠</span>` +
       opt(state.registry.map((r) => ({ v: r.name, t: r.name })), sel.env, "环境", { k: "env", off: false }) +
       opt(regEnts().map((r) => ({ v: r.short_name, t: r.short_name })), sel.ent, "厂商", { k: "ent", off: !sel.env }) +
-      opt(regTypes().map((r) => ({ v: r.short_name, t: r.short_name })), sel.typ, "类型", { k: "typ", off: !sel.ent });
+      opt(regTypes().map((r) => ({ v: r.short_name, t: r.short_name })), sel.typ, "类型", { k: "typ", off: !sel.ent }) +
+      `<span class="attach__label">产品</span>` +
+      `<select data-attach="product">${productOpts(state.attachProduct, mustPick ? "必须手选产品" : "选产品")}</select>` +
+      warn;
   }
 
   // 不少服务端不发显式的「TTS 结束」标记，设备只能等「下行静默满
@@ -1587,11 +1615,21 @@
       flash("先在「挂靠」里把 环境 / 厂商 / 设备类型 选全", "err");
       return;
     }
+    if (!state.attachProduct) {
+      flash("类型没配默认产品，请在启动条手选一个产品", "err");
+      return;
+    }
+    const live = state.live || {};
+    if (live.product && live.product !== state.attachProduct && live.overridden) {
+      flash("启动后临时覆盖会清空", "info");
+    }
     state.busy = true;
     renderStage();
     flash("正在启动…", "info");
     try {
-      const started = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/start`, attachRefs());
+      const started = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/start`, {
+        ...refs, product: state.attachProduct,
+      });
       state.instanceId = started.instance_id;
       state.connGeneration = started.conn_generation;
       if (state.live) {
@@ -1696,7 +1734,11 @@
           flash("先在「挂靠」里把 环境 / 厂商 / 设备类型 选全", "err");
           return;
         }
-        Object.assign(body, refs);
+        if (!state.attachProduct) {
+          flash("类型没配默认产品，请在启动条手选一个产品", "err");
+          return;
+        }
+        Object.assign(body, refs, { product: state.attachProduct });
       }
       const res = await api("POST", `/devices/batch/${kind}`, body);
       const ok = (res.succeeded || []).length;
@@ -1826,22 +1868,16 @@
     renderSrc();
   }
 
-  // ——— 音频库 ———
-  // 试听一律走 ?decode=1，服务端解码成 wav 再给 <audio>：浏览器放不了 amr
-  // 与裸 pcm，而 manager 有现成的 ffmpeg 解码能力（Phase 6）。
+  // ——— 素材库 ———
+  // 音频试听走 ?decode=1；图片用 /assets/{id}/content 原字节做缩略图。
 
-  // 连改筛选时多个请求在飞，旧响应后到会覆盖新结果：只认最新一次。
   let libReqSeq = 0;
 
   async function loadLibrary() {
     const seq = ++libReqSeq;
-    const q = new URLSearchParams();
-    if (state.lib.format) q.set("format", state.lib.format);
-    if (state.lib.language) q.set("language", state.lib.language);
-    const qs = q.toString();
     let rows = [];
     try {
-      const data = await api("GET", "/assets" + (qs ? "?" + qs : ""));
+      const data = await api("GET", "/assets");
       rows = data.assets || [];
     } catch {
       rows = [];
@@ -1850,7 +1886,7 @@
     state.lib.rows = rows;
     setNum($("lib-count"), rows.length);
     renderSrc();
-    if (state.drawer === "assets") renderDrawer();
+    if (state.drawer === "assets" || state.drawer === "config") renderDrawer();
   }
 
   async function importAsset(file, name, lang) {
@@ -1859,7 +1895,8 @@
     if (name) fd.append("name", name);
     if (lang) fd.append("language", lang);
     const a = await api("POST", "/assets", fd);
-    flash(`已导入 ${a.name}（${a.format} · ${fmtDurMs(a.duration_ms)}）`, "ok");
+    const extra = a.kind === "image" ? a.format : `${a.format} · ${fmtDurMs(a.duration_ms)}`;
+    flash(`已导入 ${a.name}（${extra}）`, "ok");
     await loadLibrary();
   }
 
@@ -1867,21 +1904,23 @@
   // 这里编辑的是落盘的「定义」；调试台的配置抽屉改的是本次运行的当前值。
 
   function setView(v) {
-    state.view = ["manage", "registry"].includes(v) ? v : "bench";
+    state.view = ["manage", "registry", "products"].includes(v) ? v : "bench";
     closeDrawer();
     state.adding = null;
     state.regEdit = "";
     $("manage").hidden = state.view !== "manage";
     $("registry").hidden = state.view !== "registry";
+    $("products").hidden = state.view !== "products";
     document.querySelector("main.bench").hidden = state.view !== "bench";
     $("segwrap-mode").hidden = state.view !== "bench";
-    for (const view of ["bench", "manage", "registry"]) {
+    for (const view of ["bench", "manage", "registry", "products"]) {
       const on = state.view === view;
       $("btn-view-" + view).classList.toggle("is-on", on);
       $("btn-view-" + view).setAttribute("aria-pressed", String(on));
     }
     if (state.view === "manage") renderManage();
     if (state.view === "registry") renderRegistry();
+    if (state.view === "products") renderProducts();
   }
 
   function renderRegistry() {
@@ -1894,6 +1933,7 @@
     else state.regSel.typ = value;
     state.adding = null;
     state.regEdit = "";
+    state.attachProduct = typeDefaultProduct();
   }
 
   function changeTree(t) {
@@ -1905,6 +1945,7 @@
 
   function bindRegistry() {
     $("btn-view-registry").addEventListener("click", () => setView("registry"));
+    $("btn-view-products").addEventListener("click", () => setView("products"));
     $("registry-devices").addEventListener("click", () => setView("manage"));
     $("registry-body").addEventListener("click", (e) => {
       const button = e.target.closest("button");
@@ -1920,10 +1961,258 @@
     });
   }
 
+  const PLAYING_MODE_OPTS = [{ v: "1", t: "1 按键" }, { v: "2", t: "2 连续" }, { v: "3", t: "3 唤醒" }];
+  const AUDIO_SPEC_OPTS = ["pcm/16000", "wav/16000", "mp3/16000", "amr/16000", "amr/8000", "aac/16000"];
+  const ID_RISK = "换产品或改 ICCID 会让真实服务端重新校验这台设备，校验不过会把它标成不可用";
+
+  function blankProduct() {
+    return {
+      id: "", name: "",
+      playing_modes: [1, 2, 3],
+      audio_formats: ["pcm/16000", "wav/16000", "mp3/16000", "amr/16000", "aac/16000"],
+      defaults: {
+        action: "chatbot", firmware_version: "1.0.0", nic_type: "wifi", nic_iccid: "8986xxxxxxxxxx",
+        playing_mode: 1,
+        audio: { format: "pcm", sample_rate: 16000, channels: 1, sample_format: "s16le", slice_ms: 100, max_payload_size: 51200, bitrate_kbps: 0 },
+        uuid: { min: 1, max: 2147483647 },
+        behavior: {
+          keepalive_interval_sec: 60, first_reply_timeout_sec: 20, speak_backlog_depth: 0,
+          silence_probe: false, interrupt_on_disconnect: false,
+        },
+        recording: { enable_frame_log: true, save_uplink_audio: true, save_downlink_audio: true, output_dir: "" },
+        features: { photo: { enabled: false, image: "", server_default_reply: false, slice_interval_ms: 0, reply_timeout_sec: 0 } },
+      },
+    };
+  }
+
+  function renderProducts() {
+    const form = state.productForm;
+    const rows = state.products;
+    setNum($("products-count"), rows.length);
+    const table = rows.length ? `<table class="grid">
+      <thead><tr><th>id</th><th>名称</th><th>对话模式</th><th>音频格式</th><th>默认格式</th><th>拍照</th><th class="grid__ops">操作</th></tr></thead>
+      <tbody>${rows.map((p) => {
+        const d = p.defaults || {};
+        const a = d.audio || {};
+        const photo = ((d.features || {}).photo || {}).enabled;
+        return `<tr data-id="${esc(p.id)}">
+          <td class="grid__id">${esc(p.id)}</td>
+          <td>${esc(p.name || "")}</td>
+          <td class="mono">${esc((p.playing_modes || []).join(" / ") || "—")}</td>
+          <td class="mono">${esc((p.audio_formats || []).join(", ") || "—")}</td>
+          <td class="mono">${esc(a.format ? `${a.format}/${a.sample_rate}` : "—")}</td>
+          <td>${photo ? `<span class="${tagCls("ok")}">开</span>` : `<span class="grid__dim">关</span>`}</td>
+          <td class="grid__ops">
+            <button type="button" class="btn btn--sub btn--tiny" data-pact="edit">编辑</button>
+            <button type="button" class="btn btn--danger btn--tiny" data-pact="del" data-armed="0">删除</button>
+          </td>
+        </tr>`;
+      }).join("")}</tbody></table>` : `<div class="blank"><p class="blank__title">还没有产品</p><p class="blank__body">先建一个产品，启动设备时再选它。</p></div>`;
+    setHTML($("products-body"), table + (form ? productFormHTML(form) : ""));
+  }
+
+  function productFormHTML(form) {
+    const isNew = form.mode === "new";
+    const p = isNew ? blankProduct() : (state.products.find((x) => x.id === form.id) || blankProduct());
+    const d = p.defaults || {};
+    const a = d.audio || {};
+    const beh = d.behavior || {};
+    const rec = d.recording || {};
+    const photo = ((d.features || {}).photo) || {};
+    const modes = new Set((p.playing_modes || []).map(Number));
+    const specs = new Set(p.audio_formats || []);
+    const extraSpecs = [...specs].filter((s) => !AUDIO_SPEC_OPTS.includes(s));
+    const specList = AUDIO_SPEC_OPTS.concat(extraSpecs);
+    const curSpec = a.format ? `${a.format}/${a.sample_rate}` : "pcm/16000";
+    const imgOpts = imageLib().map((x) => ({ v: x.asset_id, t: x.name || x.asset_id }));
+    const groups = [
+      { title: "清单", fields: [
+        { name: "id", zh: "产品 id", v: p.id, ph: "mh8w", ro: !isNew, note: isNew ? "建后不可改" : "不可改" },
+        { name: "name", zh: "名称", v: p.name, ph: "默认产品" },
+        { name: "playing_modes", zh: "对话模式清单", checks: PLAYING_MODE_OPTS.map((o) => ({ ...o, on: modes.has(Number(o.v)) })) },
+        { name: "audio_formats", zh: "音频格式清单", checks: specList.map((s) => ({ v: s, t: s, on: specs.has(s) })) },
+        { name: "playing_mode", zh: "默认对话模式", v: String(d.playing_mode || 1), select: PLAYING_MODE_OPTS.filter((o) => modes.has(Number(o.v))) },
+        { name: "audio_spec", zh: "默认音频格式", v: curSpec, select: specList.filter((s) => specs.has(s)).map((s) => ({ v: s, t: s })) },
+      ]},
+      { title: "身份", fields: [
+        { name: "action", zh: "动作", v: d.action || "chatbot" },
+        { name: "firmware_version", zh: "固件版本", v: d.firmware_version || "", note: ID_RISK },
+        { name: "nic_type", zh: "网卡类型", v: d.nic_type || "", note: ID_RISK },
+        { name: "nic_iccid", zh: "SIM ICCID", v: d.nic_iccid || "", note: ID_RISK },
+        { name: "uuid.min", zh: "UUID 下界", v: (d.uuid || {}).min ?? 1, num: true },
+        { name: "uuid.max", zh: "UUID 上界", v: (d.uuid || {}).max ?? 2147483647, num: true },
+      ]},
+      { title: "音频", fields: [
+        { name: "audio.bitrate_kbps", zh: "码率", v: a.bitrate_kbps ?? 0, num: true, note: "0 = 按格式取默认" },
+        { name: "audio.slice_ms", zh: "切片长度", v: a.slice_ms ?? 100, num: true },
+        { name: "audio.max_payload_size", zh: "单包上限", v: a.max_payload_size ?? 51200, num: true },
+      ]},
+      { title: "行为", fields: [
+        { name: "behavior.keepalive_interval_sec", zh: "心跳间隔", v: beh.keepalive_interval_sec ?? 60, num: true },
+        { name: "behavior.first_reply_timeout_sec", zh: "首包超时", v: beh.first_reply_timeout_sec ?? 20, num: true },
+        { name: "behavior.speak_backlog_depth", zh: "送话排队深度", v: beh.speak_backlog_depth ?? 0, num: true },
+        { name: "behavior.silence_probe", zh: "静默探针", check: true, on: !!beh.silence_probe, v: "timeout 静默终态后发一个探针 report" },
+        { name: "behavior.interrupt_on_disconnect", zh: "断线即打断", check: true, on: !!beh.interrupt_on_disconnect, v: "事件 WS 断开时打断当前 turn" },
+      ]},
+      { title: "录音", fields: [
+        { name: "recording.enable_frame_log", zh: "帧日志", check: true, on: !!rec.enable_frame_log, v: "记录每个包的序号与字节数" },
+        { name: "recording.save_uplink_audio", zh: "存上行", check: true, on: !!rec.save_uplink_audio, v: "把送出去的音频落盘" },
+        { name: "recording.save_downlink_audio", zh: "存下行", check: true, on: !!rec.save_downlink_audio, v: "把服务端回的音频落盘" },
+        { name: "recording.output_dir", zh: "输出目录", v: rec.output_dir || "", note: "空 = 用 manager 的 RecordingsDir" },
+      ]},
+      { title: "拍照", fields: [
+        { name: "features.photo.enabled", zh: "拍照功能", check: true, on: !!photo.enabled, v: "收到拍照指令时传图" },
+        { name: "features.photo.image", zh: "拍照用图", v: photo.image || "", select: imgOpts, ph: "选一张图片资产" },
+        { name: "features.photo.server_default_reply", zh: "回复格式用服务端默认", check: true, on: !!photo.server_default_reply, v: "Reserved 留空，服务端按默认回 aac" },
+        { name: "features.photo.slice_interval_ms", zh: "分片间隔 ms", v: photo.slice_interval_ms ?? 0, num: true, note: "0 = 50ms" },
+        { name: "features.photo.reply_timeout_sec", zh: "回复超时 s", v: photo.reply_timeout_sec ?? 0, num: true, note: "0 = 60s" },
+      ]},
+    ];
+    return `<form id="form-product" class="prod-form sheet sheet--tight">
+      <div class="grp__head"><span class="grp__title">${isNew ? "新建产品" : "编辑 " + p.id}</span></div>
+      ${groups.map((g) => `<div class="grp">
+        <div class="grp__head"><span class="grp__title">${esc(g.title)}</span><span class="rule"></span></div>
+        <div class="fields">${g.fields.map(fieldHTML).join("")}</div>
+      </div>`).join("")}
+      <div class="foot">
+        <button type="submit" class="btn btn--primary">${isNew ? "创建产品" : "保存产品"}</button>
+        <button type="button" class="btn btn--sub" data-pact="cancel">取消</button>
+        <span class="grow"></span>
+        <span class="api">${isNew ? "POST /products" : "PUT /products/" + esc(p.id)}</span>
+      </div>
+    </form>`;
+  }
+
+  function readProductForm() {
+    const root = $("products-body");
+    const modes = formChecked("playing_modes", root).map(Number);
+    const formats = formChecked("audio_formats", root);
+    const spec = String(formVal("audio_spec", root) || "pcm/16000");
+    const slash = spec.indexOf("/");
+    const format = slash >= 0 ? spec.slice(0, slash) : spec;
+    const sample_rate = slash >= 0 ? Number(spec.slice(slash + 1)) : 16000;
+    return {
+      id: String(formVal("id", root) || "").trim(),
+      name: String(formVal("name", root) || "").trim(),
+      playing_modes: modes,
+      audio_formats: formats,
+      defaults: {
+        action: formVal("action", root),
+        firmware_version: formVal("firmware_version", root),
+        nic_type: formVal("nic_type", root),
+        nic_iccid: formVal("nic_iccid", root),
+        playing_mode: Number(formVal("playing_mode", root)) || 1,
+        audio: {
+          format, sample_rate,
+          channels: 1, sample_format: "s16le",
+          slice_ms: Number(formVal("audio.slice_ms", root)),
+          max_payload_size: Number(formVal("audio.max_payload_size", root)),
+          bitrate_kbps: Number(formVal("audio.bitrate_kbps", root)) || 0,
+        },
+        uuid: { min: Number(formVal("uuid.min", root)), max: Number(formVal("uuid.max", root)) },
+        behavior: {
+          keepalive_interval_sec: Number(formVal("behavior.keepalive_interval_sec", root)),
+          first_reply_timeout_sec: Number(formVal("behavior.first_reply_timeout_sec", root)),
+          speak_backlog_depth: Number(formVal("behavior.speak_backlog_depth", root)) || 0,
+          silence_probe: !!formVal("behavior.silence_probe", root),
+          interrupt_on_disconnect: !!formVal("behavior.interrupt_on_disconnect", root),
+        },
+        recording: {
+          enable_frame_log: !!formVal("recording.enable_frame_log", root),
+          save_uplink_audio: !!formVal("recording.save_uplink_audio", root),
+          save_downlink_audio: !!formVal("recording.save_downlink_audio", root),
+          output_dir: formVal("recording.output_dir", root),
+        },
+        features: { photo: {
+          enabled: !!formVal("features.photo.enabled", root),
+          image: formVal("features.photo.image", root),
+          server_default_reply: !!formVal("features.photo.server_default_reply", root),
+          slice_interval_ms: Number(formVal("features.photo.slice_interval_ms", root)) || 0,
+          reply_timeout_sec: Number(formVal("features.photo.reply_timeout_sec", root)) || 0,
+        } },
+      },
+    };
+  }
+
+  function cascadeProductSelects() {
+    const root = $("products-body");
+    if (!root) return;
+    const modes = formChecked("playing_modes", root);
+    const formats = formChecked("audio_formats", root);
+    const modeSel = root.querySelector('[name="playing_mode"]');
+    const specSel = root.querySelector('[name="audio_spec"]');
+    if (modeSel) {
+      const cur = modeSel.value;
+      modeSel.innerHTML = selOpts(PLAYING_MODE_OPTS.filter((o) => modes.includes(o.v)), modes.includes(cur) ? cur : (modes[0] || ""), "");
+    }
+    if (specSel) {
+      const cur = specSel.value;
+      specSel.innerHTML = selOpts(formats.map((s) => ({ v: s, t: s })), formats.includes(cur) ? cur : (formats[0] || ""), "");
+    }
+  }
+
+  async function saveProduct(ev) {
+    if (ev) ev.preventDefault();
+    const body = readProductForm();
+    if (!body.name) { flash("名称不能空", "err"); return; }
+    if (!body.playing_modes.length) { flash("对话模式清单不能空", "err"); return; }
+    if (!body.audio_formats.length) { flash("音频格式清单不能空", "err"); return; }
+    const isNew = state.productForm && state.productForm.mode === "new";
+    if (isNew && !body.id) { flash("id 不能空", "err"); return; }
+    try {
+      if (isNew) await api("POST", "/products", body);
+      else {
+        const id = state.productForm.id;
+        delete body.id;
+        await api("PUT", `/products/${encodeURIComponent(id)}`, body);
+      }
+      flash(isNew ? "POST /products · 已创建 " + body.id : "PUT /products/" + state.productForm.id, "ok");
+      state.productForm = null;
+      await loadProducts();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  async function deleteProduct(id) {
+    try {
+      await api("DELETE", `/products/${encodeURIComponent(id)}`);
+      flash("已删除产品 " + id, "ok");
+      if (state.productForm && state.productForm.id === id) state.productForm = null;
+      await loadProducts();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  function bindProducts() {
+    $("products-new").addEventListener("click", () => {
+      state.productForm = { mode: "new" };
+      renderProducts();
+    });
+    $("products-body").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-pact]");
+      if (!btn) return;
+      const act = btn.dataset.pact;
+      if (act === "cancel") { state.productForm = null; renderProducts(); return; }
+      const row = btn.closest("tr");
+      const id = row && row.dataset.id;
+      if (act === "edit" && id) { state.productForm = { mode: "edit", id }; renderProducts(); }
+      else if (act === "del" && id) armThen(btn, () => deleteProduct(id));
+    });
+    $("products-body").addEventListener("change", (e) => {
+      const n = e.target && e.target.name;
+      if (n === "playing_modes" || n === "audio_formats") cascadeProductSelects();
+    });
+    $("products-body").addEventListener("submit", (e) => {
+      if (e.target.getAttribute("id") === "form-product") saveProduct(e);
+    });
+  }
+
   function manageRows() {
     const q = state.manageQ.trim().toLowerCase();
     if (!q) return state.devices;
-    return state.devices.filter((d) => [d.device_id, d.environment, d.enterprise, d.device_type, d.audio_format]
+    return state.devices.filter((d) => [d.device_id, d.environment, d.enterprise, d.device_type, d.product, (d.audio || {}).format]
       .some((x) => String(x || "").toLowerCase().includes(q)));
   }
 
@@ -1945,71 +2234,26 @@
         <td class="grid__pick"><input type="checkbox" data-pick="${esc(d.device_id)}"${picked ? " checked" : ""} aria-label="选择 ${esc(d.device_id)}"></td>
         <td class="grid__id">${esc(d.device_id)}</td>
         <td class="grid__path">${esc(d.environment || "—")} · ${esc(d.enterprise || "—")} · ${esc(d.device_type || "—")}</td>
+        <td class="mono">${esc(d.product || "—")}${over ? ` <span class="${tagCls("warn")}">已临时改</span>` : ""}</td>
         <td class="mono">${esc(a.format || "—")}</td>
         <td class="mono">${esc(a.sample_rate || "—")}</td>
-        <td class="mono grid__dim">${a.bitrate_kbps ? esc(a.bitrate_kbps) : "—"}</td>
         <td class="mono grid__dim">${esc(d.playing_mode || "—")}</td>
         <td><span class="${tagCls(d.instance_state === "running" ? "ok" : "")}">${esc(d.instance_state || "—")}</span></td>
-        <td>${over ? `<span class="${tagCls("warn")}" title="本次运行的当前值已偏离定义">已临时改</span>` : `<span class="grid__dim">一致</span>`}</td>
+        <td>${over ? `<span class="${tagCls("warn")}">已临时改</span>` : `<span class="grid__dim">—</span>`}</td>
         <td class="grid__ops">
           <button type="button" class="btn btn--ghost btn--tiny" data-mact="open" title="到调试台选中这台">调试</button>
-          <button type="button" class="btn btn--sub btn--tiny" data-mact="edit">编辑定义</button>
-          <button type="button" class="btn btn--ghost btn--tiny" data-mact="copy" title="按同一份定义复制一台">复制</button>
           <button type="button" class="btn btn--danger btn--tiny" data-mact="del" data-armed="0">删除</button>
         </td>
       </tr>`;
     }).join(""));
   }
 
-  async function editDefinition(id) {
-    try {
-      state.defTarget = await api("GET", `/devices/${encodeURIComponent(id)}/definition`);
-      state.selectedId = id;
-      openDrawer("definition");
-    } catch (err) {
-      apiErr(err);
-    }
-  }
-
-  async function saveDefinition(ev) {
-    if (ev) ev.preventDefault();
-    if (!state.selectedId) return;
-    try {
-      state.defTarget = await api("PUT", `/devices/${encodeURIComponent(state.selectedId)}/definition`, readConfigDrawer(true));
-      flash("PUT /devices/" + state.selectedId + "/definition · 已落盘", "ok");
-      renderDrawer();
-      await refreshList();
-    } catch (err) {
-      apiErr(err);
-    }
-  }
-
   async function resetConfig() {
     if (!state.selectedId) return;
     try {
       state.config = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/config/reset`, null);
-      flash("已重置为定义", "ok");
+      flash("已重置为产品默认", "ok");
       renderDrawer();
-      await refreshList();
-    } catch (err) {
-      apiErr(err);
-    }
-  }
-
-  // 复制：读定义 → 换一个没被占用的 id 建一台。id 不可变，所以只能一次给对，
-  // 自动取 {id}_copy / _copy2 …，不弹对话框问。
-  async function duplicateDevice(id) {
-    try {
-      const def = await api("GET", `/devices/${encodeURIComponent(id)}/definition`);
-      let next = id + "_copy";
-      for (let i = 2; state.devices.some((d) => d.device_id === next); i++) next = id + "_copy" + i;
-      const dev = { ...def, device_id: next };
-      delete dev.environment; delete dev.enterprise; delete dev.device_type; delete dev.server;
-      delete dev.overridden;
-      await api("POST", "/devices", {
-        environment: def.environment, enterprise: def.enterprise, device_type: def.device_type, device: dev,
-      });
-      flash("已复制为 " + next, "ok");
       await refreshList();
     } catch (err) {
       apiErr(err);
@@ -2044,9 +2288,7 @@
       if (!btn) return;
       const id = btn.closest("tr").dataset.id;
       const act = btn.dataset.mact;
-      if (act === "edit") editDefinition(id);
-      else if (act === "copy") duplicateDevice(id);
-      else if (act === "open") { setView("bench"); selectDevice(id); }
+      if (act === "open") { setView("bench"); selectDevice(id); }
       else if (act === "del") armThen(btn, async () => {
         try {
           await api("DELETE", `/devices/${encodeURIComponent(id)}`, null);
@@ -2070,11 +2312,9 @@
   const DRAWER_TITLE = {
     new: ["新建设备", "POST /devices"],
     config: ["配置", "GET / PUT /devices/{id}/config"],
-    definition: ["编辑定义", "GET / PUT /devices/{id}/definition"],
-    assets: ["音频库", "GET / POST /assets"],
+    assets: ["素材库", "GET / POST /assets"],
     help: ["术语与状态机", ""],
     scenarios: ["场景编排", "POST /scenarios/run"],
-    templates: ["模板管理", "GET / POST / DELETE /templates"],
     faults: ["注入故障", "POST /devices/{id}/faults"],
     runs: ["历史运行", "GET /devices/{id}/instances"],
     sheet: ["事件", "WS /ws/events"],
@@ -2142,41 +2382,6 @@
     },
   ];
 
-  // 新建抽屉里的三级下拉；增删改在「厂商与设备类型」页的配置树上。
-  function treeHTML() {
-    const sel = state.regSel;
-    const envNode = regEnv();
-    const entNode = regEnt();
-    const typNode = regTypes().find((x) => x.short_name === sel.typ);
-    const rows = [
-      {
-        cfg: TREE_LEVELS[0], value: sel.env, disabled: false,
-        opts: state.registry.map((r) => ({ v: r.name, t: r.name })), ph: "选一个环境",
-        hint: envNode ? `url  ${envNode.url}  ·  {enterprise} 会在 start 时替换成厂商简称` : "",
-      },
-      {
-        cfg: TREE_LEVELS[1], value: sel.ent, disabled: !sel.env,
-        opts: regEnts().map((r) => ({ v: r.short_name, t: `${r.name}（${r.short_name}）` })), ph: sel.env ? "选一个厂商" : "先选环境",
-        hint: entNode ? `名称  ${entNode.name}  ·  简称  ${entNode.short_name}  ·  上线报文里真正用的是简称` : "",
-      },
-      {
-        cfg: TREE_LEVELS[2], value: sel.typ, disabled: !sel.ent,
-        opts: regTypes().map((r) => ({ v: r.short_name, t: `${r.name}（${r.short_name}）` })), ph: sel.ent ? "选一个类型" : "先选厂商",
-        hint: typNode ? `名称  ${typNode.name}  ·  简称  ${typNode.short_name}` : "",
-      },
-    ];
-    const missing = [!sel.env && "环境", !sel.ent && "厂商", !sel.typ && "设备类型"].filter(Boolean);
-    return rows.map((r) => `<div class="lvl">
-        <div class="lvl__row">
-          <span class="lvl__label">${esc(r.cfg.label)}</span>
-          <select data-tree="${r.cfg.key}"${r.disabled ? " disabled" : ""}>${selOpts(r.opts, r.value, r.ph)}</select>
-        </div>
-        ${r.hint ? `<div class="lvl__hint">${esc(r.hint)}</div>` : ""}
-      </div>`).join("") + (missing.length
-      ? `<p class="warnbar" style="margin-left:29px">三级要选全才能建设备：${esc(missing.join(" / "))} 还没选。</p>`
-      : "");
-  }
-
   // 配置树：环境 / 厂商 / 设备类型 三列并排，点中一列的某一项，右边那列就列出它下面的数据。
   function registryHTML() {
     const s = state.regSel;
@@ -2191,7 +2396,7 @@
       },
       {
         cfg: TREE_LEVELS[2], cur: s.typ, blocked: s.ent ? "" : "先选一个厂商",
-        rows: regTypes().map((r) => ({ v: r.short_name, t: r.name, sub: r.short_name })),
+        rows: regTypes().map((r) => ({ v: r.short_name, t: r.name, sub: r.short_name, def: r.default_product || "" })),
       },
     ];
     return `<div class="tree">` + cols.map((c) => {
@@ -2205,7 +2410,7 @@
               <div class="tnode${on ? " is-on" : ""}">
                 <button type="button" class="tnode__pick" data-tree-pick="${k}" data-v="${esc(r.v)}" aria-pressed="${on}">
                   <span class="tnode__t">${esc(r.t)}</span>
-                  ${r.sub ? `<span class="tnode__sub">${esc(r.sub)}</span>` : ""}
+                  ${r.sub ? `<span class="tnode__sub">${esc(r.sub)}${r.def ? " · 默认 " + esc(r.def) : ""}</span>` : ""}
                 </button>
                 ${on ? `<span class="tnode__ops">
                   <button type="button" class="btn btn--ghost" data-tree-rename="${k}">编辑</button>
@@ -2217,11 +2422,22 @@
                   <span class="fld__name">${esc(k === "env" ? c.cfg.l2 : c.cfg.l1)}</span>
                   <input data-edit="1" value="${esc(k === "env" ? (r.sub || "") : r.t)}">
                 </label>
+                ${k === "env" ? "" : `<label class="fld">
+                  <span class="fld__name">${esc(c.cfg.l2)}</span>
+                  <input data-edit="2" value="${esc(r.sub || "")}">
+                </label>`}
+                ${k === "typ" ? `<label class="fld">
+                  <span class="fld__name">default_product</span>
+                  <span class="fld__zh">默认产品</span>
+                  <select data-edit="product">${productOpts(r.def || "", "无（启动时必须手选）")}</select>
+                </label>` : ""}
                 <div class="lvl__foot">
                   <button type="button" class="btn btn--primary btn--sm" data-tree-save="${k}">保存</button>
                   <button type="button" class="btn btn--ghost" data-tree-cancel="1">取消</button>
                   <span class="grow"></span>
-                  <span class="api">${esc(k === "env" ? "简称即主键，改不了" : "简称是 wire 值，改不了")}</span>
+                  <span class="api">${esc(k === "env"
+                    ? "环境名是主键，改不了；这里改的是 url"
+                    : "简称是 wire 值，改了下次 start 生效")}</span>
                 </div>
               </div>` : ""}
             </li>`;
@@ -2239,6 +2455,7 @@
             <label class="fld"><span class="fld__name">${esc(c.cfg.l1)}</span><input data-add="1" placeholder="${esc(c.cfg.p1)}"></label>
             <label class="fld"><span class="fld__name">${esc(c.cfg.l2)}</span><input data-add="2" placeholder="${esc(c.cfg.p2)}" value="${k === "env" ? esc(c.cfg.p2) : ""}"></label>
           </div>
+          ${k === "typ" ? `<label class="fld"><span class="fld__name">default_product</span><span class="fld__zh">默认产品</span><select data-add="product">${productOpts("", "无默认产品")}</select></label>` : ""}
           <div class="lvl__foot">
             <button type="button" class="btn btn--primary btn--sm" data-tree-ok="${k}">确认新增</button>
             <button type="button" class="btn btn--ghost" data-tree-cancel="1">取消</button>
@@ -2250,44 +2467,35 @@
     }).join("") + `</div>`;
   }
 
-  const NEW_FIELDS = [
-    { name: "device_id", zh: "设备标识", v: "sim_0001", ph: "sim_0001" },
-    { name: "firmware_version", zh: "固件版本", v: "1.0.0", ph: "1.0.0" },
-    { name: "nic_type", zh: "网卡类型", v: "wifi", ph: "wifi / lte" },
-    { name: "nic_iccid", zh: "SIM ICCID", v: "8986xxxxxxxxxx", ph: "20 位数字", note: "模拟上报的 SIM 卡号，纯透传" },
-    { name: "playing_mode", zh: "播放模式", v: "1", ph: "1-3" },
-    { name: "sample_rate", zh: "采样率", v: "16000", ph: "16000", note: "amr 仅支持 8000 / 16000" },
-    { name: "audio.format", zh: "音频格式", v: "pcm",
-      select: ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })),
-      note: "设备在线上收发音频的格式；压缩格式经 ffmpeg 转码推流" },
-    { name: "audio.bitrate_kbps", zh: "码率", v: "0", num: true, note: "0 = 按格式取默认，仅压缩格式有效" },
-  ];
-
   function fieldHTML(f) {
-    const wide = f.note && f.note.length > 30;
-    return `<label class="fld${wide ? " fld--wide" : ""}">
+    const wide = (f.note && f.note.length > 30) || (f.checks && f.checks.length > 3);
+    const control = f.checks
+      ? `<div class="picks">${f.checks.map((c) => `<label class="pick"><input type="checkbox" name="${esc(f.name)}" value="${esc(c.v)}"${c.on ? " checked" : ""}${f.locked ? " disabled" : ""}><span>${esc(c.t)}</span></label>`).join("")}</div>`
+      : f.select
+        ? `<select name="${esc(f.name)}"${f.locked ? " disabled" : ""}>${selOpts(f.select, f.v, f.ph || "")}</select>`
+        : f.check
+          ? `<span class="fld__chk"><input type="checkbox" name="${esc(f.name)}"${f.on ? " checked" : ""}${f.locked ? " disabled" : ""}><span>${esc(f.v || "")}</span></span>`
+          : `<input name="${esc(f.name)}" value="${esc(f.v ?? "")}" placeholder="${esc(f.ph || "")}"${f.locked || f.ro ? " disabled" : ""}${f.num ? ` type="number"` : ""}>`;
+    const tag = f.checks ? "div" : "label";
+    return `<${tag} class="fld${wide ? " fld--wide" : ""}">
       <span class="fld__head">
         <span class="fld__name">${esc(f.name)}</span>
         <span class="fld__zh">${esc(f.zh || "")}</span>
         ${f.ro ? `<span class="fld__ro">只读</span>` : ""}
+        ${f.dirty ? `<span class="tag tag--warn">已临时改</span>` : ""}
       </span>
-      ${f.select
-        ? `<select name="${esc(f.name)}"${f.locked ? " disabled" : ""}>${selOpts(f.select, f.v, f.ph || "")}</select>`
-        : f.check
-          ? `<span class="fld__chk"><input type="checkbox" name="${esc(f.name)}"${f.on ? " checked" : ""}${f.locked ? " disabled" : ""}><span>${esc(f.v || "")}</span></span>`
-          : `<input name="${esc(f.name)}" value="${esc(f.v ?? "")}" placeholder="${esc(f.ph || "")}"${f.locked || f.ro ? " disabled" : ""}${f.num ? ` type="number"` : ""}>`}
+      ${control}
       ${f.note ? `<span class="fld__note">${esc(f.note)}</span>` : ""}
-    </label>`;
+    </${tag}>`;
   }
 
   function newDrawerHTML() {
     const single = state.newMode === "single";
     const fields = single
-      ? NEW_FIELDS
+      ? [{ name: "device_id", zh: "设备标识", v: "sim_0001", ph: "sim_0001" }]
       : [
-        { name: "template_id", zh: "模板", v: "", ph: "选择模板", select: state.templates.map((t) => ({ v: t, t })) },
+        { name: "id_prefix", zh: "ID 前缀", v: "sim", ph: "sim", note: "生成 sim_1 … sim_N；任一冲突整批失败" },
         { name: "count", zh: "数量", v: "2", ph: "2", num: true },
-        { name: "id_prefix", zh: "ID 前缀", v: "sim", ph: "sim", note: "ID 冲突会导致整批失败" },
       ];
     return `<div class="sheet">
       <div class="step">
@@ -2296,119 +2504,115 @@
           <span class="grow"></span>
           <span class="seg">
             <button type="button" class="seg__btn${single ? " is-on" : ""}" data-newmode="single">单个</button>
-            <button type="button" class="seg__btn${single ? "" : " is-on"}" data-newmode="template">按模板批量</button>
+            <button type="button" class="seg__btn${single ? "" : " is-on"}" data-newmode="batch">前缀＋数量</button>
           </span>
         </div>
         <form id="form-create" class="fields fields--pad">${fields.map(fieldHTML).join("")}</form>
         <p class="hint" style="padding-left:29px">${single
-          ? "单个创建与按模板批量是两种互斥的方式，上面切换一次只显示一种。"
-          : "按模板批量：一次 POST /devices 带 template_id，前缀 + 序号生成 device_id。任一 ID 冲突，整批回滚。"}</p>
+          ? "设备册只留 device_id。属性在启动时从产品合成。"
+          : "一次 POST /devices 带 id_prefix + count，生成 前缀_1 … 前缀_N。任一 ID 冲突，整批回滚。"}</p>
         <div class="foot foot--plain" style="padding-left:29px">
           <button type="button" class="btn btn--primary" data-act="create">${single ? "创建设备" : "批量创建"}</button>
           <button type="button" class="btn btn--sub" data-act="close">取消</button>
-          <span class="grow"></span>
-          <span class="api">其余 30+ 字段用默认值补齐</span>
         </div>
       </div>
     </div>`;
   }
 
-  // def=true 时编辑落盘的「定义」（PUT /definition，随时可改、下次 start 生效）；
-  // 否则编辑本次运行的当前值（PUT /config，不落盘，Running 下锁身份与音频）。
-  function configDrawerHTML(def) {
-    const cfg = def ? state.defTarget : state.config;
-    if (!cfg) return `<p class="blank--drawer">这台设备没有可读的${def ? "定义" : "配置"}（可能已进入墓碑态）。</p>`;
-    const lock = def ? false : !identityEditable();
+  function isOverridden(path) {
+    const ov = (state.config && state.config.overrides) || {};
+    return Object.prototype.hasOwnProperty.call(ov, path);
+  }
+
+  function mark(f) {
+    return Object.assign(f, { dirty: isOverridden(f.name) });
+  }
+
+  function configDrawerHTML() {
+    const cfg = state.config;
+    if (!cfg) return `<p class="blank--drawer">这台设备没有可读的配置（可能已进入墓碑态）。</p>`;
+    const noProd = !cfg.product;
+    const identLock = noProd || state.tombstone || !identityEditable();
+    const liveLock = noProd || state.tombstone;
     const audio = cfg.audio || {};
     const beh = cfg.behavior || {};
     const rec = cfg.recording || {};
     const uuid = cfg.uuid || {};
-    const server = cfg.server || {};
+    const photo = ((cfg.features || {}).photo) || {};
     const st = state.tombstone ? "deleted" : ((state.live && state.live.instance_state) || "created");
-
-    // 当前值可能已不在树上（节点被引用时删不掉，但可能是历史值）：补进选项免得显示空白。
-    const withCur = (rows, val) => (val && !rows.some((r) => r.v === val) ? rows.concat([{ v: val, t: val }]) : rows);
-    const envOpts = withCur(state.registry.map((r) => ({ v: r.name, t: `${r.name} · ${r.url}` })), cfg.environment);
-    const curEnv = state.registry.find((x) => x.name === cfg.environment);
-    const entRows = (curEnv && curEnv.enterprises) || [];
-    const entOpts = withCur(entRows.map((r) => ({ v: r.short_name, t: `${r.name}（${r.short_name}）` })), cfg.enterprise);
-    const curEnt = entRows.find((x) => x.short_name === cfg.enterprise);
-    const typOpts = withCur(((curEnt && curEnt.device_types) || []).map((r) => ({ v: r.short_name, t: `${r.name}（${r.short_name}）` })), cfg.device_type);
+    const imgOpts = imageLib().map((x) => ({ v: x.asset_id, t: x.name || x.asset_id }));
+    if (photo.image && !imgOpts.some((r) => r.v === photo.image)) imgOpts.push({ v: photo.image, t: photo.image });
 
     const groups = [
-      { title: "挂靠", tag: "仅 created / stopped 可改", lock: true, fields: [
-        { name: "device_id", zh: "设备标识", v: cfg.device_id, ro: true },
-        { name: "server.url", zh: "服务端地址", v: server.url || "", ro: true, note: "由环境派生，start 时重新解析" },
-        { name: "environment", zh: "环境", v: cfg.environment, select: envOpts, locked: lock },
-        { name: "enterprise", zh: "厂商", v: cfg.enterprise, select: entOpts, locked: lock },
-        { name: "device_type", zh: "设备类型", v: cfg.device_type, select: typOpts, locked: lock, note: "改环境要重建下游选项" },
-      ]},
       { title: "音频", tag: "仅 created / stopped 可改", lock: true, fields: [
-        { name: "audio.format", zh: "格式", v: audio.format || "pcm", locked: lock,
-          select: ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })),
-          note: "压缩格式经 ffmpeg 转码并 -re 限速推流；下发格式跟随上行，但 wav 设备的下行会回落成 pcm" },
-        { name: "audio.sample_rate", zh: "采样率", v: audio.sample_rate ?? 16000, num: true, locked: lock, note: "amr 仅支持 8000 / 16000；running 下改会 409" },
-        { name: "audio.bitrate_kbps", zh: "码率", v: audio.bitrate_kbps ?? 0, num: true, locked: lock, note: "0 = 默认，仅压缩格式有效" },
-        { name: "audio.slice_ms", zh: "切片长度", v: audio.slice_ms ?? 100, num: true, locked: lock },
-        { name: "audio.max_payload_size", zh: "单包上限", v: audio.max_payload_size ?? 51200, num: true, locked: lock },
-        { name: "channels", zh: "声道", v: audio.channels ?? 1, ro: true },
-        { name: "sample_format", zh: "采样格式", v: audio.sample_format || "s16le", ro: true },
+        mark({ name: "audio.format", zh: "格式", v: audio.format || "pcm", locked: identLock,
+          select: ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })) }),
+        mark({ name: "audio.sample_rate", zh: "采样率", v: audio.sample_rate ?? 16000, num: true, locked: identLock, note: "amr 仅支持 8000 / 16000" }),
+        mark({ name: "audio.bitrate_kbps", zh: "码率", v: audio.bitrate_kbps ?? 0, num: true, locked: identLock, note: "0 = 默认" }),
+        mark({ name: "audio.slice_ms", zh: "切片长度", v: audio.slice_ms ?? 100, num: true, locked: identLock }),
+        mark({ name: "audio.max_payload_size", zh: "单包上限", v: audio.max_payload_size ?? 51200, num: true, locked: identLock }),
       ]},
       { title: "身份", tag: "仅 created / stopped 可改", lock: true, fields: [
-        { name: "firmware_version", zh: "固件版本", v: cfg.firmware_version || "", locked: lock },
-        { name: "nic_type", zh: "网卡类型", v: cfg.nic_type || "", locked: lock },
-        { name: "nic_iccid", zh: "SIM ICCID", v: cfg.nic_iccid || "", locked: lock },
-        { name: "playing_mode", zh: "播放模式", v: cfg.playing_mode ?? 1, num: true, locked: lock, note: "1-3；ready 下可热更新" },
-        { name: "uuid.min", zh: "UUID 下界", v: uuid.min ?? 1, num: true, locked: lock },
-        { name: "uuid.max", zh: "UUID 上界", v: uuid.max ?? 2147483647, num: true, locked: lock },
+        mark({ name: "firmware_version", zh: "固件版本", v: cfg.firmware_version || "", locked: identLock, note: ID_RISK }),
+        mark({ name: "nic_type", zh: "网卡类型", v: cfg.nic_type || "", locked: identLock, note: ID_RISK }),
+        mark({ name: "nic_iccid", zh: "SIM ICCID", v: cfg.nic_iccid || "", locked: identLock, note: ID_RISK }),
+        mark({ name: "playing_mode", zh: "对话模式", v: cfg.playing_mode ?? 1, num: true, locked: identLock, note: "1 按键 / 2 连续 / 3 唤醒" }),
+        mark({ name: "uuid.min", zh: "UUID 下界", v: uuid.min ?? 1, num: true, locked: identLock }),
+        mark({ name: "uuid.max", zh: "UUID 上界", v: uuid.max ?? 2147483647, num: true, locked: identLock }),
       ]},
       { title: "行为", tag: "仅 created / stopped 可改", lock: true, fields: [
-        { name: "behavior.keepalive_interval_sec", zh: "心跳间隔", v: beh.keepalive_interval_sec ?? 30, num: true, locked: lock, note: "实测服务端约 60s 踢线，这里必须明显更短" },
-        { name: "behavior.first_reply_timeout_sec", zh: "首包超时", v: beh.first_reply_timeout_sec ?? 90, num: true, locked: lock },
-        { name: "behavior.speak_backlog_depth", zh: "送话排队深度", v: beh.speak_backlog_depth ?? 0, num: true, locked: lock, note: "0-64；0 = 关闭，槽占用直接 409" },
-        { name: "behavior.silence_probe", zh: "静默探针", check: true, on: !!beh.silence_probe, locked: lock, v: "timeout 静默终态后发一个探针 report" },
-        { name: "behavior.interrupt_on_disconnect", zh: "断线即打断", check: true, on: !!beh.interrupt_on_disconnect, locked: lock, v: "事件 WS 断开时打断当前 turn" },
+        mark({ name: "behavior.keepalive_interval_sec", zh: "心跳间隔", v: beh.keepalive_interval_sec ?? 60, num: true, locked: identLock }),
+        mark({ name: "behavior.first_reply_timeout_sec", zh: "首包超时", v: beh.first_reply_timeout_sec ?? 20, num: true, locked: identLock }),
+        mark({ name: "behavior.speak_backlog_depth", zh: "送话排队深度", v: beh.speak_backlog_depth ?? 0, num: true, locked: identLock }),
+        mark({ name: "behavior.silence_probe", zh: "静默探针", check: true, on: !!beh.silence_probe, locked: identLock, v: "timeout 静默终态后发一个探针 report" }),
+        mark({ name: "behavior.interrupt_on_disconnect", zh: "断线即打断", check: true, on: !!beh.interrupt_on_disconnect, locked: identLock, v: "事件 WS 断开时打断当前 turn" }),
       ]},
       { title: "录音", tag: "running 也可改", lock: false, fields: [
-        { name: "recording.enable_frame_log", zh: "帧日志", check: true, on: !!rec.enable_frame_log, v: "记录每个包的序号与字节数" },
-        { name: "recording.save_uplink_audio", zh: "存上行", check: true, on: !!rec.save_uplink_audio, v: "把送出去的音频落盘" },
-        { name: "recording.save_downlink_audio", zh: "存下行", check: true, on: !!rec.save_downlink_audio, v: "把服务端回的音频落盘" },
-        { name: "recording.output_dir", zh: "输出目录", v: rec.output_dir || "" },
+        mark({ name: "recording.enable_frame_log", zh: "帧日志", check: true, on: !!rec.enable_frame_log, locked: liveLock, v: "记录每个包的序号与字节数" }),
+        mark({ name: "recording.save_uplink_audio", zh: "存上行", check: true, on: !!rec.save_uplink_audio, locked: liveLock, v: "把送出去的音频落盘" }),
+        mark({ name: "recording.save_downlink_audio", zh: "存下行", check: true, on: !!rec.save_downlink_audio, locked: liveLock, v: "把服务端回的音频落盘" }),
+        mark({ name: "recording.output_dir", zh: "输出目录", v: rec.output_dir || "", locked: liveLock }),
+      ]},
+      { title: "拍照", tag: "running 也可改", lock: false, fields: [
+        mark({ name: "features.photo.enabled", zh: "拍照功能", check: true, on: !!photo.enabled, locked: liveLock, v: "下一次收到拍照指令时生效" }),
+        mark({ name: "features.photo.image", zh: "拍照用图", v: photo.image || "", select: imgOpts, ph: "选一张图片资产", locked: liveLock }),
+        mark({ name: "features.photo.server_default_reply", zh: "回复格式用服务端默认", check: true, on: !!photo.server_default_reply, locked: liveLock, v: "Reserved 留空，服务端按默认回 aac" }),
+        mark({ name: "features.photo.slice_interval_ms", zh: "分片间隔 ms", v: photo.slice_interval_ms ?? 0, num: true, locked: liveLock, note: "0 = 50ms" }),
+        mark({ name: "features.photo.reply_timeout_sec", zh: "回复超时 s", v: photo.reply_timeout_sec ?? 0, num: true, locked: liveLock, note: "0 = 60s" }),
       ]},
     ];
     const conn = (state.live && state.live.connection_state) || "—";
-    return `<form id="form-${def ? "definition" : "config"}" class="sheet sheet--tight">
-      <div class="lockbar lockbar--${def ? "ok" : (lock ? "warn" : "ok")}">
-        <span class="tag">${def ? "定义" : "锁态"}</span>
-        <span>${def
-          ? `改的是落盘定义（data/devices.yaml），agent 按 device_id 引用的就是它。随时可改，运行中的这一轮不受影响，下次 start 生效。`
-          : (lock
-            ? `当前 instance_state 是 ${esc(st)}，只有录音那一组能改。改采样率会返回 409，要先停止设备。`
-            : `当前 instance_state 是 ${esc(st)}，挂靠 / 音频 / 身份 / 行为 四组都可以改。这里改的是本次运行的当前值，不落盘。`)}</span>
+    const barKind = noProd ? "mute" : (identLock ? "warn" : "ok");
+    const barText = noProd
+      ? "这台设备还没选过产品。先在启动条选产品并启动一次，才能改配置。"
+      : (identLock
+        ? `当前产品 ${esc(cfg.product)} · instance_state ${esc(st)}，只有录音与拍照能改。`
+        : `当前产品 ${esc(cfg.product)} · instance_state ${esc(st)}。保存只提交改过的字段。`);
+    return `<form id="form-config" class="sheet sheet--tight">
+      <div class="lockbar lockbar--${barKind}">
+        <span class="tag">${noProd ? "未选产品" : productLabel(cfg.product)}</span>
+        <span>${barText}</span>
       </div>
       ${groups.map((g) => `<div class="grp">
         <div class="grp__head">
           <span class="grp__title">${esc(g.title)}</span>
-          <span class="${tagCls(g.lock ? (lock ? "warn" : "") : "ok")}">${esc(g.tag)}</span>
+          <span class="${tagCls(g.lock ? (identLock ? "warn" : "") : "ok")}">${esc(g.tag)}</span>
           <span class="rule"></span>
         </div>
         <div class="fields">${g.fields.map(fieldHTML).join("")}</div>
       </div>`).join("")}
       <div class="foot">
-        <button type="submit" class="btn btn--primary"${state.tombstone ? " disabled" : ""}>${def ? "保存到定义（落盘）" : "保存配置（只对本次运行生效）"}</button>
-        ${def ? "" : `<button type="button" class="btn btn--sub" data-act="reset"${cfg.overridden ? "" : " disabled"}
-          title="POST /devices/{id}/config/reset · 丢弃临时修改，回到落盘定义">重置为定义</button>
-        <button type="button" class="btn btn--sub" data-act="report"${conn === "ready" ? "" : " disabled"}
-          title="POST /devices/{id}/report {playingMode} · 仅 connection_state=ready">热更新 playingMode</button>`}
+        <button type="submit" class="btn btn--primary"${noProd || state.tombstone ? " disabled" : ""}>保存配置（只对本次运行生效）</button>
+        <button type="button" class="btn btn--sub" data-act="reset"${noProd || !cfg.overridden ? " disabled" : ""}
+          title="POST /devices/{id}/config/reset · 丢弃临时覆盖，回到产品默认">重置为产品默认</button>
+        <button type="button" class="btn btn--sub" data-act="report"${conn === "ready" && !noProd && !state.tombstone ? "" : " disabled"}
+          title="POST /devices/{id}/report {playingMode} · 仅 connection_state=ready">热更新对话模式</button>
         <span class="grow"></span>
-        <span class="api">${def
-          ? "PUT /devices/{id}/definition"
-          : `${cfg.overridden ? "当前值已偏离定义 · " : ""}connection_state = ${esc(conn)}`}</span>
+        <span class="api">${cfg.overridden ? "已临时改 · " : ""}connection_state = ${esc(conn)}</span>
       </div>
     </form>`;
   }
 
-  // 音频库语言表。后端不校验这个字段，这里只是别让人手打错 zh/zh-CN/中文 三种写法。
   const LANGS = [
     { v: "zh", t: "zh 中文" },
     { v: "en", t: "en 英语" },
@@ -2419,24 +2623,28 @@
   ];
 
   function assetsDrawerHTML() {
-    const rows = state.lib.rows;
+    const rows = visibleLib();
+    const fmtOpts = state.lib.kind === "image"
+      ? ["jpg", "png", "bmp"].map((f) => ({ v: f, t: f }))
+      : ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f }));
     return `<div class="sheet sheet--tight">
       <div class="bar">
-        <select data-lib="format" style="width:140px">${selOpts(
-          ["pcm", "wav", "mp3", "amr", "aac"].map((f) => ({ v: f, t: f })), state.lib.format, "全部格式")}</select>
+        <select data-lib="kind" style="width:120px">${selOpts([{ v: "audio", t: "音频" }, { v: "image", t: "图片" }], state.lib.kind, "全部类型")}</select>
+        <select data-lib="format" style="width:140px">${selOpts(fmtOpts, state.lib.format, "全部格式")}</select>
         <select data-lib="lang" style="width:140px">${selOpts(LANGS, state.lib.language, "全部语言")}</select>
         <span class="grow"></span>
         <span style="display:flex;align-items:center;gap:8px;flex:none">
           <span class="dim" style="font-size:11.5px">导入语言</span>
           <select data-lib="newlang" style="width:118px" title="写进新素材的 language 字段，不是筛选">${selOpts(LANGS, state.lib.newLang, "不标注")}</select>
-          <label class="btn btn--primary btn--sm">＋ 导入<input type="file" id="lib-file" accept=".wav,.mp3,.amr,.aac,audio/*" hidden></label>
+          <label class="btn btn--primary btn--sm">＋ 导入<input type="file" id="lib-file" accept=".wav,.mp3,.amr,.aac,.jpg,.jpeg,.png,.bmp,audio/*,image/*" hidden></label>
         </span>
       </div>
-      <p class="hint">POST /assets（multipart）· wav / mp3 / amr / aac · 上限 10 MB / 60 秒</p>
+      <p class="hint">POST /assets · 音频 wav/mp3/amr/aac · 图片 jpg/png/bmp · GET /assets/{id}/content</p>
       <div class="list">
         ${rows.length ? rows.map((a) => {
           const armed = state.lib.armedId === a.asset_id;
           const editing = state.lib.editingId === a.asset_id;
+          const img = a.kind === "image";
           if (editing) {
             return `<div class="row" data-id="${esc(a.asset_id)}">
               <div class="fields">
@@ -2452,17 +2660,19 @@
           }
           return `<div class="row" data-id="${esc(a.asset_id)}">
             <div class="row__top">
+              ${img ? `<img class="thumb" src="/assets/${esc(a.asset_id)}/content" alt="">` : ""}
               <span class="row__name" title="${esc(a.asset_id)}">${esc(a.name)}</span>
               <span class="${tagCls("acc")}">${esc(a.format)}</span>
+              <span class="tag tag--mute">${esc(a.kind || "audio")}</span>
               <span class="grow"></span>
-              <button type="button" class="btn btn--ok btn--tiny" data-asset="play" title="试听（服务端解码为 wav）">▶</button>
+              ${img ? "" : `<button type="button" class="btn btn--ok btn--tiny" data-asset="play" title="试听（服务端解码为 wav）">▶</button>`}
               <button type="button" class="btn btn--ghost" data-asset="edit">改名</button>
               <button type="button" class="btn btn--danger btn--ghost" data-asset="del">${armed ? "再点一次" : "删除"}</button>
             </div>
             <div class="row__meta">
-              <span>${esc(a.sample_rate ? a.sample_rate + " Hz" : "—")}</span><span class="sep">|</span>
-              <span>${esc(a.bitrate_kbps ? a.bitrate_kbps + " kbps" : "—")}</span><span class="sep">|</span>
-              <span>${esc(fmtDurMs(a.duration_ms))}</span><span class="sep">|</span>
+              <span>${esc(img ? fmtBytes(a.bytes) : (a.sample_rate ? a.sample_rate + " Hz" : "—"))}</span><span class="sep">|</span>
+              <span>${esc(img ? (a.format || "image") : (a.bitrate_kbps ? a.bitrate_kbps + " kbps" : "—"))}</span><span class="sep">|</span>
+              <span>${esc(img ? "" : fmtDurMs(a.duration_ms))}</span><span class="sep">|</span>
               <span>${esc(a.language || "—")}</span>
             </div>
           </div>`;
@@ -2478,8 +2688,10 @@
     ["instance_id", "一次启动的唯一标识。设备删掉后用同一个 instance_id 还能只读回看它的事件和 turn，TTL 24 小时。"],
     ["简称（wire 值）", "厂商和设备类型都有「名称」和「简称」两个字段。上线报文里真正发出去的是简称，名称只给人看。"],
     ["{enterprise} 占位符", "环境 url 里可以写 ws://127.0.0.1:8089/{enterprise}，start 时会用厂商简称替换掉它。"],
-    ["playing_mode", "设备播放模式，取值 1-3。Ready 状态下可以不重启直接热更新。"],
-    ["nic_iccid", "模拟设备上报的 SIM 卡 ICCID，纯透传字段，服务端一般只做日志。"],
+    ["product", "设备属性的来源。启动时选产品，实例上可以临时覆盖；换产品会清空覆盖。"],
+    ["playing_mode", "对话模式，取值 1 按键 / 2 连续 / 3 唤醒。Ready 状态下可以不重启直接热更新。"],
+    ["nic_iccid", "模拟设备上报的 SIM 卡 ICCID。换产品或改 ICCID 会让真实服务端重新校验这台设备。"],
+    ["photo_command", "收到拍照指令，reason 是 QuestionKey。之后是 photo_uploaded 或 photo_skipped，再等图片分析的语音回复。"],
     ["stage2", "uplink_end_reason 的一种：上行音频推完了整个第二阶段才结束，不是被打断或超时。"],
     ["speak_backlog_depth", "送话排队深度。0 表示不排队，槽被占用时直接 409；大于 0 时新的送话进队列等前一轮结束。"],
     ["turn_terminal", "一轮对话的终结事件，带 reply_kind（回了什么）、turn_end_reason（怎么结束的）、uplink_end_reason（上行怎么停的）。"],
@@ -2491,8 +2703,8 @@
       "启动只在 created / stopped 时可点；失败后要先停止再重来。"],
     ["connection_state", ["disconnected", "connected", "registering", "registered", "reporting", "ready"],
       "ready 之前送话都会被拒；keepalive 必须明显短于服务端约 60s 的踢线阈值。"],
-    ["一个 turn 的生命周期", ["speak 受理", "speak_queued", "speak_dequeued", "上行推包", "asr_result", "tts_chunk ×N", "tts_done", "turn_terminal"],
-      "时间线上从左到右就是这个顺序；tts_chunk 一秒能来几十条，事件区按包组折叠。"],
+    ["一个 turn 的生命周期", ["speak 受理", "上行推包", "asr_result", "photo_command", "photo_uploaded", "tts_chunk ×N", "turn_terminal"],
+      "拍照路径是指令 → 传图 → 图片分析的语音回复；没开拍照或没配图则 photo_skipped。"],
   ];
 
   function helpDrawerHTML() {
@@ -2521,19 +2733,19 @@
       {
         name: `并发冷启动（${ids.length} 台）`,
         steps: `batch_start ${ids.length} 台 · wait_ready`,
-        ok: ids.length > 0,
-        why: "先在名册里勾几台，或选中一台设备",
-        spec: { name: "batch-start", steps: [{ action: "batch_start", device_ids: ids, wait_ready: true, ...attachRefs() }] },
+        ok: ids.length > 0 && !!state.attachProduct,
+        why: ids.length ? "先在启动条选产品" : "先在名册里勾几台，或选中一台设备",
+        spec: { name: "batch-start", steps: [{ action: "batch_start", device_ids: ids, wait_ready: true, ...attachRefs(), product: state.attachProduct }] },
       },
       {
         name: "单轮语音回归",
         steps: `batch_start(1) → speak{asset_id} → wait`,
-        ok: !!(state.selectedId && asset),
-        why: "先选中一台设备，并在送话条里选一条音频库素材",
+        ok: !!(state.selectedId && asset && state.attachProduct),
+        why: !state.selectedId || !asset ? "先选中一台设备，并在送话条里选一条素材库音频" : "先在启动条选产品",
         spec: {
           name: "one-turn",
           steps: [
-            { action: "batch_start", device_ids: [state.selectedId], wait_ready: true },
+            { action: "batch_start", device_ids: [state.selectedId], wait_ready: true, ...attachRefs(), product: state.attachProduct },
             { action: "speak", device_id: state.selectedId, asset_id: asset, wait: true },
           ],
         },
@@ -2571,21 +2783,6 @@
     </div>`;
   }
 
-  function templatesDrawerHTML() {
-    return `<div class="sheet sheet--tight">
-      <div class="bar">
-        <span class="api">GET /templates · POST /templates · DELETE /templates/{id}</span>
-        <span class="grow"></span>
-        <button type="button" class="btn btn--primary btn--sm" data-act="tpl-add"${state.config ? "" : " disabled"}>＋ 从当前设备存模板</button>
-      </div>
-      ${state.templates.length ? state.templates.map((t) => `<div class="row row--flat" data-id="${esc(t)}">
-        <span class="mono" style="font-size:12px">${esc(t)}</span>
-        <span class="grow"></span>
-        <button type="button" class="btn btn--danger btn--sm" data-tpl-del="${esc(t)}">删除</button>
-      </div>`).join("") : `<p class="blank--drawer">还没有模板。选中一台配好的设备，用上面的按钮存一个。</p>`}
-    </div>`;
-  }
-
   // 每次运行一行。instance_id 是每进程新生成的，manager 一重启同一台设备就换一个，
   // 所以「历史」天然按运行分段；本次运行标 live，盘上的旧运行标可回看。
   function runsDrawerHTML() {
@@ -2598,6 +2795,7 @@
         const span = [fmtTime(r.started_at), r.turns ? `${r.turns} 轮` : "还没有轮次"].filter(Boolean).join(" · ");
         return `<div class="row row--flat">
           <span class="${live ? "tag tag--acc" : "tag tag--mute"}">${live ? "本次运行" : r.source === "tomb" ? "墓碑" : "历史"}</span>
+          ${r.product ? `<span class="tag tag--acc">${esc(r.product)}</span>` : ""}
           <span class="mono" style="font-size:12px" title="${esc(r.instance_id)}">${esc(shortId(r.instance_id))}</span>
           <span class="dim" style="font-size:12px">${esc(span)}</span>
           <span class="grow"></span>
@@ -2669,12 +2867,10 @@
     const w = state.drawer;
     if (!w) return;
     if (w === "new") setHTML(body, newDrawerHTML());
-    else if (w === "config") setHTML(body, configDrawerHTML(false));
-    else if (w === "definition") setHTML(body, configDrawerHTML(true));
+    else if (w === "config") setHTML(body, configDrawerHTML());
     else if (w === "assets") setHTML(body, assetsDrawerHTML());
     else if (w === "help") setHTML(body, helpDrawerHTML());
     else if (w === "scenarios") setHTML(body, scenariosDrawerHTML());
-    else if (w === "templates") setHTML(body, templatesDrawerHTML());
     else if (w === "faults") setHTML(body, faultsDrawerHTML());
     else if (w === "runs") setHTML(body, runsDrawerHTML());
     else if (w === "sheet") {
@@ -2689,13 +2885,34 @@
 
   // ——— 抽屉里的动作 ———
 
-  function formVal(name) {
-    const el = $("drawer-body").querySelector(`[name="${CSS.escape(name)}"]`);
+  function formRoot(root) {
+    return root || $("drawer-body");
+  }
+
+  function formVal(name, root) {
+    const el = formRoot(root).querySelector(`[name="${CSS.escape(name)}"]`);
     if (!el) return "";
     return el.type === "checkbox" ? el.checked : el.value;
   }
 
-  // 建的是设备册条目，不带挂靠——挂靠在启动时给（phase11）。
+  function formChecked(name, root) {
+    return [...formRoot(root).querySelectorAll(`[name="${CSS.escape(name)}"]:checked`)].map((el) => el.value);
+  }
+
+  function origAt(obj, path) {
+    return path.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
+  }
+
+  function nestSet(obj, path, val) {
+    const parts = path.split(".");
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!cur[parts[i]] || typeof cur[parts[i]] !== "object") cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = val;
+  }
+
   async function createFromDrawer() {
     try {
       if (state.newMode === "single") {
@@ -2704,33 +2921,23 @@
           flash("device_id 不能空", "err");
           return;
         }
-        await api("POST", "/devices", {
-          device: defaultDevice(id, {
-            firmware_version: String(formVal("firmware_version") || "").trim(),
-            nic_type: String(formVal("nic_type") || "").trim(),
-            nic_iccid: String(formVal("nic_iccid") || "").trim(),
-            playing_mode: Number(formVal("playing_mode")),
-            sample_rate: Number(formVal("sample_rate")),
-            format: String(formVal("audio.format") || "pcm"),
-            bitrate_kbps: Number(formVal("audio.bitrate_kbps")) || 0,
-          }),
-        });
+        await api("POST", "/devices", { device_id: id });
         flash("POST /devices · 已创建 " + id, "ok");
         closeDrawer();
         await refreshList();
         await selectDevice(id);
       } else {
-        const template_id = String(formVal("template_id") || "");
-        if (!template_id) {
-          flash("请选择模板", "err");
+        const id_prefix = String(formVal("id_prefix") || "").trim();
+        const count = Number(formVal("count")) || 0;
+        if (!id_prefix) {
+          flash("前缀不能空", "err");
           return;
         }
-        const data = await api("POST", "/devices", {
-          ...refs,
-          template_id,
-          count: Number(formVal("count")) || 1,
-          id_prefix: String(formVal("id_prefix") || "sim"),
-        });
+        if (count <= 0) {
+          flash("数量必须 > 0", "err");
+          return;
+        }
+        const data = await api("POST", "/devices", { id_prefix, count });
         flash("已创建 " + (data.device_ids || []).join(", "), "ok");
         closeDrawer();
         await refreshList();
@@ -2741,72 +2948,66 @@
     }
   }
 
-  function readConfigDrawer(def) {
-    const rec = {
-      enable_frame_log: !!formVal("recording.enable_frame_log"),
-      save_uplink_audio: !!formVal("recording.save_uplink_audio"),
-      save_downlink_audio: !!formVal("recording.save_downlink_audio"),
-      output_dir: formVal("recording.output_dir"),
-    };
-    // 定义随时可整份改；当前值在 Running 下只放行录音那一组（后端同样门禁）。
-    if (!def && !identityEditable()) return { recording: rec };
-    return {
-      environment: formVal("environment"),
-      enterprise: formVal("enterprise"),
-      device_type: formVal("device_type"),
-      firmware_version: formVal("firmware_version"),
-      nic_type: formVal("nic_type"),
-      nic_iccid: formVal("nic_iccid"),
-      playing_mode: Number(formVal("playing_mode")),
-      audio: {
-        format: formVal("audio.format") || "pcm",
-        sample_rate: Number(formVal("audio.sample_rate")),
-        channels: 1,
-        sample_format: "s16le",
-        slice_ms: Number(formVal("audio.slice_ms")),
-        max_payload_size: Number(formVal("audio.max_payload_size")),
-        bitrate_kbps: Number(formVal("audio.bitrate_kbps")) || 0,
-      },
-      uuid: { min: Number(formVal("uuid.min")), max: Number(formVal("uuid.max")) },
-      behavior: {
-        keepalive_interval_sec: Number(formVal("behavior.keepalive_interval_sec")),
-        first_reply_timeout_sec: Number(formVal("behavior.first_reply_timeout_sec")),
-        speak_backlog_depth: Number(formVal("behavior.speak_backlog_depth")) || 0,
-        silence_probe: !!formVal("behavior.silence_probe"),
-        interrupt_on_disconnect: !!formVal("behavior.interrupt_on_disconnect"),
-      },
-      recording: rec,
-    };
+  const CONFIG_FIELDS = [
+    { name: "firmware_version" },
+    { name: "nic_type" },
+    { name: "nic_iccid" },
+    { name: "playing_mode", num: true },
+    { name: "audio.format" },
+    { name: "audio.sample_rate", num: true },
+    { name: "audio.bitrate_kbps", num: true },
+    { name: "audio.slice_ms", num: true },
+    { name: "audio.max_payload_size", num: true },
+    { name: "uuid.min", num: true },
+    { name: "uuid.max", num: true },
+    { name: "behavior.keepalive_interval_sec", num: true },
+    { name: "behavior.first_reply_timeout_sec", num: true },
+    { name: "behavior.speak_backlog_depth", num: true },
+    { name: "behavior.silence_probe", check: true },
+    { name: "behavior.interrupt_on_disconnect", check: true },
+    { name: "recording.enable_frame_log", check: true, live: true },
+    { name: "recording.save_uplink_audio", check: true, live: true },
+    { name: "recording.save_downlink_audio", check: true, live: true },
+    { name: "recording.output_dir", live: true },
+    { name: "features.photo.enabled", check: true, live: true },
+    { name: "features.photo.image", live: true },
+    { name: "features.photo.server_default_reply", check: true, live: true },
+    { name: "features.photo.slice_interval_ms", num: true, live: true },
+    { name: "features.photo.reply_timeout_sec", num: true, live: true },
+  ];
+
+  function sameVal(a, b, f) {
+    if (f.check) return !!a === !!b;
+    if (f.num) return Number(a) === Number(b);
+    return String(a ?? "") === String(b ?? "");
   }
 
-  // 换环境/厂商时就地重建下游 <select>，不整块重渲——保住用户手打的值。
-  function cascadeConfig(changed) {
-    const body = $("drawer-body");
-    const envSel = body.querySelector('[name="environment"]');
-    const entSel = body.querySelector('[name="enterprise"]');
-    const typSel = body.querySelector('[name="device_type"]');
-    if (!envSel || !entSel || !typSel) return;
-    const env = state.registry.find((x) => x.name === envSel.value);
-    if (changed === "env") {
-      const ents = (env && env.enterprises) || [];
-      entSel.innerHTML = ents.length
-        ? ents.map((r) => `<option value="${esc(r.short_name)}">${esc(r.name)}（${esc(r.short_name)}）</option>`).join("")
-        : `<option value="">（该环境下无厂商）</option>`;
+  function readConfigDrawer() {
+    const runningLock = !identityEditable();
+    const out = {};
+    for (const f of CONFIG_FIELDS) {
+      if (runningLock && !f.live) continue;
+      const raw = formVal(f.name);
+      const val = f.check ? !!raw : f.num ? Number(raw) : raw;
+      if (sameVal(val, origAt(state.config, f.name), f)) continue;
+      nestSet(out, f.name, val);
     }
-    const ent = ((env && env.enterprises) || []).find((x) => x.short_name === entSel.value);
-    const typs = (ent && ent.device_types) || [];
-    typSel.innerHTML = typs.length
-      ? typs.map((r) => `<option value="${esc(r.short_name)}">${esc(r.name)}（${esc(r.short_name)}）</option>`).join("")
-      : `<option value="">（该厂商下无类型）</option>`;
+    return out;
   }
 
   async function saveConfig(ev) {
     if (ev) ev.preventDefault();
     if (!state.selectedId || state.tombstone) return;
+    const patch = readConfigDrawer();
+    if (!Object.keys(patch).length) {
+      flash("没有改动", "info");
+      return;
+    }
     try {
-      state.config = await api("PUT", `/devices/${encodeURIComponent(state.selectedId)}/config`, readConfigDrawer(false));
+      state.config = await api("PUT", `/devices/${encodeURIComponent(state.selectedId)}/config`, patch);
       flash("PUT /devices/" + state.selectedId + "/config · 已保存", "ok");
       renderDrawer();
+      await refreshList();
     } catch (err) {
       apiErr(err);
     }
@@ -2859,8 +3060,12 @@
         state.regSel.ent = b;
         state.regSel.typ = "";
       } else {
-        await api("POST", TREE_PATH.typ(), { name: a, short_name: b });
+        const payload = { name: a, short_name: b };
+        const dp = ((body.querySelector('[data-add="product"]') || {}).value || "").trim();
+        if (dp) payload.default_product = dp;
+        await api("POST", TREE_PATH.typ(), payload);
         state.regSel.typ = b;
+        state.attachProduct = dp || state.attachProduct;
       }
       state.adding = null;
       await loadRegistry();
@@ -2870,20 +3075,46 @@
     }
   }
 
-  // 后端只开了两种改法：环境改 url，厂商/设备类型改 name（简称是主键，改不了）。
+  // 环境改 url（环境名是主键，改不了）；厂商/设备类型改名称与简称。
+  // 简称原本也是禁改的——Phase 11 之前它焊在每条设备定义里。现在设备册不引用
+  // 配置树了，改简称只动树本身，正在跑的实例下次 start 才用新值。
   // 行内表单而不是 prompt()：预览窗格和一些内嵌 webview 直接把 prompt/confirm 抛错。
   async function treeSave(k) {
-    const input = $("registry-body").querySelector('[data-edit="1"]');
-    const v = ((input || {}).value || "").trim();
+    const body = $("registry-body");
+    const v = ((body.querySelector('[data-edit="1"]') || {}).value || "").trim();
     if (!v) {
       flash(k === "env" ? "url 不能空" : "名称不能空", "err");
       return;
     }
+    let payload = { url: v };
+    let okMsg = "已改 url " + v;
+    if (k !== "env") {
+      const short = ((body.querySelector('[data-edit="2"]') || {}).value || "").trim();
+      if (!short) {
+        flash("简称不能空——上线报文里发出去的是它", "err");
+        return;
+      }
+      payload = { name: v, short_name: short };
+      if (k === "typ") {
+        payload.default_product = ((body.querySelector('[data-edit="product"]') || {}).value || "");
+      }
+      const was = { ent: state.regSel.ent, typ: state.regSel.typ }[k];
+      const wasName = k === "ent"
+        ? ((regEnt() || {}).name || "")
+        : ((regTypes().find((x) => x.short_name === state.regSel.typ) || {}).name || "");
+      okMsg = (v === wasName && short === was)
+        ? "已保存 " + v
+        : (short === was ? "已改名 " + v : `已改成 ${v}（${was} → ${short}）`);
+    }
     try {
-      await api("PUT", treeNodePath(k), k === "env" ? { url: v } : { name: v });
+      const res = await api("PUT", treeNodePath(k), payload);
+      // 简称是选中项的键，改了要把选中态迁过去，否则右边整列会空掉。
+      if (k === "ent" && res.short_name) { state.regSel.ent = res.short_name; state.regSel.typ = ""; }
+      if (k === "typ" && res.short_name) state.regSel.typ = res.short_name;
+      if (k === "typ") state.attachProduct = payload.default_product || "";
       state.regEdit = "";
       await loadRegistry();
-      flash(k === "env" ? "已改 url " + v : "已改名 " + v, "ok");
+      flash(okMsg, "ok");
     } catch (err) {
       apiErr(err);
     }
@@ -2999,38 +3230,6 @@
       if (n < 120) setTimeout(tick, 1000);
     };
     setTimeout(tick, 1000);
-  }
-
-  async function addTemplate() {
-    if (!state.config) return;
-    const id = prompt("模板 id（只能字母数字下划线短横）", "tpl_" + (state.selectedId || "dev"));
-    if (id == null || !id.trim()) return;
-    // 模板体禁止 device_id / enterprise / device_type / server：挂靠由创建时的树引用决定。
-    const dev = { ...state.config };
-    delete dev.device_id;
-    delete dev.enterprise;
-    delete dev.device_type;
-    delete dev.server;
-    delete dev.environment;
-    try {
-      await api("POST", "/templates", { template_id: id.trim(), device: dev });
-      flash("POST /templates · 已存 " + id.trim(), "ok");
-      await loadTemplates();
-      renderDrawer();
-    } catch (err) {
-      apiErr(err);
-    }
-  }
-
-  async function delTemplate(id) {
-    try {
-      await api("DELETE", `/templates/${encodeURIComponent(id)}`);
-      flash("DELETE /templates/" + id, "info");
-      await loadTemplates();
-      renderDrawer();
-    } catch (err) {
-      apiErr(err);
-    }
   }
 
   async function injectFault(f) {
@@ -3179,9 +3378,8 @@
     $("btn-scenarios").addEventListener("click", () => openDrawer("scenarios"));
     $("btn-new").addEventListener("click", () => openDrawer("new"));
     $("btn-assets").addEventListener("click", () => openDrawer("assets"));
-    $("btn-templates").addEventListener("click", () => openDrawer("templates"));
     // 打开前重拉一次：overridden 与各字段可能被别处改过（agent、另一个页签、
-    // 或本页的重置），拿选中设备时的缓存会让「重置为定义」按钮状态不对。
+    // 或本页的重置），拿选中设备时的缓存会让「重置为产品默认」按钮状态不对。
     $("btn-config").addEventListener("click", async () => {
       openDrawer("config");
       if (!state.selectedId || state.tombstone) return;
@@ -3246,6 +3444,11 @@
 
   function bindStage() {
     $("attach-bar").addEventListener("change", (e) => {
+      if (e.target.getAttribute("data-attach") === "product") {
+        state.attachProduct = e.target.value;
+        renderStage();
+        return;
+      }
       if (changeTree(e.target)) renderStage();
     });
     $("btn-start").addEventListener("click", startAndWait);
@@ -3383,8 +3586,6 @@
       }
       const sc = hit("data-scenario");
       if (sc !== null) { runScenario(Number(sc)); return; }
-      const tdel = hit("data-tpl-del");
-      if (tdel) { delTemplate(tdel); return; }
       const runOpen = t.closest("[data-run-open]");
       if (runOpen) {
         const ins = runOpen.getAttribute("data-run-open");
@@ -3402,31 +3603,28 @@
       else if (act === "close") closeDrawer();
       else if (act === "report") reportMode();
       else if (act === "reset") resetConfig();
-      else if (act === "tpl-add") addTemplate();
     });
     body.addEventListener("change", (e) => {
       const t = e.target;
-      if (changeTree(t)) {
-        setHTML($("new-tree"), treeHTML());
+      const lib = t.getAttribute && t.getAttribute("data-lib");
+      if (lib === "kind") {
+        state.lib.kind = t.value;
+        state.lib.format = "";
+        renderDrawer();
         return;
       }
-      const lib = t.getAttribute && t.getAttribute("data-lib");
-      if (lib === "format") { state.lib.format = t.value; loadLibrary().catch(() => {}); return; }
-      if (lib === "lang") { state.lib.language = t.value; loadLibrary().catch(() => {}); return; }
+      if (lib === "format") { state.lib.format = t.value; renderDrawer(); return; }
+      if (lib === "lang") { state.lib.language = t.value; renderDrawer(); return; }
       if (lib === "newlang") { state.lib.newLang = t.value; return; }
       if (t.id === "lib-file" && t.files[0]) {
         const f = t.files[0];
         importAsset(f, f.name.replace(/\.[^.]+$/, ""), state.lib.newLang).catch(apiErr);
-        return;
       }
-      if (t.name === "environment") cascadeConfig("env");
-      else if (t.name === "enterprise") cascadeConfig("ent");
     });
     body.addEventListener("submit", (e) => {
       e.preventDefault();
-      if (e.target.id === "form-config") saveConfig(e);
-      else if (e.target.id === "form-definition") saveDefinition(e);
-      else if (e.target.id === "form-create") createFromDrawer();
+      if (e.target.getAttribute("id") === "form-config") saveConfig(e);
+      else if (e.target.getAttribute("id") === "form-create") createFromDrawer();
     });
   }
 
@@ -3477,12 +3675,13 @@
     bindDrawer();
     bindManage();
     bindRegistry();
+    bindProducts();
     bindKeys();
     setFollow(true);
     setMode("bubble");
     showSide("tape");
     await loadRegistry();
-    await loadTemplates();
+    await loadProducts();
     await loadSamples();
     await loadLibrary();
     try {

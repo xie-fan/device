@@ -253,6 +253,7 @@ func instanceSummary(dir, ins, src string) map[string]any {
 		out["enterprise"] = first.Enterprise
 		out["device_type"] = first.DeviceType
 		out["server_url"] = first.ServerURL
+		out["product"] = first.Product
 	}
 	if last, ok := readTurnRow(filepath.Join(dir, names[len(names)-1], "turn.json")); ok {
 		out["ended_at"] = last.EndedAt

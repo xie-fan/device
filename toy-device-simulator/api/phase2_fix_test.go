@@ -322,6 +322,8 @@ func TestScenarioExecutesBatchStartSpeakAssert(t *testing.T) {
 			map[string]any{
 				"action": "batch_start", "device_ids": []string{"sim_sc1", "sim_sc2"}, "stagger_ms": 10,
 				"environment": "local", "enterprise": "demo", "device_type": "A3",
+				// Phase 12：属性来自产品；createBody 记下的超时随 batch_start 作为覆盖带上。
+				"product": "test", "overrides": e.overridesFor("sim_sc1"),
 			},
 			map[string]any{"action": "speak", "device_id": "sim_sc1", "asset_id": assetID, "wait": true},
 			map[string]any{

@@ -1,5 +1,5 @@
 /* 台架 · 设备调试
-   主轴：选设备 → 启动 → 送话 → 看回复。配置树、音频库、模板、故障退到抽屉。
+   主轴：选设备 → 启动 → 送话 → 看回复。配置树、产品、素材库、故障退到抽屉。
    令牌与度量取自 Claude Design「Debug Console Redesign」。 */
 
 :root{
@@ -205,7 +205,8 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .attach{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .attach__label{font-size:11px;color:var(--faint)}
 .attach select{padding:6px 8px;border-radius:var(--r);border:1px solid var(--line);
-  background:var(--well);color:var(--fg);font-size:11.5px;max-width:132px}
+  background:var(--well);color:var(--fg);font-size:11.5px;max-width:148px}
+.attach__warn{font-size:11px;color:var(--warn)}
 
 .stage__banners:not(:empty){display:flex;flex-direction:column}
 .banner{margin:0;padding:11px 13px;display:flex;gap:11px;align-items:flex-start;border-bottom:1px solid var(--line)}
@@ -268,6 +269,7 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .stg--acc .stg__dot i{background:var(--acc)}
 .stg--ok .stg__dot i{background:var(--ok)}
 .stg--fg .stg__dot i{background:var(--fg)}
+.stg--warn .stg__dot i{background:var(--warn)}
 .stg--live .stg__dot i{animation:bp .6s infinite}
 .stg__label{font-family:var(--mono);font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis}
 .stg__val{display:flex;align-items:center;gap:10px;min-width:0}
@@ -332,6 +334,9 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .t-interrupted,.t-speak_queued,.t-speak_dequeued,.t-speak_backlog_dropped,.t-backpressure{color:var(--warn)}
 .t-connection_failed,.t-protocol_error,.t-device_deleted{color:var(--err)}
 .t-report_echo{color:var(--faint)}
+.t-photo_command{color:var(--acc)}
+.t-photo_uploaded{color:var(--ok)}
+.t-photo_skipped{color:var(--warn)}
 
 .turns{list-style:none;margin:0;padding:12px 14px;display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto}
 .turnrow{padding:12px 13px;border-radius:var(--r);border:1px solid var(--line);background:var(--panel2)}
@@ -418,6 +423,11 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .fld__name{font-family:var(--mono);font-size:11px;color:var(--dim)}
 .fld__zh{font-size:10.5px;color:var(--faint)}
 .fld__ro{font-family:var(--mono);font-size:9.5px;color:var(--faint);padding:0 5px;border-radius:3px;border:1px solid var(--line)}
+.picks{display:flex;flex-wrap:wrap;gap:8px 14px;padding:4px 0}
+.pick{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg)}
+.pick input{accent-color:var(--acc);width:14px;height:14px;margin:0}
+.thumb{width:40px;height:40px;object-fit:cover;border-radius:3px;border:1px solid var(--line);background:var(--well);flex:none}
+.prod-form{margin-top:14px;padding:16px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel)}
 .fld input:not([type=checkbox]),.fld select{padding:7px 10px;border-radius:var(--r);border:1px solid var(--line);background:var(--well);font-family:var(--mono);font-size:11.5px;width:100%}
 .fld input:disabled,.fld select:disabled{opacity:.45;cursor:not-allowed}
 .fld__note{font-size:10.5px;color:var(--faint);line-height:1.6}
@@ -434,6 +444,7 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .lockbar{display:flex;gap:11px;align-items:flex-start;padding:11px 13px;border-radius:var(--r);border:1px solid currentColor;font-size:11.5px;line-height:1.6}
 .lockbar--ok{background:var(--oksoft);color:var(--ok)}
 .lockbar--warn{background:var(--warnsoft);color:var(--warn)}
+.lockbar--mute{background:var(--panel2);color:var(--dim);border-color:var(--line)}
 .lockbar .tag{border-color:currentColor;color:inherit;background:transparent;flex:none}
 
 .row{padding:13px 15px;border-radius:var(--r);border:1px solid var(--line);background:var(--panel2);display:flex;flex-direction:column;gap:9px}
@@ -476,7 +487,7 @@ select:disabled{opacity:.4;cursor:not-allowed}
 .toast #flash-text{color:var(--fg)}
 .toast .tag{border-color:currentColor;color:inherit;background:transparent;flex:none}
 
-/* ——— 设备管理：全屏表格视图。编辑的是落盘定义，不是本次运行的当前值 ——— */
+/* ——— 设备管理 / 产品：全屏表格视图 ——— */
 .manage{display:flex;flex-direction:column;min-height:0;flex:1;background:var(--bg);overflow:hidden}
 .manage[hidden]{display:none}
 .manage__bar{display:flex;align-items:center;gap:10px;padding:12px 18px;

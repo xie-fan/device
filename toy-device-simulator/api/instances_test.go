@@ -243,6 +243,12 @@ func TestUplinkFormatComesFromTurnJSONNotCurrentConfig(t *testing.T) {
 	e.srv.Close()
 	e.start(t, 0)
 
+	// Phase 12：重启后设备只剩 id，要先选产品起一次，才有「当前配置」可改。
+	ins2, gen2 := e.startDevice(t, "sim_upfmt")
+	e.waitReady(t, "sim_upfmt", ins2, gen2)
+	if code, raw := e.post(t, "/devices/sim_upfmt/stop", nil); code != http.StatusOK {
+		t.Fatalf("stop 应 200，得到 %d %s", code, raw)
+	}
 	code, raw, _ := e.get(t, "/devices/sim_upfmt/config")
 	if code != http.StatusOK {
 		t.Fatalf("GET config %d %s", code, raw)

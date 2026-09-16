@@ -31,6 +31,14 @@ type autoOpts struct {
 	ttsFormat     string
 	ttsSampleRate int
 	ttsPayload    []byte
+	// Phase 12 拍照：收到第一片上行音频后下发拍照指令（movement.behavior=601）。
+	photoCmd        bool
+	photoKey        string // 缺省 0123456789abcdef
+	photoStartVoice []byte // 非空时 base64 进 start_voice
+	// photoReply：收到 Stage=2 的图片末片后，隔 photoReplyDelay 下发一帧 UUID=0 的语音回复。
+	photoReply        bool
+	photoReplyDelay   time.Duration
+	photoReplyPayload []byte // 缺省 {9,9,9,9}
 }
 
 type testEnv struct {
@@ -38,7 +46,6 @@ type testEnv struct {
 	srv       *httptest.Server
 	client    *http.Client
 	cfg       manager.Config
-	templates string
 	recDir    string
 	registry  string
 	mu        sync.Mutex
@@ -46,6 +53,9 @@ type testEnv struct {
 	dialURLs  map[string]string
 	auto      autoOpts
 	afterStat func()
+	// overrides 是 createBody 记下的「这台设备的属性」（点路径），startDevice 时作为
+	// 临时覆盖带上。Phase 12 起设备只有 id，属性不再随建设备走。
+	overrides map[string]map[string]any
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -67,10 +77,10 @@ func newEnvFull(t *testing.T, mut func(*manager.Config), ttl time.Duration) *tes
 	t.Helper()
 	e := &testEnv{
 		t:         t,
-		templates: t.TempDir(),
 		recDir:    t.TempDir(),
 		registry:  filepath.Join(t.TempDir(), "registry.yaml"),
 		conns:     map[string]*fakeConn{},
+		overrides: map[string]map[string]any{},
 		client:    &http.Client{Timeout: 8 * time.Second},
 		cfg: manager.Config{
 			MaxConnections:        32,
@@ -118,7 +128,6 @@ func (e *testEnv) start(t *testing.T, ttl time.Duration) {
 	h, err := New(Options{
 		Config:        e.cfg,
 		Dial:          e.dial,
-		TemplatesDir:  e.templates,
 		RecordingsDir: e.recDir,
 		RegistryPath:  e.registry,
 		TTL:           ttl,
@@ -141,7 +150,7 @@ func (e *testEnv) start(t *testing.T, ttl time.Duration) {
 	})
 }
 
-// seedRegistry 预置 本地 环境 + demo 厂商 + A3 类型，供 createDevice 引用。
+// seedRegistry 预置 本地 环境 + demo 厂商 + A3 类型 + 测试产品 test（A3 的默认产品）。
 func (e *testEnv) seedRegistry(t *testing.T) {
 	t.Helper()
 	if code, body := e.post(t, "/registry/environments", map[string]any{
@@ -158,6 +167,14 @@ func (e *testEnv) seedRegistry(t *testing.T) {
 		"name": "A3 音箱", "short_name": "A3",
 	}); code != http.StatusCreated {
 		t.Fatalf("seed device_type 应 201，得到 %d body=%s", code, body)
+	}
+	if code, body := e.post(t, "/products", e.testProductBody()); code != http.StatusCreated {
+		t.Fatalf("seed product 应 201，得到 %d body=%s", code, body)
+	}
+	if code, body := e.put(t, "/registry/environments/local/enterprises/demo/device_types/A3", map[string]any{
+		"name": "A3 音箱", "default_product": "test",
+	}); code != http.StatusOK {
+		t.Fatalf("seed default_product 应 200，得到 %d body=%s", code, body)
 	}
 }
 
@@ -361,7 +378,9 @@ func (e *testEnv) postAssetFields(t *testing.T, filename string, data []byte, fi
 	return resp.StatusCode, b
 }
 
-// deviceBody 只含设备级属性：enterprise/device_type/server 由树引用派生。
+// deviceBody 是 Phase 12 之前一台设备的全部属性。现在它有两个用处：
+// 测试产品 test 的默认值就是这一套（testProductBody），老用例改几个字段后交给
+// createBody，改动的字段会作为临时覆盖在 startDevice 时带上。
 func (e *testEnv) deviceBody(id string) map[string]any {
 	return map[string]any{
 		"device_id":        id,
@@ -390,10 +409,57 @@ func (e *testEnv) deviceBody(id string) map[string]any {
 	}
 }
 
-// createBody 给设备体包上 seed 的树引用（local/demo/A3）。
-// Phase 11：建设备册条目不带挂靠；挂靠在 start 时给（seedBinding）。
+// testProductBody 是 seed 的测试产品：默认值即 deviceBody 那一套，所以老用例拿到的
+// 还是原来的设备。清单放宽，免得覆盖格式的用例和推荐项纠缠。
+func (e *testEnv) testProductBody() map[string]any {
+	defaults := e.deviceBody("")
+	delete(defaults, "device_id")
+	return map[string]any{
+		"id":            "test",
+		"name":          "测试产品",
+		"playing_modes": []int{1, 2, 3},
+		"audio_formats": []string{"pcm/16000", "wav/16000", "mp3/16000", "amr/16000", "amr/8000", "aac/16000"},
+		"defaults":      defaults,
+	}
+}
+
+// createBody 给出 Phase 12 的建设备体（只有 device_id），并记下 dev 里的属性，
+// 由 startDevice 作为临时覆盖带上——与产品默认值相同的字段服务端不计入覆盖。
 func (e *testEnv) createBody(dev map[string]any) map[string]any {
-	return map[string]any{"device": dev}
+	id, _ := dev["device_id"].(string)
+	e.mu.Lock()
+	e.overrides[id] = flattenOverrides("", dev)
+	e.mu.Unlock()
+	return map[string]any{"device_id": id}
+}
+
+// flattenOverrides 把嵌套属性展开成点路径（顶层的 device_id 跳过）。
+func flattenOverrides(prefix string, m map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range m {
+		if prefix == "" && k == "device_id" {
+			continue
+		}
+		key := k
+		if prefix != "" {
+			key = prefix + "." + k
+		}
+		if sub, ok := v.(map[string]any); ok {
+			for sk, sv := range flattenOverrides(key, sub) {
+				out[sk] = sv
+			}
+			continue
+		}
+		out[key] = v
+	}
+	return out
+}
+
+// overridesFor 取 createBody 记下的覆盖，给自己拼 start / batch_start 请求的用例用。
+func (e *testEnv) overridesFor(id string) map[string]any {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.overrides[id]
 }
 
 // seedBinding 是 seedRegistry 建出来的那棵树上的三级，测试默认都挂这里。
@@ -403,7 +469,7 @@ func (e *testEnv) seedBinding() map[string]any {
 
 func (e *testEnv) createDevice(t *testing.T, id string) (instanceID string) {
 	t.Helper()
-	code, body := e.post(t, "/devices", e.createBody(e.deviceBody(id)))
+	code, body := e.post(t, "/devices", map[string]any{"device_id": id})
 	if code != http.StatusCreated {
 		t.Fatalf("POST /devices 应 201，得到 %d body=%s", code, body)
 	}
@@ -420,10 +486,17 @@ func (e *testEnv) createDevice(t *testing.T, id string) (instanceID string) {
 	return instanceID
 }
 
+// startDevice 挂 seed 的三级、显式用测试产品，并带上 createBody 记下的覆盖。
+// 显式给 product：有的用例会删掉再重建 A3，重建出来的类型没有默认产品。
 func (e *testEnv) startDevice(t *testing.T, id string) (instanceID string, gen int) {
 	t.Helper()
+	req := e.seedBinding()
+	req["product"] = "test"
+	if ov := e.overridesFor(id); len(ov) > 0 {
+		req["overrides"] = ov
+	}
 	start := time.Now()
-	code, body := e.post(t, "/devices/"+id+"/start", e.seedBinding())
+	code, body := e.post(t, "/devices/"+id+"/start", req)
 	if code != http.StatusAccepted {
 		t.Fatalf("POST start 应 202，得到 %d body=%s", code, body)
 	}
@@ -457,11 +530,6 @@ func (e *testEnv) createStartReady(t *testing.T, id string) (instanceID string, 
 	instanceID, gen = e.startDevice(t, id)
 	e.waitReady(t, id, instanceID, gen)
 	return instanceID, gen
-}
-
-func (e *testEnv) postTemplate(t *testing.T, templateID string, device map[string]any) (int, []byte) {
-	t.Helper()
-	return e.post(t, "/templates", map[string]any{"template_id": templateID, "device": device})
 }
 
 func (e *testEnv) uploadWAV(t *testing.T) string {

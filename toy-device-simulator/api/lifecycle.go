@@ -5,17 +5,17 @@ import (
 	"net/http"
 	"time"
 
-	"toy-device-simulator/config"
 	"toy-device-simulator/core"
 )
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// Phase 11：挂靠在这里发生，不再是建设备时焊死的。三级必给，没有默认值。
 	var body struct {
-		Environment string `json:"environment"`
-		Enterprise  string `json:"enterprise"`
-		DeviceType  string `json:"device_type"`
+		Environment string         `json:"environment"`
+		Enterprise  string         `json:"enterprise"`
+		DeviceType  string         `json:"device_type"`
+		Product     string         `json:"product"`
+		Overrides   map[string]any `json:"overrides"`
 	}
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -23,11 +23,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.Environment == "" || body.Enterprise == "" || body.DeviceType == "" {
-		writeErr(w, http.StatusBadRequest, "start 需要 environment/enterprise/device_type（挂靠三级）")
-		return
-	}
-	code, ins, gen, errMsg := s.startOne(id, body.Environment, body.Enterprise, body.DeviceType)
+	code, ins, gen, product, errMsg := s.startOne(id, body.Environment, body.Enterprise, body.DeviceType, body.Product, body.Overrides)
 	if code != http.StatusAccepted {
 		writeErr(w, code, errMsg)
 		return
@@ -36,6 +32,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		"device_id":       id,
 		"instance_id":     ins,
 		"conn_generation": gen,
+		"product":         product,
 	})
 }
 
@@ -68,6 +65,8 @@ func (s *Server) spawnInstance(d *managedDevice) *core.DeviceInstance {
 		EventLog:           d.log,
 		EventLogMaxEntries: s.opts.Config.EventLogMaxEntries,
 		Phase2Recording:    true,
+		Product:            d.product,
+		Overrides:          cloneMap(d.overrides),
 		OnTurnTerminal: func(turnID string, ev core.Event) {
 			s.onTurnTerminal(id, turnID, ev)
 		},
@@ -76,6 +75,9 @@ func (s *Server) spawnInstance(d *managedDevice) *core.DeviceInstance {
 		},
 		OnActivity: func() {
 			s.touchActivity(id)
+		},
+		PhotoImage: func(assetID string) ([]byte, string, error) {
+			return s.readPhotoImage(assetID)
 		},
 	}
 	return core.NewDevice(d.cfg, opts)
@@ -349,9 +351,11 @@ type batchBody struct {
 	DeviceIDs []string `json:"device_ids"`
 	StaggerMs int      `json:"stagger_ms"`
 	// Phase 11：批量 start 也要给挂靠三级，整批共用一组。stop/delete 用不上。
-	Environment string `json:"environment"`
-	Enterprise  string `json:"enterprise"`
-	DeviceType  string `json:"device_type"`
+	Environment string         `json:"environment"`
+	Enterprise  string         `json:"enterprise"`
+	DeviceType  string         `json:"device_type"`
+	Product     string         `json:"product"`
+	Overrides   map[string]any `json:"overrides"`
 }
 
 type batchOK struct {
@@ -379,7 +383,7 @@ func (s *Server) handleBatchStart(w http.ResponseWriter, r *http.Request) {
 		if i > 0 && stagger > 0 {
 			time.Sleep(time.Duration(stagger) * time.Millisecond)
 		}
-		code, ins, gen, errMsg := s.startOne(id, body.Environment, body.Enterprise, body.DeviceType)
+		code, ins, gen, _, errMsg := s.startOne(id, body.Environment, body.Enterprise, body.DeviceType, body.Product, body.Overrides)
 		if code == http.StatusAccepted {
 			succ = append(succ, batchOK{DeviceID: id, InstanceID: ins, ConnGeneration: gen})
 		} else {
@@ -390,38 +394,70 @@ func (s *Server) handleBatchStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, st, map[string]any{"succeeded": succ, "failed": fail})
 }
 
-// startOne 挂靠 + 启动。Phase 11：三级挂靠是 start 的入参，不再来自设备定义。
-func (s *Server) startOne(id, envName, enterprise, deviceType string) (code int, ins string, gen int, errMsg string) {
+// startOne 挂靠 + 选产品 + 合成 + 启动。任一步失败：状态、产品、覆盖都不变。
+func (s *Server) startOne(id, envName, enterprise, deviceType, product string, overrides map[string]any) (code int, ins string, gen int, usedProduct, errMsg string) {
 	if envName == "" || enterprise == "" || deviceType == "" {
-		return http.StatusBadRequest, "", 0, "start 需要 environment/enterprise/device_type（挂靠三级）"
+		return http.StatusBadRequest, "", 0, "", "start 需要 environment/enterprise/device_type（挂靠三级）"
 	}
 	s.mu.Lock()
 	d, ok := s.devices[id]
 	if !ok {
 		s.mu.Unlock()
-		return http.StatusNotFound, "", 0, "device 不存在"
+		return http.StatusNotFound, "", 0, "", "device 不存在"
 	}
 	if d.state != stCreated && d.state != stStopped {
 		s.mu.Unlock()
-		return http.StatusConflict, d.instanceID, d.gen, "仅 Created/Stopped 可 start"
+		return http.StatusConflict, d.instanceID, d.gen, d.product, "仅 Created/Stopped 可 start"
 	}
-	// Resolve 与「类型节点删除时的引用检查」在同一临界区互斥。
 	resolved, err := s.reg.Resolve(envName, enterprise, deviceType, id)
 	if err != nil {
 		s.mu.Unlock()
-		return refErrStatus(err), d.instanceID, d.gen, err.Error()
+		return refErrStatus(err), d.instanceID, d.gen, d.product, err.Error()
 	}
-	bound := bindDevice(d.cfg, envName, enterprise, deviceType, resolved)
-	if err := config.ValidatePhase2(bound); err != nil {
+	explicit := product != ""
+	if product == "" {
+		def, err := s.reg.DefaultProduct(envName, enterprise, deviceType)
+		if err != nil {
+			s.mu.Unlock()
+			return refErrStatus(err), d.instanceID, d.gen, d.product, err.Error()
+		}
+		if def == "" {
+			s.mu.Unlock()
+			return http.StatusBadRequest, d.instanceID, d.gen, d.product, "未指定产品且设备类型没有默认产品"
+		}
+		product = def
+	}
+	if _, ok := s.products.Get(product); !ok {
 		s.mu.Unlock()
-		return http.StatusBadRequest, d.instanceID, d.gen, err.Error()
+		if explicit {
+			return http.StatusNotFound, d.instanceID, d.gen, d.product, "产品不存在"
+		}
+		return http.StatusBadRequest, d.instanceID, d.gen, d.product, "默认产品不存在"
+	}
+	cand := cloneMap(d.overrides)
+	if d.product != "" && d.product != product {
+		cand = map[string]any{}
+	}
+	cand = mergeOverrides(cand, overrides)
+	bound, pruned, err := s.composeDevice(product, id, cand, bindingRef{envName, enterprise, deviceType, resolved})
+	if err != nil {
+		s.mu.Unlock()
+		return http.StatusBadRequest, d.instanceID, d.gen, d.product, err.Error()
+	}
+	// 合成后 photo.image 非空必须是已有图片资产，失败则设备不变。
+	if img := bound.Features.Photo.Image; img != "" && !s.isImageAsset(img) {
+		s.mu.Unlock()
+		return http.StatusBadRequest, d.instanceID, d.gen, d.product, "features.photo.image 必须是存在的图片资产"
 	}
 	if !s.acquireConnLocked() {
 		s.mu.Unlock()
-		return http.StatusTooManyRequests, d.instanceID, d.gen, "conn_permit"
+		return http.StatusTooManyRequests, d.instanceID, d.gen, d.product, "conn_permit"
 	}
 	d.cfg = bound
 	d.envName = envName
+	d.product = product
+	d.overrides = pruned
+	d.playingMode = bound.PlayingMode
 	d.gen++
 	d.state = stStarting
 	d.lastError = ""
@@ -434,7 +470,7 @@ func (s *Server) startOne(id, envName, enterprise, deviceType string) (code int,
 	ins = d.instanceID
 	s.mu.Unlock()
 	go s.runStart(d, inst, gen)
-	return http.StatusAccepted, ins, gen, ""
+	return http.StatusAccepted, ins, gen, product, ""
 }
 
 func (s *Server) handleBatchStop(w http.ResponseWriter, r *http.Request) {

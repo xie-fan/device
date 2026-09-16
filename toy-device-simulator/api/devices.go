@@ -7,13 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"toy-device-simulator/config"
 	"toy-device-simulator/core"
@@ -56,50 +51,6 @@ func valueHasKey(v any, key string) bool {
 	return false
 }
 
-// prepDeviceMap 做设备体静态门禁：禁止 write_queue_*，禁止身份三键
-// （enterprise/device_type/server 由树引用派生）。
-func prepDeviceMap(raw json.RawMessage) (map[string]any, error) {
-	if jsonHasKey(raw, "write_queue_depth") || jsonHasKey(raw, "write_drain_timeout_sec") {
-		return nil, fmt.Errorf("write_queue")
-	}
-	for _, k := range []string{"enterprise", "device_type", "server"} {
-		if jsonHasKey(raw, k) {
-			return nil, fmt.Errorf("设备体不得含 %s（由树引用派生）", k)
-		}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-// parseBookEntry 解析设备册条目：只有属性，不碰身份三级——挂靠是 start 时的事。
-func (s *Server) parseBookEntry(m map[string]any) (config.Device, error) {
-	m = cloneMap(m)
-	beh, _ := m["behavior"].(map[string]any)
-	if beh == nil {
-		beh = map[string]any{}
-	} else {
-		beh = cloneMap(beh)
-	}
-	m["behavior"] = beh
-	beh["write_queue_depth"] = s.opts.Config.WriteQueueDepth
-	beh["write_drain_timeout_sec"] = s.opts.Config.WriteDrainTimeoutSec
-	wrapped, err := yaml.Marshal(map[string]any{"device": m})
-	if err != nil {
-		return config.Device{}, err
-	}
-	cfg, err := config.LoadBookEntry(wrapped)
-	if err != nil {
-		return config.Device{}, err
-	}
-	if cfg.Recording.OutputDir == "" {
-		cfg.Recording.OutputDir = s.opts.RecordingsDir
-	}
-	return cfg, nil
-}
-
 func refErrStatus(err error) int {
 	if errors.Is(err, manager.ErrRegistryNotFound) {
 		return http.StatusNotFound
@@ -107,9 +58,9 @@ func refErrStatus(err error) int {
 	return http.StatusBadRequest
 }
 
-// createBody 建的是设备册条目。Environment/Enterprise/DeviceType 留在这里只为
-// 认出老调用方并给一句像样的错——挂靠已经移到 start（phase11.md）。
+// createBody 设备册只收 device_id，或 id_prefix+count。其余字段留下只为认出老调用方。
 type createBody struct {
+	DeviceID    string          `json:"device_id"`
 	Environment string          `json:"environment"`
 	Enterprise  string          `json:"enterprise"`
 	DeviceType  string          `json:"device_type"`
@@ -125,96 +76,51 @@ func (s *Server) handlePostDevices(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if body.Environment != "" || body.Enterprise != "" || body.DeviceType != "" {
-		writeErr(w, http.StatusBadRequest,
-			"设备册条目不带挂靠：environment/enterprise/device_type 请在 start 时给（phase11）")
+	if len(body.Device) > 0 && string(body.Device) != "null" || body.TemplateID != "" ||
+		body.Environment != "" || body.Enterprise != "" || body.DeviceType != "" {
+		writeErr(w, http.StatusBadRequest, "POST /devices 只收 device_id，或 id_prefix+count")
 		return
 	}
-	if len(body.Device) > 0 && string(body.Device) != "null" {
-		m, err := prepDeviceMap(body.Device)
-		if err != nil {
+	var ids []string
+	switch {
+	case body.DeviceID != "":
+		ids = []string{body.DeviceID}
+	case body.IDPrefix != "":
+		if body.Count <= 0 {
+			writeErr(w, http.StatusBadRequest, "count 必须 > 0")
+			return
+		}
+		ids = make([]string, 0, body.Count)
+		for i := 1; i <= body.Count; i++ {
+			ids = append(ids, body.IDPrefix+"_"+strconv.Itoa(i))
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "需要 device_id 或 id_prefix+count")
+		return
+	}
+	for _, id := range ids {
+		if err := config.ValidatePathComponent(id); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		s.mu.Lock()
-		cfg, err := s.parseBookEntry(m)
-		if err != nil {
-			s.mu.Unlock()
-			writeErr(w, refErrStatus(err), err.Error())
-			return
-		}
-		if _, exists := s.devices[cfg.DeviceID]; exists {
-			s.mu.Unlock()
-			writeErr(w, http.StatusConflict, "device_id 冲突")
-			return
-		}
-		d := s.newManaged(cfg)
-		s.devices[cfg.DeviceID] = d
-		perr := persistWarn("devices.yaml", s.persistDevicesLocked())
-		s.mu.Unlock()
-		writeJSON(w, http.StatusCreated, persistErr(map[string]any{
-			"device_ids": []string{cfg.DeviceID},
-			"instances": []map[string]any{{
-				"device_id": cfg.DeviceID, "instance_id": d.instanceID,
-			}},
-		}, perr))
-		return
-	}
-	if body.TemplateID == "" || body.Count <= 0 {
-		writeErr(w, http.StatusBadRequest, "需要 device 或 template_id+count")
-		return
-	}
-	if err := config.ValidatePathComponent(body.TemplateID); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	tmpl, err := s.readTemplate(body.TemplateID)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "模板不存在")
-		return
-	}
-	ids := make([]string, 0, body.Count)
-	for i := 1; i <= body.Count; i++ {
-		ids = append(ids, body.IDPrefix+"_"+strconv.Itoa(i))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, id := range ids {
 		if _, exists := s.devices[id]; exists {
-			writeErr(w, http.StatusConflict, "批量 ID 冲突")
+			writeErr(w, http.StatusConflict, "device_id 冲突")
 			return
 		}
 	}
-	type created struct {
-		id  string
-		dev *managedDevice
-	}
-	var made []created
+	deviceIDs := make([]string, 0, len(ids))
+	insts := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		raw := cloneMap(tmpl)
-		raw["device_id"] = id
-		b, _ := json.Marshal(raw)
-		m, err := prepDeviceMap(b)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		cfg, err := s.parseBookEntry(m)
-		if err != nil {
-			writeErr(w, refErrStatus(err), err.Error())
-			return
-		}
-		d := s.newManaged(cfg)
+		d := s.newManaged(id)
 		s.devices[id] = d
-		made = append(made, created{id, d})
+		deviceIDs = append(deviceIDs, id)
+		insts = append(insts, map[string]any{"device_id": id, "instance_id": d.instanceID})
 	}
 	perr := persistWarn("devices.yaml", s.persistDevicesLocked())
-	deviceIDs := make([]string, 0, len(made))
-	insts := make([]map[string]any, 0, len(made))
-	for _, c := range made {
-		deviceIDs = append(deviceIDs, c.id)
-		insts = append(insts, map[string]any{"device_id": c.id, "instance_id": c.dev.instanceID})
-	}
 	writeJSON(w, http.StatusCreated, persistErr(map[string]any{"device_ids": deviceIDs, "instances": insts}, perr))
 }
 
@@ -226,29 +132,24 @@ func cloneMap(m map[string]any) map[string]any {
 	return out
 }
 
-// newManaged 建的是**未挂靠**的设备册条目：cfg 里没有 enterprise/device_type/
-// server.url，envName 为空。挂靠在 start 时发生，见 binding.go。
-func (s *Server) newManaged(cfg config.Device) *managedDevice {
+// newManaged 只按 device_id 建册条目。属性在 start 时从产品合成。
+func (s *Server) newManaged(id string) *managedDevice {
 	ins := newInstanceID()
-	log := core.NewEventLog(cfg.DeviceID, ins)
+	log := core.NewEventLog(id, ins)
 	log.SetMaxEntries(s.opts.Config.EventLogMaxEntries)
-	// 事件除了进全局总线还要落盘，否则 manager 一重启这个 instance 的事件就没了，
-	// 而 turn / 帧 / 音频都还在——历史只有半份（Phase 8）。
 	evRec := recording.New(false, false, false)
-	log.SetMirror(s.eventSink(cfg.DeviceID, ins, cfg.Recording.OutputDir, evRec))
-	devID := cfg.DeviceID
-	log.SetOnWSAbort(func() { s.interruptOnWSAbort(devID) })
+	log.SetMirror(s.eventSink(id, ins, s.opts.RecordingsDir, evRec))
+	log.SetOnWSAbort(func() { s.interruptOnWSAbort(id) })
 	return &managedDevice{
-		id:           cfg.DeviceID,
+		id:           id,
 		instanceID:   ins,
-		cfg:          cfg,
-		def:          cfg,
+		cfg:          config.Device{DeviceID: id},
+		overrides:    map[string]any{},
 		state:        stCreated,
 		committed:    map[int]bool{},
 		log:          log,
 		lastActivity: time.Now(),
 		turns:        map[string]*turnRec{},
-		playingMode:  cfg.PlayingMode,
 		evRec:        evRec,
 	}
 }
@@ -284,14 +185,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "device 不存在")
 		return
 	}
-	cfg := d.cfg
-	envName := d.envName
-	over := d.overridden()
+	out := configView(d)
 	s.mu.Unlock()
-	out := configPublic(cfg, envName)
-	// 当前值与落盘定义不一致时置位：界面据此提示「临时修改，未写入定义」，
-	// agent 据此判断这台设备是不是干净的基线。
-	out["overridden"] = over
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -349,6 +244,15 @@ func configPublic(cfg config.Device, envName string) map[string]any {
 			"save_downlink_audio": cfg.Recording.SaveDownlinkAudio,
 			"output_dir":          cfg.Recording.OutputDir,
 		},
+		"features": map[string]any{
+			"photo": map[string]any{
+				"enabled":              cfg.Features.Photo.Enabled,
+				"image":                cfg.Features.Photo.Image,
+				"server_default_reply": cfg.Features.Photo.ServerDefaultReply,
+				"slice_interval_ms":    cfg.Features.Photo.SliceIntervalMs,
+				"reply_timeout_sec":    cfg.Features.Photo.ReplyTimeoutSec,
+			},
+		},
 	}
 }
 
@@ -357,6 +261,7 @@ var putTopAllowed = map[string]bool{
 	"environment": true, "enterprise": true, "device_type": true, "playing_mode": true,
 	"audio": true, "uuid": true, "action": true, "firmware_version": true, "firmware": true,
 	"nic_type": true, "nic_iccid": true, "downlink_ack": true, "behavior": true, "recording": true,
+	"features": true,
 }
 
 var putRunningForbidden = map[string]bool{
@@ -389,8 +294,20 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "device_id 不可变")
 		return
 	}
+	if _, ok := raw["product"]; ok {
+		writeErr(w, http.StatusBadRequest, "product 请在 start 时给")
+		return
+	}
 	if err := rejectUnknownKeys(raw, putTopAllowed); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := rejectExplicitAutoFalse(raw); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if hasAnyKey(raw, "environment", "enterprise", "device_type") {
+		writeErr(w, http.StatusBadRequest, "挂靠请在 start 时给，PUT /config 不改 environment/enterprise/device_type")
 		return
 	}
 
@@ -401,14 +318,8 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "device 不存在")
 		return
 	}
-	if err := rejectExplicitAutoFalse(raw); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// Phase 11：挂靠归 start。这里改了也会被下次 start 覆盖，不如直接拒绝，
-	// 免得给人一种「改成功了」的错觉。
-	if hasAnyKey(raw, "environment", "enterprise", "device_type") {
-		writeErr(w, http.StatusBadRequest, "挂靠请在 start 时给，PUT /config 不改 environment/enterprise/device_type")
+	if d.product == "" {
+		writeErr(w, http.StatusConflict, "设备还没选过产品")
 		return
 	}
 	running := d.state == stStarting || d.state == stRunning || d.state == stStopping
@@ -420,37 +331,21 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	next, code, msg := s.patchConfigLocked(d.cfg, raw)
-	if code != 0 {
-		writeErr(w, code, msg)
+	nextOv := mergeOverrides(d.overrides, flattenJSON("", raw))
+	cfg, pruned, err := s.composeDevice(d.product, d.id, nextOv, d.binding())
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// 只改内存里的当前值，不落盘：抽屉是「试这一次」，manager 重启回到定义。
-	d.cfg = next
+	d.overrides = pruned
+	d.cfg = cfg
 	if !running {
-		d.playingMode = next.PlayingMode
+		d.playingMode = cfg.PlayingMode
 	}
-	writeJSON(w, http.StatusOK, configPublic(d.cfg, d.envName))
-}
-
-// patchConfigLocked 把 PUT body 打到 base 上；code!=0 表示失败。调用方须持 s.mu。
-// Phase 11：这里不再管挂靠——三级是 start 的入参，PUT 改了也会被下次 start 覆盖，
-// 留着就是第二条做同一件事的路。带三级的 PUT 在 handlePutConfig 里直接拒。
-func (s *Server) patchConfigLocked(base config.Device, raw map[string]any) (config.Device, int, string) {
-	next := base
-	if err := applyPutAllowlist(&next, raw); err != nil {
-		return next, http.StatusBadRequest, err.Error()
+	if running && d.inst != nil {
+		d.inst.SetFeatures(cfg.Features)
 	}
-	// PUT /config 改的是挂靠后的当前值（要全量校验）；PUT /definition 改的是
-	// 设备册条目，本来就没有身份三级——按 next 是否带挂靠自己挑。
-	validate := config.ValidateBookEntry
-	if next.Enterprise != "" || next.DeviceType != "" || next.Server.URL != "" {
-		validate = config.ValidatePhase2
-	}
-	if err := validate(next); err != nil {
-		return next, http.StatusBadRequest, err.Error()
-	}
-	return next, 0, ""
+	writeJSON(w, http.StatusOK, configView(d))
 }
 
 func hasAnyKey(m map[string]any, keys ...string) bool {
@@ -597,6 +492,15 @@ func applyPutAllowlist(cfg *config.Device, raw map[string]any) error {
 			return fmt.Errorf("recording 类型非法")
 		}
 		if err := applyPutRecording(&cfg.Recording, m); err != nil {
+			return err
+		}
+	}
+	if v, ok := raw["features"]; ok {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("features 类型非法")
+		}
+		if err := applyPutFeatures(&cfg.Features, m); err != nil {
 			return err
 		}
 	}
@@ -870,6 +774,67 @@ func applyPutRecording(rec *config.Recording, m map[string]any) error {
 	return nil
 }
 
+func applyPutFeatures(f *config.Features, m map[string]any) error {
+	if err := rejectUnknownKeys(m, map[string]bool{"photo": true}); err != nil {
+		return err
+	}
+	v, ok := m["photo"]
+	if !ok {
+		return nil
+	}
+	pm, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("features.photo 类型非法")
+	}
+	return applyPutPhoto(&f.Photo, pm)
+}
+
+func applyPutPhoto(p *config.PhotoFeature, m map[string]any) error {
+	allowed := map[string]bool{
+		"enabled": true, "image": true, "server_default_reply": true,
+		"slice_interval_ms": true, "reply_timeout_sec": true,
+	}
+	if err := rejectUnknownKeys(m, allowed); err != nil {
+		return err
+	}
+	if v, ok := m["enabled"]; ok {
+		flag, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("features.photo.enabled 类型非法")
+		}
+		p.Enabled = flag
+	}
+	if v, ok := m["image"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("features.photo.image 类型非法")
+		}
+		p.Image = s
+	}
+	if v, ok := m["server_default_reply"]; ok {
+		flag, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("features.photo.server_default_reply 类型非法")
+		}
+		p.ServerDefaultReply = flag
+	}
+	if v, ok := m["slice_interval_ms"]; ok {
+		n, ok := jsonToInt(v)
+		if !ok {
+			return fmt.Errorf("features.photo.slice_interval_ms 类型非法")
+		}
+		p.SliceIntervalMs = n
+	}
+	if v, ok := m["reply_timeout_sec"]; ok {
+		n, ok := jsonToInt(v)
+		if !ok {
+			return fmt.Errorf("features.photo.reply_timeout_sec 类型非法")
+		}
+		p.ReplyTimeoutSec = n
+	}
+	return nil
+}
+
 func jsonToInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case float64:
@@ -920,121 +885,6 @@ func (s *Server) handleFaults(w http.ResponseWriter, r *http.Request) {
 	}
 	d.fault = f
 	writeJSON(w, http.StatusOK, map[string]any{"fault": body.Fault})
-}
-
-func (s *Server) handlePostTemplate(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		TemplateID string          `json:"template_id"`
-		Device     json.RawMessage `json:"device"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "JSON 非法")
-		return
-	}
-	if body.TemplateID == "" {
-		writeErr(w, http.StatusBadRequest, "缺 template_id")
-		return
-	}
-	if jsonHasKey(body.Device, "device_id") {
-		writeErr(w, http.StatusBadRequest, "模板禁止 device_id")
-		return
-	}
-	if jsonHasKey(body.Device, "write_queue_depth") || jsonHasKey(body.Device, "write_drain_timeout_sec") {
-		writeErr(w, http.StatusBadRequest, "模板禁止 write_queue_*")
-		return
-	}
-	for _, k := range []string{"enterprise", "device_type", "server"} {
-		if jsonHasKey(body.Device, k) {
-			writeErr(w, http.StatusBadRequest, "模板禁止 "+k+"（挂靠由创建时的树引用决定）")
-			return
-		}
-	}
-	if err := config.ValidatePathComponent(body.TemplateID); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	dir := s.templatesDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var dev map[string]any
-	if err := json.Unmarshal(body.Device, &dev); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	raw, err := yaml.Marshal(map[string]any{"device": dev})
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	path := filepath.Join(dir, body.TemplateID+".yaml")
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"template_id": body.TemplateID})
-}
-
-func (s *Server) templatesDir() string {
-	if s.opts.TemplatesDir != "" {
-		return s.opts.TemplatesDir
-	}
-	return filepath.Join("configs", "templates")
-}
-
-func (s *Server) readTemplate(id string) (map[string]any, error) {
-	if err := config.ValidatePathComponent(id); err != nil {
-		return nil, err
-	}
-	raw, err := os.ReadFile(filepath.Join(s.templatesDir(), id+".yaml"))
-	if err != nil {
-		return nil, err
-	}
-	var wrap struct {
-		Device map[string]any `yaml:"device"`
-	}
-	if err := yaml.Unmarshal(raw, &wrap); err != nil {
-		return nil, err
-	}
-	return wrap.Device, nil
-}
-
-func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
-	dir := s.templatesDir()
-	ents, _ := os.ReadDir(dir)
-	ids := []string{}
-	for _, e := range ents {
-		name := e.Name()
-		if strings.HasSuffix(name, ".yaml") {
-			ids = append(ids, strings.TrimSuffix(name, ".yaml"))
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"templates": ids})
-}
-
-func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := config.ValidatePathComponent(id); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	m, err := s.readTemplate(id)
-	if err != nil {
-		writeErr(w, http.StatusNotFound, "模板不存在")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"template_id": id, "device": m})
-}
-
-func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := config.ValidatePathComponent(id); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	_ = os.Remove(filepath.Join(s.templatesDir(), id+".yaml"))
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) acquireConnLocked() bool {

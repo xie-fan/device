@@ -36,6 +36,10 @@ type Options struct {
 	// OnTurnStarted：backlog 出队真正启动时回调（补 uuid/seq_before）。解锁后调用。
 	OnTurnStarted func(turnID string, uuid uint32, seqBefore int)
 	OnActivity    func()
+	Product       string
+	Overrides     map[string]any
+	// PhotoImage 从素材库读图片；core 不碰磁盘。assetID 为空时不必调用。
+	PhotoImage func(assetID string) (data []byte, format string, err error)
 }
 
 type pendingMeta struct {
@@ -71,6 +75,8 @@ type turnRuntime struct {
 	ttsIdle    *time.Timer
 	followup   *time.Timer
 	silent     *time.Timer
+
+	waitingPhoto bool // 本轮在等拍照回复（UUID=0 的 TTS）
 
 	out       atomic.Int64
 	drained   chan struct{}
@@ -146,10 +152,13 @@ type DeviceInstance struct {
 	onTurnStarted  func(turnID string, uuid uint32, seqBefore int)
 	onActivity     func()
 	deleted        bool
+	product        string
+	overrides      map[string]any
 
 	phase2Recording  bool
 	throttle         protocol.SleepThrottle
 	speakableWaiters []chan SpeakableResult
+	photoImage       func(string) ([]byte, string, error)
 }
 
 func newInstanceID() string {
@@ -195,8 +204,11 @@ func NewDevice(cfg config.Device, opts Options) *DeviceInstance {
 		onTurnTerminal:  opts.OnTurnTerminal,
 		onTurnStarted:   opts.OnTurnStarted,
 		onActivity:      opts.OnActivity,
+		product:         opts.Product,
+		overrides:       opts.Overrides,
 		turnDone:        map[string]chan Event{},
 		turnTerm:        map[string]Event{},
+		photoImage:      opts.PhotoImage,
 	}
 	if d.drainTimeout <= 0 {
 		d.drainTimeout = 2 * time.Second
@@ -217,6 +229,13 @@ func (d *DeviceInstance) Config() config.Device {
 	d.deviceMu.Lock()
 	defer d.deviceMu.Unlock()
 	return d.cfg
+}
+
+// SetFeatures 运行中改功能开关；下一次收到拍照指令时读。
+func (d *DeviceInstance) SetFeatures(f config.Features) {
+	d.deviceMu.Lock()
+	defer d.deviceMu.Unlock()
+	d.cfg.Features = f
 }
 
 func (d *DeviceInstance) Fault() Fault { return d.fault }
@@ -376,6 +395,8 @@ func (d *DeviceInstance) submitTurnFileLocked(ev Event) {
 		Enterprise:      d.cfg.Enterprise,
 		DeviceType:      d.cfg.DeviceType,
 		ServerURL:       d.cfg.Server.URL,
+		Product:         d.product,
+		Overrides:       d.overrides,
 	})
 }
 

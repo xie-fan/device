@@ -17,13 +17,13 @@ const (
 )
 
 type managedDevice struct {
-	id           string
-	instanceID   string
-	envName      string // 配置树环境名；enterprise/device_type 简称在 cfg 里
-	cfg          config.Device
-	// def 是落盘的「设备定义」（基线）；cfg 是本次运行的当前值。
-	// PUT /config 只改 cfg（试这一次），PUT /definition 改 def 并落盘。
-	def config.Device
+	id         string
+	instanceID string
+	envName    string // 配置树环境名；enterprise/device_type 简称在 cfg 里
+	cfg        config.Device
+	// product / overrides 只活在内存：start 时选定，manager 重启即清空。
+	product      string
+	overrides    map[string]any // 点路径 → JSON 标量
 	state        string
 	gen          int
 	committed    map[int]bool
@@ -122,8 +122,8 @@ func deviceView(d *managedDevice) map[string]any {
 		leasedUntil = d.leaseExpires.UTC().Format(time.RFC3339Nano)
 	}
 	return map[string]any{
-		"leased_until": leasedUntil,
-		"lease_owner":  d.leaseOwner,
+		"leased_until":      leasedUntil,
+		"lease_owner":       d.leaseOwner,
 		"device_id":         d.id,
 		"instance_id":       d.instanceID,
 		"instance_state":    d.state,
@@ -143,6 +143,8 @@ func deviceView(d *managedDevice) map[string]any {
 			"sample_rate":  d.cfg.Audio.SampleRate,
 			"bitrate_kbps": d.cfg.Audio.BitrateKbps,
 		},
+		"product":    d.product,
+		"overrides":  overrideObj(d),
 		"overridden": d.overridden(),
 	}
 }

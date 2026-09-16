@@ -36,7 +36,6 @@ func main() {
 	fs := flag.NewFlagSet("manager", flag.ExitOnError)
 	cfgPath := fs.String("config", "", "Manager YAML 路径")
 	addr := fs.String("listen", "127.0.0.1:8090", "HTTP 监听地址")
-	templates := fs.String("templates", filepath.Join("configs", "templates"), "模板目录")
 	recordings := fs.String("recordings", "recordings", "录音根目录")
 	registry := fs.String("registry", filepath.Join("configs", "registry.yaml"), "配置树 YAML 路径")
 	allowRemote := fs.Bool("allow-remote", false, "允许监听非 loopback 地址（这套 API 没有认证）")
@@ -72,13 +71,12 @@ func main() {
 	}
 	h, err := api.New(api.Options{
 		Config:        cfg,
-		TemplatesDir:  *templates,
 		RecordingsDir: *recordings,
 		RegistryPath:  *registry,
 		Media:         tc,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "registry 拒绝:", err)
+		fmt.Fprintln(os.Stderr, "启动拒绝:", err)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "manager listening on %s\n", *addr)

@@ -2,7 +2,7 @@
 
 语音玩具设备的本地模拟与联调工具：单设备 CLI、Manager / REST / WebSocket、浏览器调试台，以及供 agent 使用的 `simctl`。
 
-已包含 speak backlog、多格式音频与音频库、设备定义持久化、跨重启历史和 Agent CLI（Phase 1–9；完整状态与契约见下方正式文档）。
+已包含 speak backlog、多格式音频与素材库、跨重启历史、Agent CLI、设备租约，以及按产品配置的音频格式、对话模式与拍照（Phase 1–12；完整状态与契约见下方正式文档）。
 
 ## 启动调试台
 

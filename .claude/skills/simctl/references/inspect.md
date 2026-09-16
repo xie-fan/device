@@ -4,10 +4,11 @@
 
 ## turn
 
-某一轮的事件流 + 帧统计（不是把 frames.ndjson 整份倒出来）。
+某一轮的事件流 + 帧统计（不是把 frames.jsonl 整份倒出来）。
 
 - 事件按 `turn_id` 过滤；同 instance 上其它轮不会混进来。
 - 帧日志方向是 `outbound`（设备→服务端，上行）和 `inbound`（服务端→设备，下行），不是 up/down 这两个词。
+- **下行指令的内容不在事件里**，事件只有 `command_received`。要看服务端下发了什么（动作、表情的 `behavior`），读 `recordings/<device_id>/<instance_id>/<turn_id>/frames.jsonl` 里 `direction` 为 `inbound`、`topic` 以 `/command/client` 结尾的行，`text` 字段是整条下行 JSON。
 - **帧日志异步落盘**：`run` 刚返回就查 `turn`，帧统计可能少最后一两条。轮的终态字段（`verdict` / `turn_end_reason`）在 `run` 的返回里就是准的，别拿帧数去判断这一轮完没完。
 - `frames.inbound_bytes` 含非音频的下行帧，`turn.down_bytes` 只算 TTS payload。两者不等是正常的。
 - `source` 为 `live` / `tomb` / `disk`：盘上历史没有 TTL，墓碑有。别把「manager 重启后还能查」理解成墓碑。
@@ -16,7 +17,7 @@
 
 把这一轮的上行或下行音频落到文件。stdout 仍是 JSON 指针（路径、字节数），二进制不进 stdout。
 
-- 默认走回放端点（pcm 会包成 wav）。下行 AMR 会剥重复存储头，和 UI 试听同一条路。
+- 默认走回放端点（pcm 会包成 wav）。下行 AMR 会剥重复存储头，和 UI 试听同一条路。下行 AMR 拿回来的也是 WAV（`content_type: audio/wav`，RIFF 头），`--out` 用 `.wav` 扩展名。
 - 上行格式记在 turn.json 的 `up_format` 里；跨重启不要去问设备「现在」配的是什么。
 
 ## history

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// seed（helpers_test.go）已建 local 环境 + demo 厂商 + A3 类型。
+// seed（helpers_test.go）已建 local 环境 + demo 厂商 + A3 类型 + 测试产品 test。
 
 func TestRegistryTreeCRUD(t *testing.T) {
 	e := newEnv(t)
@@ -123,52 +123,34 @@ func TestRegistryPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
-// Phase 11：建的是设备册条目，挂靠移到 start。三级出现在创建体里一律 400，
-// 引用是否存在改由 start 校验。
+// Phase 11 把挂靠移到 start，Phase 12 又把属性交给产品：建设备只收 device_id。
+// 挂靠引用是否存在仍由 start 校验。
 func TestPostDevicesBookEntryRules(t *testing.T) {
 	e := newEnv(t)
-	// 不给三级 → 201。
-	if code, body := e.post(t, "/devices", map[string]any{"device": e.deviceBody("sim_r0")}); code != http.StatusCreated {
+	if code, body := e.post(t, "/devices", map[string]any{"device_id": "sim_r0"}); code != http.StatusCreated {
 		t.Fatalf("设备册条目应 201，得到 %d %s", code, body)
 	}
 	// 创建体带三级 → 400。
 	for _, k := range []string{"environment", "enterprise", "device_type"} {
-		bad := e.createBody(e.deviceBody("sim_r1"))
-		bad[k] = "x"
-		if code, body := e.post(t, "/devices", bad); code != http.StatusBadRequest {
+		if code, body := e.post(t, "/devices", map[string]any{"device_id": "sim_r1", k: "x"}); code != http.StatusBadRequest {
 			t.Fatalf("创建体带 %s 应 400，得到 %d %s", k, code, body)
 		}
+	}
+	// 老形状（整份设备体）→ 400。
+	if code, body := e.post(t, "/devices", map[string]any{"device": map[string]any{"device_id": "sim_r2"}}); code != http.StatusBadRequest {
+		t.Fatalf("老形状的设备体应 400，得到 %d %s", code, body)
 	}
 	// 引用不存在在 start 时才发现 → 404。
 	e.createDevice(t, "sim_r1")
 	if code, body := e.post(t, "/devices/sim_r1/start", map[string]any{
-		"environment": "nope", "enterprise": "demo", "device_type": "A3",
+		"environment": "nope", "enterprise": "demo", "device_type": "A3", "product": "test",
 	}); code != http.StatusNotFound {
 		t.Fatalf("start 环境缺失应 404，得到 %d %s", code, body)
 	}
 	if code, body := e.post(t, "/devices/sim_r1/start", map[string]any{
-		"environment": "local", "enterprise": "demo", "device_type": "ZZ",
+		"environment": "local", "enterprise": "demo", "device_type": "ZZ", "product": "test",
 	}); code != http.StatusNotFound {
 		t.Fatalf("start 类型缺失应 404，得到 %d %s", code, body)
-	}
-	// 设备体带身份三键 → 400。
-	for _, k := range []string{"enterprise", "device_type", "server"} {
-		dev := e.deviceBody("sim_r2")
-		if k == "server" {
-			dev[k] = map[string]any{"url": "ws://127.0.0.1:1/"}
-		} else {
-			dev[k] = "x"
-		}
-		if code, body := e.post(t, "/devices", e.createBody(dev)); code != http.StatusBadRequest {
-			t.Fatalf("设备体带 %s 应 400，得到 %d %s", k, code, body)
-		}
-	}
-	// 模板同禁。
-	dev := e.deviceBody("ignored")
-	delete(dev, "device_id")
-	dev["server"] = map[string]any{"url": "ws://127.0.0.1:1/"}
-	if code, body := e.postTemplate(t, "bad_srv", dev); code != http.StatusBadRequest {
-		t.Fatalf("模板带 server 应 400，得到 %d %s", code, body)
 	}
 }
 
@@ -190,9 +172,9 @@ func TestURLPlaceholderSubstitution(t *testing.T) {
 		t.Fatalf("建 VT 类型应 201，得到 %d %s", code, body)
 	}
 	e.createDevice(t, "sim_url1")
-	// 占位符在 start 挂靠时代入。
+	// 占位符在 start 挂靠时代入。VT 没配默认产品，显式给。
 	if code, raw := e.post(t, "/devices/sim_url1/start", map[string]any{
-		"environment": "tpl", "enterprise": "vp", "device_type": "VT",
+		"environment": "tpl", "enterprise": "vp", "device_type": "VT", "product": "test",
 	}); code != http.StatusAccepted {
 		t.Fatalf("start 应 202，得到 %d %s", code, raw)
 	}
@@ -291,9 +273,9 @@ func TestRebindOnStartNotPut(t *testing.T) {
 		t.Fatalf("stop 应 200，得到 %d %s", code, body)
 	}
 
-	// 同一台设备改挂 beta。
+	// 同一台设备改挂 beta（beta/A3 没配默认产品，显式给）。
 	if code, body := e.post(t, "/devices/sim_att/start", map[string]any{
-		"environment": "local", "enterprise": "beta", "device_type": "A3",
+		"environment": "local", "enterprise": "beta", "device_type": "A3", "product": "test",
 	}); code != http.StatusAccepted {
 		t.Fatalf("改挂 beta 应 202，得到 %d %s", code, body)
 	}
@@ -307,7 +289,7 @@ func TestRebindOnStartNotPut(t *testing.T) {
 		t.Fatalf("stop 应 200，得到 %d %s", code, body)
 	}
 	if code, body := e.post(t, "/devices/sim_att/start", map[string]any{
-		"environment": "local", "enterprise": "nope", "device_type": "A3",
+		"environment": "local", "enterprise": "nope", "device_type": "A3", "product": "test",
 	}); code != http.StatusNotFound {
 		t.Fatalf("挂靠引用缺失应 404，得到 %d %s", code, body)
 	}
@@ -354,7 +336,7 @@ func TestBadSeqRejectedOnMHDeviceType(t *testing.T) {
 	}
 	e.createDevice(t, "sim_mh")
 	if code, body := e.post(t, "/devices/sim_mh/start", map[string]any{
-		"environment": "local", "enterprise": "demo", "device_type": "MH8W",
+		"environment": "local", "enterprise": "demo", "device_type": "MH8W", "product": "test",
 	}); code != http.StatusAccepted {
 		t.Fatalf("MH 机型应能挂靠，得到 %d %s", code, body)
 	}

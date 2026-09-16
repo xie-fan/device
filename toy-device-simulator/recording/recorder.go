@@ -57,6 +57,9 @@ type TurnRow struct {
 	Enterprise string `json:"enterprise,omitempty"`
 	DeviceType string `json:"device_type,omitempty"`
 	ServerURL  string `json:"server_url,omitempty"`
+	// Phase 12：这一轮用的产品和当时生效的覆盖。
+	Product   string         `json:"product,omitempty"`
+	Overrides map[string]any `json:"overrides,omitempty"`
 }
 
 // 任务分两级：关键任务丢了就说不出「这一轮发生了什么」，辅助材料丢了不影响判定。
