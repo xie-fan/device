@@ -128,6 +128,59 @@ func (s *Server) handleGetFrames(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// handleGetPhoto 传图留档（phase14 §4）。省略 uuid = 本轮 uplink_uuid，即带图送话那张；
+// 指令拍照那张的 uuid 在 photo_uploaded 的 reason 里。
+func (s *Server) handleGetPhoto(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	turnID := r.PathValue("turn_id")
+	ins, ok := s.requireInstance(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "缺 instance_id")
+		return
+	}
+	v := s.resolveInstance(id, ins)
+	if v.src == "" {
+		writeErr(w, http.StatusNotFound, "instance 未命中")
+		return
+	}
+	tr := v.turn(turnID)
+	if tr == nil {
+		writeErr(w, http.StatusNotFound, "turn 不存在")
+		return
+	}
+	uuid := tr.UplinkUUID
+	if q := r.URL.Query().Get("uuid"); q != "" {
+		n, err := strconv.ParseUint(q, 10, 32)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "uuid 非法")
+			return
+		}
+		uuid = uint32(n)
+	}
+	outDir := v.outDir
+	if tr.OutputDir != "" {
+		outDir = tr.OutputDir
+	}
+	_, up, _, _, err := core.RecordingPathsPhase2(outDir, id, ins, turnID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	path, format, ok := core.FindPhoto(filepath.Dir(up), uuid)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "照片不存在")
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "照片不存在")
+		return
+	}
+	w.Header().Set("Content-Type", mimeByFormat(format))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (s *Server) handleGetAudioUplink(w http.ResponseWriter, r *http.Request) {
 	s.serveAudio(w, r, true)
 }

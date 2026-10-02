@@ -110,6 +110,7 @@ type runStub struct {
 	busy                          map[string]bool // 这些 device_id 的租约回 409
 	// 音频集（Phase 13）
 	setAssets  []string       // GET /audio_sets 里「冒烟」的条目
+	composed   []string       // POST /assets/compose 收到的 asset_ids
 	speakCode  map[string]int // 这些 asset_id 的 speak_and_wait 回这个状态码
 	spoken     []string       // 每次送话的 asset_id，按顺序
 	renews     int            // 带 lease_id 的续租次数
@@ -203,6 +204,19 @@ func (s *runStub) handler() http.Handler {
 			return
 		}
 		fmt.Fprintf(w, `{"turn_id":"turn_%d","instance_id":"ins_1","turn_end_reason":"idle","uplink_end_reason":"complete","reply_kind":"tts"}`, s.speaks)
+	})
+	mux.HandleFunc("GET /assets", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"assets": []any{
+			map[string]any{"asset_id": "ast_tag_" + r.URL.Query().Get("tag")},
+		}})
+	})
+	mux.HandleFunc("POST /assets/compose", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			AssetIDs []string `json:"asset_ids"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		s.composed = b.AssetIDs
+		_, _ = w.Write([]byte(`{"asset_id":"ast_combo"}`))
 	})
 	mux.HandleFunc("GET /audio_sets", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"audio_sets": []any{
@@ -590,5 +604,23 @@ func TestRunAudioSet(t *testing.T) {
 		"--env", "local", "--enterprise", "vp", "--device-type", "A3", "--audio-set", "没这个集"}); code == 0 ||
 		!bytes.Contains(out.Bytes(), []byte("没有音频集")) || stub.speaks != 0 {
 		t.Fatalf("不存在的音频集应报错且一条都不送: code=%d speaks=%d out=%s", code, stub.speaks, out.Bytes())
+	}
+}
+
+// --compose：asset_id 原样、标签取第一条，拼成一条后只送那一条。
+func TestRunCompose(t *testing.T) {
+	stub := &runStub{state: "running"}
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	out := withIO(t)
+	if code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "sim_1",
+		"--env", "local", "--enterprise", "vp", "--device-type", "A3", "--compose", "ast_hi，故事+笑话"}); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	if strings.Join(stub.composed, ",") != "ast_hi,ast_tag_故事,ast_tag_笑话" {
+		t.Fatalf("拼接来源 %v", stub.composed)
+	}
+	if strings.Join(stub.spoken, ",") != "ast_combo" {
+		t.Fatalf("应只送拼好的那一条，实际 %v", stub.spoken)
 	}
 }

@@ -76,7 +76,8 @@ type turnRuntime struct {
 	followup   *time.Timer
 	silent     *time.Timer
 
-	waitingPhoto bool // 本轮在等拍照回复（UUID=0 的 TTS）
+	waitingPhoto bool   // 本轮在等拍照回复（UUID=0 的 TTS）
+	photo        *Photo // 带图送话：发音频之前先传的图（phase14）
 
 	out       atomic.Int64
 	drained   chan struct{}
@@ -453,7 +454,7 @@ func (d *DeviceInstance) fireActivity() {
 }
 
 func (d *DeviceInstance) encodeStage3(uuid uint32, _ string) []byte {
-	raw, err := protocol.EncodeAudioFrame(protocol.NewPCMHeader(protocol.StageBreak, 0, uuid, 0, d.sampleRate), nil)
+	raw, err := protocol.EncodeAudioFrame(protocol.NewAudioHeader(d.cfg.Audio.Format, protocol.StageBreak, 0, uuid, 0, d.sampleRate), nil)
 	if err != nil {
 		return []byte{protocol.FirstAudio}
 	}

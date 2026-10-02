@@ -10,6 +10,8 @@
     try {
       var t = localStorage.getItem("bench.theme");
       if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      var sk = localStorage.getItem("bench.skin");
+      if (sk === "console") document.documentElement.dataset.skin = "console";
     } catch (e) { /* 隐私模式下忽略 */ }
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -47,12 +49,21 @@
     </div>
 
     <div class="segwrap">
+      <span class="segwrap__label">主题</span>
+      <div class="seg" role="group" aria-label="界面主题">
+        <button type="button" class="seg__btn is-on" id="btn-skin-classic" aria-pressed="true">经典</button>
+        <button type="button" class="seg__btn" id="btn-skin-console" aria-pressed="false">调音台</button>
+      </div>
+    </div>
+
+    <div class="segwrap">
       <span class="segwrap__label">视图</span>
       <div class="seg" role="group" aria-label="视图">
         <button type="button" class="seg__btn is-on" id="btn-view-bench" aria-pressed="true">调试台</button>
         <button type="button" class="seg__btn" id="btn-view-manage" aria-pressed="false">设备管理</button>
         <button type="button" class="seg__btn" id="btn-view-registry" aria-pressed="false">厂商与设备类型</button>
         <button type="button" class="seg__btn" id="btn-view-products" aria-pressed="false">产品</button>
+        <button type="button" class="seg__btn" id="btn-view-sets" aria-pressed="false">音频集</button>
       </div>
     </div>
 
@@ -60,7 +71,7 @@
 
     <div class="mast__icons">
       <button type="button" class="btn btn--icon btn--sm" id="btn-scenarios" title="场景编排 POST /scenarios/run">场景</button>
-      <button type="button" class="btn btn--icon btn--sm" id="btn-help" title="术语与状态机">?</button>
+      <button type="button" class="btn btn--icon btn--sm" id="btn-help" title="术语与状态机" aria-label="术语与状态机">?</button>
       <button type="button" class="btn btn--icon btn--sm" id="btn-theme" title="主题：跟随系统" aria-label="切换主题"><span id="theme-glyph" aria-hidden="true">◐</span></button>
     </div>
   </header>
@@ -143,6 +154,15 @@
         <p class="banner banner--tomb" id="tomb-banner" hidden><span id="tomb-kind">墓碑态 · 只读回看</span><span class="mono dim" id="tomb-meta"></span></p>
       </div>
 
+      <!-- 调音台皮肤的工作区：灯位桥 + 连续双道时间轴；经典皮肤下隐藏。 -->
+      <div class="deck" id="deck" hidden>
+        <div class="deck__bridge" id="deck-bridge"></div>
+        <div class="deck__tl" id="deck-tl">
+          <div class="deck__inner" id="deck-inner"></div>
+        </div>
+        <p class="deck__empty" id="deck-empty">选一台设备 → 启动并等待 Ready → 送一段音频。上行/下行按真实帧时间铺在两条道上，重叠即并发。</p>
+      </div>
+
       <div class="conv" id="conv-scroll">
         <div class="conv__empty" id="conv-empty">
           <div class="conv__mark" aria-hidden="true">◌</div>
@@ -162,8 +182,13 @@
         </div>
         <p class="sendblock" id="send-blocked" hidden><span class="tag tag--warn">送话不可用</span><span id="send-blocked-text"></span></p>
         <form class="sendbar" id="form-speak">
-          <select id="src-select" title="夹具 GET /samples · 素材库 · 本机文件 · 或直接把 WAV 拖到中栏" aria-label="音频源">
+          <button type="button" class="btn btn--rec" id="btn-rec" title="麦克风录制 → 封装 WAV 选为音源" aria-pressed="false">● 录制</button>
+          <button type="button" class="btn btn--sub" id="btn-file" title="从本机选 .wav 作为音源">📁 文件</button>
+          <select id="src-select" title="夹具 GET /samples · 音频集 · 素材库 · 本机文件 · 或直接把 WAV 拖到中栏" aria-label="音频源">
             <option value="">选音频源…</option>
+          </select>
+          <select id="img-select" title="带图送话：先用本轮 UUID 传这张图再说话，跑音频集时每条都带；服务端设备类型要开 imageChat" aria-label="带图">
+            <option value="">不带图</option>
           </select>
           <div class="sendbar__meta">
             <div class="mono" id="src-name">—</div>
@@ -173,7 +198,7 @@
             <input type="checkbox" id="chk-sync"> <span>等终态</span>
           </label>
           <button type="button" class="btn btn--sub" id="btn-interrupt" title="POST /devices/{id}/interrupt">打断</button>
-          <button type="submit" class="btn btn--primary" id="btn-speak">送出 <kbd>⌘⏎</kbd></button>
+          <button type="submit" class="btn btn--primary" id="btn-speak">送出 <kbd>Ctrl+Enter</kbd></button>
         </form>
         <input type="file" id="wav-file" accept=".wav,audio/wav,audio/x-wav" hidden>
       </div>
@@ -193,7 +218,7 @@
         <div class="side__tools">
           <div class="chips" id="tape-chips" role="group" aria-label="事件筛选">
             <button type="button" class="chip is-on" data-scope="all">全部</button>
-            <button type="button" class="chip" data-scope="key">关键</button>
+            <button type="button" class="chip" data-scope="key">仅事件</button>
             <button type="button" class="chip" data-scope="audio">音频</button>
             <button type="button" class="chip" data-scope="err">异常</button>
           </div>
@@ -288,6 +313,19 @@
     </div>
     <div class="manage__wrap">
       <div class="sheet" id="products-body"></div>
+    </div>
+  </section>
+
+  <section class="manage" id="sets" hidden aria-labelledby="sets-title">
+    <div class="manage__bar">
+      <h2 class="manage__title" id="sets-title">音频集</h2>
+      <span class="tag tag--acc" id="sets-count">0</span>
+      <span class="grow"></span>
+      <span class="api">GET /audio_sets · data/assets/audio_sets.json</span>
+      <button type="button" class="btn btn--primary btn--sm" id="sets-new">＋ 新建音频集</button>
+    </div>
+    <div class="manage__wrap">
+      <div class="sheet" id="sets-body"></div>
     </div>
   </section>
 

@@ -23,28 +23,30 @@ type queuedSpeak struct {
 	turnID     string
 	pcm        []byte
 	sp         *streamSpec // 非 nil = 压缩格式流式上行（Phase 5d）
+	photo      *Photo      // 非 nil = 带图送话（phase14）
 	tryAcquire func() bool
 }
 
 func (d *DeviceInstance) Speak(pcm []byte) (turnID string, uuid uint32, err error) {
-	res, err := d.SpeakPermit(pcm, nil)
+	res, err := d.SpeakPermit(pcm, nil, nil)
 	return res.TurnID, res.UUID, err
 }
 
 // SpeakPermit occupy 成功后再 tryAcquire；seqBefore 在 occupy 成功之后取样。
 // tryAcquire 为 nil 时不占 speak_permit（Phase 1 CLI）。失败不得留下占用槽。
 // Phase 4：槽占用且 speak_backlog_depth>0 时入队（Queued=true），终态后自动出队。
-func (d *DeviceInstance) SpeakPermit(pcm []byte, tryAcquire func() bool) (SpeakResult, error) {
-	return d.speakPermit(append([]byte(nil), pcm...), nil, tryAcquire)
+// photo 非 nil 时发音频之前先用本轮 UUID 传图（phase14 带图送话）。
+func (d *DeviceInstance) SpeakPermit(pcm []byte, photo *Photo, tryAcquire func() bool) (SpeakResult, error) {
+	return d.speakPermit(append([]byte(nil), pcm...), nil, photo, tryAcquire)
 }
 
 // SpeakStreamPermit Phase 5d：压缩格式上行。open 的实时流（ffmpeg -re）按
-// chunkBytes 聚合帧化发送；占槽/permit/backlog 语义与 SpeakPermit 一致。
-func (d *DeviceInstance) SpeakStreamPermit(open StreamOpen, durMs, chunkBytes int, tryAcquire func() bool) (SpeakResult, error) {
-	return d.speakPermit(nil, &streamSpec{open: open, durMs: durMs, chunk: chunkBytes}, tryAcquire)
+// chunkBytes 聚合帧化发送；占槽/permit/backlog/photo 语义与 SpeakPermit 一致。
+func (d *DeviceInstance) SpeakStreamPermit(open StreamOpen, durMs, chunkBytes int, photo *Photo, tryAcquire func() bool) (SpeakResult, error) {
+	return d.speakPermit(nil, &streamSpec{open: open, durMs: durMs, chunk: chunkBytes}, photo, tryAcquire)
 }
 
-func (d *DeviceInstance) speakPermit(copied []byte, sp *streamSpec, tryAcquire func() bool) (SpeakResult, error) {
+func (d *DeviceInstance) speakPermit(copied []byte, sp *streamSpec, photo *Photo, tryAcquire func() bool) (SpeakResult, error) {
 	d.deviceMu.Lock()
 	d.connMu.Lock()
 	st := d.connState
@@ -69,7 +71,7 @@ func (d *DeviceInstance) speakPermit(copied []byte, sp *streamSpec, tryAcquire f
 		}
 		turnID := d.allocTurnIDLocked()
 		d.turnDone[turnID] = make(chan Event, 1)
-		d.speakBacklog = append(d.speakBacklog, queuedSpeak{turnID: turnID, pcm: copied, sp: sp, tryAcquire: tryAcquire})
+		d.speakBacklog = append(d.speakBacklog, queuedSpeak{turnID: turnID, pcm: copied, sp: sp, photo: photo, tryAcquire: tryAcquire})
 		pos := len(d.speakBacklog)
 		_, en := d.appendEventLocked("speak_queued", turnID, fmt.Sprintf("pos=%d", pos), "", "", "")
 		d.deviceMu.Unlock()
@@ -80,7 +82,7 @@ func (d *DeviceInstance) speakPermit(copied []byte, sp *streamSpec, tryAcquire f
 	}
 
 	turnID := d.allocTurnIDLocked()
-	uuid, seqBefore, launch, err := d.startTurnLocked(turnID, copied, sp, tryAcquire)
+	uuid, seqBefore, launch, err := d.startTurnLocked(turnID, copied, sp, photo, tryAcquire)
 	if err != nil {
 		d.deviceMu.Unlock()
 		return SpeakResult{}, err
@@ -103,8 +105,8 @@ func (d *DeviceInstance) allocTurnIDLocked() string {
 
 // startTurnLocked 占槽并构造 turnRuntime；调用方必须持 deviceMu 且已确认槽空闲。
 // 返回的 launch 必须在解锁后调用（建录音文件、起上行协程）。失败不留占用槽。
-// sp 非 nil 时走流式上行（copied 应为 nil）。
-func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, sp *streamSpec, tryAcquire func() bool) (uuid uint32, seqBefore int, launch func(), err error) {
+// sp 非 nil 时走流式上行（copied 应为 nil）。photo 非 nil 时上行协程先传图。
+func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, sp *streamSpec, photo *Photo, tryAcquire func() bool) (uuid uint32, seqBefore int, launch func(), err error) {
 	uuid = d.allocUUIDLocked()
 	var framesPath, upPath, downPath, turnPath string
 	if d.phase2Recording {
@@ -143,6 +145,7 @@ func (d *DeviceInstance) startTurnLocked(turnID string, copied []byte, sp *strea
 		upPath:     upPath,
 		downPath:   downPath,
 		turnPath:   turnPath,
+		photo:      photo,
 		done:       done,
 	}
 	d.turn = tr
@@ -186,7 +189,7 @@ func (d *DeviceInstance) dispatchBacklog() {
 			en.NotifyHTTP()
 			continue
 		}
-		uuid, seqBefore, launch, err := d.startTurnLocked(q.turnID, q.pcm, q.sp, q.tryAcquire)
+		uuid, seqBefore, launch, err := d.startTurnLocked(q.turnID, q.pcm, q.sp, q.photo, q.tryAcquire)
 		if err != nil {
 			reason := "error"
 			if err == ErrSpeakPermit {
@@ -261,7 +264,7 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 			BitsPerSample: 16,
 		})
 	}
-	frames := BuildUplinkFrames(stream, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault, d.cfg.Audio.MaxPayloadSize)
+	frames := BuildUplinkFrames(stream, uuid, d.sampleRate, d.cfg.Audio.SliceMs, d.fault, d.cfg.Audio.MaxPayloadSize, d.cfg.Audio.Format)
 
 	d.deviceMu.Lock()
 	if d.slot.ID() != turnID || d.finalizeStarted {
@@ -270,6 +273,10 @@ func (d *DeviceInstance) uplinkTurn(turnID string, uuid uint32, pcm []byte) {
 	}
 	d.slot.SetState(TurnSpeaking)
 	d.deviceMu.Unlock()
+
+	if !d.uploadTurnPhoto(turnID, uuid) {
+		return
+	}
 
 	pace := time.Duration(d.cfg.Audio.SliceMs) * time.Millisecond
 	for _, raw := range frames {

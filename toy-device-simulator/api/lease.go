@@ -43,16 +43,17 @@ func leaseHeldLocked(d *managedDevice) bool {
 	return true
 }
 
-// ponytail: 不续租。真出现超过 leaseTTL 的 run（超长流式素材），POST 时带上
-// 原 lease_id 视作续期即可，三行。
+// handlePostLease 获取或续租。带上现任 lease_id 再 POST 一次就是续租：id 不变，
+// 只往后推过期时间——音频集逐条送，整组远超 leaseTTL（Phase 13）。
 func (s *Server) handlePostLease(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Owner  string  `json:"owner"`
-		TTLSec float64 `json:"ttl_sec"`
-		Steal  bool    `json:"steal"`
+		Owner   string  `json:"owner"`
+		TTLSec  float64 `json:"ttl_sec"`
+		Steal   bool    `json:"steal"`
+		LeaseID string  `json:"lease_id"` // 续租时给现任 id
 	}
-	// 空 body 合法：三个字段都有默认值。
+	// 空 body 合法：字段都有默认值。
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeErr(w, http.StatusBadRequest, "JSON 非法")
@@ -74,7 +75,10 @@ func (s *Server) handlePostLease(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "device 不存在")
 		return
 	}
-	if leaseHeldLocked(d) && !body.Steal {
+	held := leaseHeldLocked(d)
+	// 已过期的续租按普通获取处理、发新 id：调用方以响应里的 lease_id 为准。
+	renew := held && body.LeaseID != "" && body.LeaseID == d.leaseID
+	if held && !renew && !body.Steal {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":      "lease_held",
 			"device_id":  id,
@@ -83,7 +87,9 @@ func (s *Server) handlePostLease(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	d.leaseID = newLeaseID()
+	if !renew {
+		d.leaseID = newLeaseID()
+	}
 	d.leaseOwner = body.Owner
 	d.leaseExpires = time.Now().Add(ttl)
 	// 回一份新鲜的 deviceView：客户端拿它喂后续的 start/speak，省掉

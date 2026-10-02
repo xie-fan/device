@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>台架 · 风格预览</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
+body { display:flex; flex-direction:column; background:#0c0d10; color:#e8e9ec; font:13px/1.5 "Segoe UI",system-ui,sans-serif; }
+.tabbar { flex:none; display:flex; align-items:center; gap:2px; padding:8px 12px 0; background:#0c0d10; border-bottom:1px solid #2a2d33; }
+.tabbar .cap { color:#7c828d; font-size:12px; margin-right:14px; }
+.tabbar button { appearance:none; border:1px solid #2a2d33; border-bottom:none; background:#141519; color:#9aa0ab; padding:7px 14px; border-radius:7px 7px 0 0; cursor:pointer; font:600 12px/1 "Segoe UI",sans-serif; }
+.tabbar button.on { background:#1d1f24; color:#f5d76a; border-color:#3d4148; }
+.tabbar .hint { margin-left:auto; color:#5a6069; font-size:11px; }
+.pane { display:none; height:calc(100vh - 38px); overflow:hidden; }
+.pane.on { display:flex; flex-direction:column; }
+.pane .note { flex:none; padding:6px 14px; font-size:11.5px; }
+.led { display:inline-block; width:8px; height:8px; border-radius:50%; }
+.led.on { background:#3fae6a; box-shadow:0 0 5px #3fae6a88; }
+.led.off { background:#454b55; }
+.led.warn { background:#d8a13a; box-shadow:0 0 5px #d8a13a88; }
+.led.err { background:#c8442e; box-shadow:0 0 5px #c8442e88; }
+.mi { font-family:Consolas,"Cascadia Mono",monospace; }
+
+/* ════════ 1 · 调音台·连续时间轴（定稿方向） ════════ */
+.p1 { background:#101114; font-family:"Bahnschrift","Segoe UI",sans-serif; color:#c9cdd4; }
+.p1 .note { color:#a99f86; background:#101114; border-bottom:1px solid #26282c; }
+.p1 .top { flex:none; display:flex; align-items:center; gap:8px; padding:9px 14px; background:#151619; border-bottom:2px solid #0a0b0d; }
+.p1 .top .b { color:#e8dcc0; font-weight:700; font-size:12px; letter-spacing:.18em; margin-right:6px; }
+.p1 .top .gap { flex:1; }
+.p1 .top .seg { display:flex; border:1px solid #2c2f35; border-radius:3px; overflow:hidden; }
+.p1 .top .seg span { font-size:10px; padding:4px 10px; color:#7c828d; letter-spacing:.06em; }
+.p1 .top .seg span.on { background:#d8a13a; color:#191b1f; font-weight:700; }
+.p1 .top .ic { font-size:11px; color:#8a9099; padding:3px 8px; border:1px solid #2c2f35; border-radius:3px; background:#101114; }
+.p1 .top .ic.warn { color:#e0b04a; border-color:#d8a13a66; }
+.p1 .wrap { flex:1; display:flex; min-height:0; }
+.p1 .ch { width:64px; flex:none; background:#151619; border-right:2px solid #0a0b0d; display:flex; flex-direction:column; align-items:center; padding:10px 0; gap:12px; }
+.p1 .ch .chb { display:flex; flex-direction:column; align-items:center; gap:4px; }
+.p1 .ch .chb .no { font-size:8.5px; color:#7c828d; letter-spacing:.15em; }
+.p1 .ch .chb .nm { font-size:9px; color:#c9cdd4; writing-mode:vertical-lr; letter-spacing:.2em; max-height:90px; overflow:hidden; }
+.p1 .ch .chb.sel { outline:1px solid #d8a13a; outline-offset:3px; border-radius:2px; }
+.p1 .ch .add { margin-top:auto; font-size:14px; color:#5a6069; }
+.p1 .desk { flex:1; display:flex; flex-direction:column; min-width:0; }
+.p1 .bridge { flex:none; display:flex; align-items:center; gap:16px; padding:8px 16px; background:linear-gradient(#22242a,#191b1f); border-bottom:2px solid #0a0b0d; }
+.p1 .lamp { display:flex; align-items:center; gap:5px; font-size:9.5px; letter-spacing:.13em; color:#6a7078; text-transform:uppercase; }
+.p1 .lamp.on { color:#e8dcc0; }
+.p1 .lamp .led { width:9px; height:9px; }
+.p1 .bridge .sp { flex:1; }
+.p1 .bridge .meta { font-family:Consolas,monospace; font-size:10px; color:#7c828d; display:flex; gap:14px; }
+.p1 .bridge .meta b { color:#d8a13a; font-weight:400; }
+.p1 .bridge .meta .er { color:#e08a7a; }
+.p1 .tl { flex:none; position:relative; overflow:hidden; background:#100f0d; display:flex; flex-direction:column; border-bottom:1px solid #0a0b0d; }
+.p1 .grid { position:absolute; inset:0; pointer-events:none; }
+.p1 .grid i { position:absolute; top:0; bottom:0; border-left:1px solid #1c1913; }
+.p1 .grid i.mj { border-left-color:#2e2a20; }
+.p1 .rg { position:absolute; top:0; bottom:0; border-left:1px solid #26211a; pointer-events:none; }
+.p1 .rg .rid { position:absolute; top:4px; left:6px; font-size:9px; color:#5a5348; font-family:Consolas,monospace; white-space:nowrap; }
+.p1 .rg.alt { background:#141109; }
+.p1 .rg.live { background:#18140855; border-left-color:#d8a13a66; }
+.p1 .rg.live .rid { color:#d8a13a; }
+.p1 .rul { flex:none; height:26px; position:relative; border-bottom:1px solid #221f19; }
+.p1 .rul.b { border-bottom:none; border-top:1px solid #221f19; }
+.p1 .rul .tm { position:absolute; top:7px; font-size:9.5px; color:#8a8072; font-family:Consolas,monospace; transform:translateX(4px); }
+.p1 .rul.b .tm { top:auto; bottom:7px; }
+.p1 .rul .tm::before { content:""; position:absolute; left:-4px; top:-3px; bottom:-3px; border-left:2px solid #3a3428; }
+.p1 .ln { flex:none; height:64px; position:relative; border-bottom:1px solid #1a1712; }
+.p1 .ln .nl { position:absolute; left:8px; top:6px; z-index:2; font-size:9px; letter-spacing:.18em; color:#7a7264; background:#100f0d; padding:1px 6px; border:1px solid #26211a; border-radius:2px; }
+.p1 .sg { position:absolute; top:10px; height:16px; min-width:8px; border-radius:3px; }
+.p1 .ln.up .sg { background:linear-gradient(#4a8a5c,#356844); }
+.p1 .ln.dn .sg { background:linear-gradient(#a284cc,#7a5aa8); }
+.p1 .sg.live { background-image:repeating-linear-gradient(45deg,transparent 0 5px,#ffffff22 5px 10px); }
+.p1 .sg .an { position:absolute; top:20px; left:0; font-size:9.5px; color:#8a8072; white-space:nowrap; font-family:"Cascadia Mono",Consolas,monospace; }
+.p1 .sg .an b { color:#d8c9a0; font-weight:400; }
+.p1 .sg .an .dur { color:#e8dcc0; background:#2a2620; padding:0 5px; border-radius:2px; margin-right:4px; }
+.p1 .ln.dn .sg .an { color:#9a8ab8; }
+.p1 .ln.ev { height:44px; }
+.p1 .ln.ev .dot { position:absolute; top:10px; width:8px; height:8px; transform:rotate(45deg); background:#8a8072; }
+.p1 .ln.ev .dot.cmd { background:#5794f2; }
+.p1 .ln.ev .dot.err { background:#c8442e; box-shadow:0 0 4px #c8442e88; }
+.p1 .ln.ev .dot .an { position:absolute; top:13px; left:-6px; transform:rotate(0); font-size:9px; color:#8a8072; white-space:nowrap; font-family:Consolas,monospace; }
+.p1 .ln.ev .dot.err .an { color:#e08a7a; }
+.p1 .now { position:absolute; top:0; bottom:0; width:2px; background:#c8442e; z-index:3; }
+.p1 .now::after { content:"NOW 11:33:58"; position:absolute; top:30px; left:5px; font-size:9px; color:#e06a5a; letter-spacing:.1em; font-family:Consolas,monospace; white-space:nowrap; }
+.p1 .sil { position:absolute; top:0; bottom:0; background:repeating-linear-gradient(90deg,transparent 0 6px,#d8a13a12 6px 12px); border-left:1px dashed #d8a13a66; border-right:1px dashed #d8a13a33; }
+.p1 .sil .an { position:absolute; bottom:30px; left:5px; font-size:9px; color:#d8b95a; font-family:Consolas,monospace; white-space:nowrap; }
+.p1 .panel { flex:1; min-height:170px; display:flex; flex-direction:column; background:#15130f; }
+.p1 .tabs { flex:none; display:flex; gap:2px; padding:6px 12px 0; align-items:flex-end; }
+.p1 .tabs span { font-size:10.5px; padding:5px 14px; color:#7a7264; border:1px solid #2a2620; border-bottom:none; border-radius:5px 5px 0 0; background:#100f0d; letter-spacing:.06em; cursor:pointer; }
+.p1 .tabs span.on { background:#1b1812; color:#d8a13a; border-color:#3a3428; }
+.p1 .tabs .cnt { margin-left:auto; font-family:Consolas,monospace; font-size:10px; color:#5f5849; padding-bottom:6px; }
+.p1 .pbody { flex:1; overflow:hidden; border-top:1px solid #2a2620; }
+.p1 .pv { display:none; height:100%; }
+.p1 .pv.on { display:block; }
+.p1 .ev { display:flex; gap:10px; padding:4px 16px; font-family:Consolas,monospace; font-size:10.5px; color:#8a8072; border-bottom:1px solid #1b1812; align-items:baseline; }
+.p1 .ev .t { color:#4a4438; flex:none; }
+.p1 .ev .k { min-width:118px; flex:none; color:#a89f8e; }
+.p1 .ev.down .k { color:#b39ddb; } .p1 .ev.up .k { color:#6ab87e; }
+.p1 .ev.err .k { color:#e06a5a; } .p1 .ev.ok .k { color:#4cc26a; }
+.p1 .ev .r { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.p1 .pv.conv { padding:10px 18px; font-family:"Cascadia Mono",Consolas,monospace; font-size:11.5px; line-height:1.85; }
+.p1 .pv.conv .say { color:#e8dcc0; } .p1 .pv.conv .say::before { content:"› "; color:#d8a13a; }
+.p1 .pv.conv .hr { color:#8fb8d8; font-size:11px; }
+.p1 .pv.conv .rp { color:#b39ddb; } .p1 .pv.conv .rp::before { content:"♪ "; color:#6a5490; }
+.p1 .pv.conv .mk { color:#4a4438; font-size:9.5px; margin-top:6px; }
+.p1 .pv.frm { padding:10px 18px; font-family:Consolas,monospace; font-size:10px; line-height:1.75; color:#7a7264; }
+.p1 .pv.frm .fh { color:#a89f8e; }
+.p1 .pv.his { padding:10px 18px; font-family:Consolas,monospace; font-size:10.5px; color:#8a8072; line-height:1.8; }
+.p1 .pv.his .r { display:flex; gap:10px; border-bottom:1px solid #1b1812; padding:3px 0; }
+.p1 .pv.his .r .id { color:#a89f8e; min-width:150px; }
+.p1 .sp { flex:none; display:flex; align-items:center; gap:10px; padding:10px 16px; background:#191b1f; border-top:2px solid #0a0b0d; }
+.p1 .sp .gt { color:#d8a13a; font-weight:700; font-family:Consolas,monospace; }
+.p1 .sp .in { flex:1; background:#0c0d0f; border:1px solid #2c2f35; border-radius:3px; color:#e8dcc0; padding:8px 12px; font-size:12px; font-family:"Cascadia Mono",Consolas,monospace; }
+.p1 .sp .in .ph { color:#5a6069; }
+.p1 .sp .tr { display:flex; gap:6px; }
+.p1 .sp .bt { min-width:40px; height:30px; padding:0 12px; border-radius:4px; background:linear-gradient(#2c2f35,#1d1f23); border:1px solid #0a0b0d; box-shadow:inset 0 1px 0 #3a3d44; color:#c9cdd4; display:flex; align-items:center; justify-content:center; font-size:12px; letter-spacing:.05em; }
+.p1 .sp .bt.go { background:linear-gradient(#3fae6a,#2c8a50); color:#fff; }
+.p1 .sp .bt.stop { background:linear-gradient(#c8442e,#9e3020); color:#fff; }
+.p1 .sp .bt.rec { color:#e8655a; border-color:#5a2620; }
+.p1 .sp .bt.rec.on { background:linear-gradient(#c8442e,#9e3020); color:#fff; box-shadow:0 0 10px #c8442e66; }
+
+/* ════════ 2 · 竖向双栏对话带 ════════ */
+.p2 { background:#14141a; font-family:"Segoe UI",sans-serif; color:#d5d7e0; }
+.p2 .note { color:#9a93b8; background:#14141a; border-bottom:1px solid #26242e; }
+.p2 .top { flex:none; display:flex; align-items:center; gap:8px; padding:9px 14px; background:#191821; border-bottom:1px solid #26242e; }
+.p2 .top .b { color:#e8e4f0; font-weight:700; font-size:12.5px; }
+.p2 .top .gap { flex:1; }
+.p2 .top .seg { display:flex; border:1px solid #33303f; border-radius:5px; overflow:hidden; }
+.p2 .top .seg span { font-size:10.5px; padding:4px 10px; color:#8a86a0; }
+.p2 .top .seg span.on { background:#7a68c8; color:#fff; }
+.p2 .top .ic { font-size:11px; color:#8a86a0; padding:3px 8px; border:1px solid #33303f; border-radius:5px; }
+.p2 .wrap { flex:1; display:flex; min-height:0; }
+.p2 .rail { width:170px; flex:none; background:#191821; border-right:1px solid #26242e; padding:8px; display:flex; flex-direction:column; gap:5px; }
+.p2 .rail .d { display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:6px; font-size:11.5px; color:#a8a4bc; }
+.p2 .rail .d.sel { background:#232030; color:#f0edf8; outline:1px solid #7a68c855; }
+.p2 .rail .d .mi { font-size:9px; color:#5f5a74; }
+.p2 .rail .add { margin-top:auto; border:1px dashed #33303f; border-radius:6px; color:#5f5a74; text-align:center; padding:6px; font-size:11px; }
+.p2 .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+.p2 .stream { flex:1; overflow:hidden; display:grid; grid-template-columns:1fr 64px 1fr; padding:0 20px; }
+.p2 .col { padding:10px 8px; display:flex; flex-direction:column; gap:8px; }
+.p2 .col.up { align-items:flex-end; }
+.p2 .col.dn { align-items:flex-start; }
+.p2 .gut { border-left:1px solid #33303f; border-right:1px solid #33303f; position:relative; }
+.p2 .gut .tk { position:absolute; left:50%; transform:translateX(-50%); font-size:8.5px; color:#5f5a74; font-family:Consolas,monospace; background:#14141a; padding:0 4px; }
+.p2 .gut .tkn { position:absolute; left:50%; transform:translateX(-50%); width:7px; height:1px; background:#33303f; }
+.p2 .msg { width:60%; min-height:26px; border-radius:10px; padding:7px 11px; font-size:11.5px; }
+.p2 .msg.live { background-image:repeating-linear-gradient(45deg,transparent 0 5px,#ffffff14 5px 10px); }
+.p2 .msg .mt { display:flex; gap:8px; font-size:9px; font-family:Consolas,monospace; margin-top:4px; opacity:.75; }
+.p2 .up .msg { background:#1e2e26; border:1px solid #2c4a38; color:#b8d8c4; border-bottom-right-radius:3px; }
+.p2 .up .msg .mt { color:#6a9a7c; }
+.p2 .dn .msg { background:#241f33; border:1px solid #3d3460; color:#cdc4e8; border-bottom-left-radius:3px; }
+.p2 .dn .msg .mt { color:#8a7cb8; }
+.p2 .msg .say { color:#f0edf8; font-weight:600; }
+.p2 .msg.err { background:#331f22; border-color:#5c2e33; color:#e8b4b0; }
+.p2 .msg.sys { background:transparent; border:1px dashed #33303f; color:#5f5a74; font-size:10px; border-radius:6px; }
+.p2 .same { height:0; }
+.p2 .ovh { font-size:9px; color:#d8a13a; font-family:Consolas,monospace; letter-spacing:.1em; align-self:center; border:1px dashed #d8a13a55; border-radius:8px; padding:1px 8px; margin:2px 0; }
+.p2 .sp2 { flex:none; display:flex; gap:8px; padding:10px 20px; background:#191821; border-top:1px solid #26242e; align-items:center; }
+.p2 .sp2 .in { flex:1; background:#100f16; border:1px solid #33303f; border-radius:8px; color:#e8e4f0; padding:9px 13px; font-size:12px; }
+.p2 .sp2 .b { font-size:11px; padding:7px 14px; border-radius:8px; background:#232030; border:1px solid #33303f; color:#d5d7e0; }
+.p2 .sp2 .b.p { background:#7a68c8; border-color:#7a68c8; color:#fff; }
+
+/* ════════ 3 · 示波器 ════════ */
+.p3 { background:#0d110d; font-family:"Bahnschrift","Segoe UI",sans-serif; color:#c8d4c8; }
+.p3 .note { color:#8aa88a; background:#0d110d; border-bottom:1px solid #22301f; }
+.p3 .top { flex:none; display:flex; align-items:center; gap:10px; padding:8px 14px; background:#131a12; border-bottom:1px solid #22301f; }
+.p3 .top .b { color:#a8e0a0; font-weight:700; letter-spacing:.15em; font-size:12px; }
+.p3 .top .gap { flex:1; }
+.p3 .top .st3 { font-family:Consolas,monospace; font-size:10px; color:#7a9478; }
+.p3 .top .st3 b { color:#a8e0a0; font-weight:400; }
+.p3 .wrap { flex:1; display:flex; min-height:0; }
+.p3 .ch3 { width:150px; flex:none; background:#101610; border-right:1px solid #22301f; padding:10px; display:flex; flex-direction:column; gap:6px; }
+.p3 .ch3 .cap3 { font-size:9px; letter-spacing:.2em; color:#5f7a5c; text-transform:uppercase; }
+.p3 .ch3 .d { padding:7px 9px; border:1px solid #22301f; border-radius:4px; background:#141b13; font-size:11px; color:#a8bca4; }
+.p3 .ch3 .d.sel { border-color:#a8e0a0; color:#e0f0dc; box-shadow:inset 0 0 8px #a8e0a022; }
+.p3 .ch3 .d .mi { font-size:9px; color:#5f7a5c; display:block; }
+.p3 .ch3 .add { margin-top:auto; border:1px dashed #22301f; color:#5f7a5c; text-align:center; padding:5px; border-radius:4px; font-size:11px; }
+.p3 .scope { flex:1; position:relative; margin:12px; border:1px solid #2c3a28; border-radius:6px; background:radial-gradient(ellipse at 50% 40%,#101a0f,#0a0f09 75%); box-shadow:inset 0 0 40px #000a; overflow:hidden; display:flex; flex-direction:column; }
+.p3 .grat { flex:1; position:relative; }
+.p3 .grat .gv, .p3 .grat .gh { position:absolute; }
+.p3 .grat .gv { top:0; bottom:0; border-left:1px solid #1e2e1a; }
+.p3 .grat .gv.mj { border-left-color:#33502c; }
+.p3 .grat .gh { left:0; right:0; border-top:1px solid #1e2e1a; }
+.p3 .grat .gh.c { border-top:1px dashed #33502c; }
+.p3 .tr-up, .p3 .tr-dn { position:absolute; left:0; right:0; }
+.p3 .tr-up { top:24%; }
+.p3 .tr-dn { top:62%; }
+.p3 .pl { position:absolute; height:10px; background:#a8e0a0; box-shadow:0 0 7px #a8e0a088; border-radius:1px; }
+.p3 .tr-dn .pl { background:#e8b84a; box-shadow:0 0 7px #e8b84a77; }
+.p3 .bl { position:absolute; left:0; right:0; height:1px; }
+.p3 .tr-up .bl { background:#2c4426; top:5px; }
+.p3 .tr-dn .bl { background:#3d3018; top:5px; }
+.p3 .sgl { position:absolute; font-family:Consolas,monospace; font-size:9px; padding:1px 4px; }
+.p3 .tr-up .sgl { color:#a8e0a0; top:14px; }
+.p3 .tr-dn .sgl { color:#e8b84a; top:14px; }
+.p3 .chnl { position:absolute; left:8px; font-size:9px; letter-spacing:.15em; font-family:Consolas,monospace; }
+.p3 .tr-up .chnl { color:#6a9a5f; top:-12px; }
+.p3 .tr-dn .chnl { color:#a88a3a; top:-12px; }
+.p3 .trig { position:absolute; top:0; bottom:0; width:0; border-left:2px solid #d86a4a; }
+.p3 .trig::before { content:"▼TRIG"; position:absolute; top:2px; left:4px; font-size:8.5px; color:#d86a4a; font-family:Consolas,monospace; white-space:nowrap; }
+.p3 .read { flex:none; display:flex; border-top:1px solid #22301f; background:#0d130c; padding:7px 14px; gap:22px; font-family:Consolas,monospace; font-size:10px; color:#7a9478; }
+.p3 .read b { color:#d8e8d0; font-weight:400; }
+.p3 .side3 { width:170px; flex:none; border-left:1px solid #22301f; background:#101610; padding:10px; display:flex; flex-direction:column; gap:8px; }
+.p3 .side3 .cap3 { font-size:9px; letter-spacing:.2em; color:#5f7a5c; text-transform:uppercase; }
+.p3 .side3 .ms { border:1px solid #22301f; border-radius:4px; padding:7px 9px; background:#141b13; }
+.p3 .side3 .ms .k { font-size:9px; color:#5f7a5c; letter-spacing:.1em; }
+.p3 .side3 .ms .v { font-family:Consolas,monospace; font-size:13px; color:#d8e8d0; margin-top:2px; }
+.p3 .side3 .ms .v.wr { color:#e8b84a; } .p3 .side3 .ms .v.er { color:#d86a4a; }
+.p3 .side3 .evt { flex:1; overflow:hidden; font-family:Consolas,monospace; font-size:9px; color:#5f7a5c; line-height:1.7; }
+.p3 .side3 .evt .e { color:#8aa888; } .p3 .side3 .evt .er { color:#d86a4a; }
+.p3 .sp3 { flex:none; display:flex; gap:8px; padding:9px 14px; background:#131a12; border-top:1px solid #22301f; align-items:center; }
+.p3 .sp3 .in { flex:1; background:#0a0f09; border:1px solid #2c3a28; border-radius:4px; color:#d8e8d0; padding:7px 11px; font-size:11.5px; font-family:Consolas,monospace; }
+.p3 .sp3 .b { font-size:10.5px; padding:6px 12px; border-radius:4px; background:#1a2417; border:1px solid #2c3a28; color:#a8bca4; letter-spacing:.08em; }
+.p3 .sp3 .b.p { background:#2c5a28; border-color:#3f7a38; color:#e0f0dc; }
+
+/* ════════ 4 · 多参数监护仪 ════════ */
+.p4 { background:#0a0c10; font-family:"Segoe UI",sans-serif; color:#d8dce4; }
+.p4 .note { color:#7e8aa0; background:#0a0c10; border-bottom:1px solid #1e2430; }
+.p4 .alarm { flex:none; display:flex; align-items:center; gap:10px; padding:6px 14px; background:#3a1418; border-bottom:1px solid #5c2028; font-size:11px; color:#f0b8b4; }
+.p4 .alarm .b4 { font-weight:700; letter-spacing:.15em; color:#ff6a5e; }
+.p4 .alarm .d4 { color:#c89090; font-family:Consolas,monospace; font-size:10px; }
+.p4 .top4 { flex:none; display:flex; align-items:center; gap:10px; padding:8px 14px; background:#10141c; border-bottom:1px solid #1e2430; }
+.p4 .top4 .b { font-weight:700; font-size:12.5px; }
+.p4 .top4 .gap { flex:1; }
+.p4 .top4 .seg { display:flex; border:1px solid #2a3242; border-radius:5px; overflow:hidden; }
+.p4 .top4 .seg span { font-size:10.5px; padding:4px 10px; color:#7e8aa0; }
+.p4 .top4 .seg span.on { background:#2f7ecf; color:#fff; }
+.p4 .wrap { flex:1; display:flex; min-height:0; }
+.p4 .devs4 { width:200px; flex:none; border-right:1px solid #1e2430; display:flex; flex-direction:column; }
+.p4 .devs4 .cap4 { padding:8px 12px 4px; font-size:9px; letter-spacing:.2em; color:#5a6478; text-transform:uppercase; }
+.p4 .d4r { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid #141a24; font-size:11.5px; color:#a8b0c0; }
+.p4 .d4r.sel { background:#14202e; border-left:3px solid #2f7ecf; }
+.p4 .d4r .mi { font-size:9px; color:#5a6478; }
+.p4 .d4r .hr4 { margin-left:auto; font-family:Consolas,monospace; font-size:10px; color:#5a6478; }
+.p4 .mon { flex:1; display:flex; flex-direction:column; min-width:0; }
+.p4 .traces { flex:1; display:flex; flex-direction:column; }
+.p4 .tr { flex:1; display:flex; border-bottom:1px solid #141a24; position:relative; }
+.p4 .tr .lab { width:120px; flex:none; padding:10px 12px; display:flex; flex-direction:column; justify-content:center; border-right:1px solid #141a24; }
+.p4 .tr .lab .k { font-size:9.5px; letter-spacing:.18em; color:#5a6478; text-transform:uppercase; }
+.p4 .tr .lab .v { font-family:Consolas,monospace; font-size:22px; font-weight:300; margin-top:2px; }
+.p4 .tr .lab .u { font-size:9px; color:#5a6478; }
+.p4 .tr.up4 .lab .v { color:#4cc26a; }
+.p4 .tr.dn4 .lab .v { color:#a98cf0; }
+.p4 .tr.ev4 .lab .v { color:#d8dce4; font-size:13px; }
+.p4 .tr .area { flex:1; position:relative; }
+.p4 .tr .base { position:absolute; left:0; right:0; top:50%; border-top:1px solid #1e2430; }
+.p4 .tr .pl4 { position:absolute; border-radius:1px; }
+.p4 .tr.up4 .pl4 { background:#4cc26a; height:55%; top:22%; box-shadow:0 0 6px #4cc26a55; }
+.p4 .tr.dn4 .pl4 { background:#a98cf0; height:55%; top:22%; box-shadow:0 0 6px #a98cf055; }
+.p4 .tr.ev4 .pl4 { width:3px; height:60%; top:20%; background:#d8dce4; }
+.p4 .tr.ev4 .pl4.err { background:#ff6a5e; height:80%; top:10%; }
+.p4 .tr .ann { position:absolute; bottom:4px; font-size:9px; font-family:Consolas,monospace; color:#5a6478; white-space:nowrap; }
+.p4 .tr.up4 .ann { color:#6a9a7c; } .p4 .tr.dn4 .ann { color:#8a7cb8; }
+.p4 .now4 { position:absolute; top:0; bottom:0; right:10%; width:1px; background:#ff6a5e; z-index:2; }
+.p4 .sidep { width:150px; flex:none; border-left:1px solid #1e2430; background:#10141c; display:flex; flex-direction:column; }
+.p4 .sidep .cap4 { padding:8px 12px 4px; font-size:9px; letter-spacing:.2em; color:#5a6478; text-transform:uppercase; }
+.p4 .sidep .mx { padding:8px 12px; border-bottom:1px solid #141a24; }
+.p4 .sidep .mx .k { font-size:9px; color:#5a6478; letter-spacing:.1em; }
+.p4 .sidep .mx .v { font-family:Consolas,monospace; font-size:15px; color:#d8dce4; }
+.p4 .sidep .mx .v.wr { color:#e0a03a; } .p4 .sidep .mx .v.ok { color:#4cc26a; }
+.p4 .sp4 { flex:none; display:flex; gap:8px; padding:9px 14px; background:#10141c; border-top:1px solid #1e2430; align-items:center; }
+.p4 .sp4 .in { flex:1; background:#0a0c10; border:1px solid #2a3242; border-radius:5px; color:#d8dce4; padding:8px 12px; font-size:12px; }
+.p4 .sp4 .b { font-size:11px; padding:6px 14px; border-radius:5px; background:#1a2230; border:1px solid #2a3242; color:#d8dce4; }
+.p4 .sp4 .b.p { background:#2f7ecf; border-color:#2f7ecf; color:#fff; }
+</style>
+</head>
+<body>
+<nav class="tabbar">
+  <span class="cap">风格预览 · 定稿方向 + 新概念</span>
+  <button class="on" data-p="p1">1 调音台·连续</button>
+  <button data-p="p2">2 竖向对话带</button>
+  <button data-p="p3">3 示波器</button>
+  <button data-p="p4">4 监护仪</button>
+  <span class="hint">回我编号，或"再补/混搭"</span>
+</nav>
+
+<!-- ═══ 1 · 调音台·连续（定稿方向，VU 已砍） ═══ -->
+<section class="pane p1 on">
+  <div class="note">定稿方向 —— 通道列切设备 · 灯位桥 · 连续双道时间轴 · 下半多功能面板 · 底条说话。</div>
+  <header class="top">
+    <span class="b">台架 · 设备调试</span>
+    <span class="gap"></span>
+    <span class="seg"><span class="on">实时</span><span>设备管理</span><span>厂商类型</span><span>产品</span></span>
+    <span class="ic warn" title="已挂故障">⚠ bad_seq</span>
+    <span class="ic">◐</span>
+    <span class="ic">?</span>
+  </header>
+  <div class="wrap">
+    <nav class="ch">
+      <div class="chb sel"><span class="no">CH1</span><span class="led on"></span><span class="nm">AGX…VIL</span></div>
+      <div class="chb"><span class="no">CH2</span><span class="led on"></span><span class="nm">AGX…VIU</span></div>
+      <div class="chb"><span class="no">CH3</span><span class="led off"></span><span class="nm">sim_0001</span></div>
+      <div class="chb"><span class="no">CH4</span><span class="led off"></span><span class="nm">sim…122</span></div>
+      <div class="add">＋</div>
+    </nav>
+    <main class="desk">
+      <div class="bridge">
+        <span class="lamp on"><span class="led on"></span>CONN</span>
+        <span class="lamp on"><span class="led on"></span>READY</span>
+        <span class="lamp"><span class="led off"></span>ASR</span>
+        <span class="lamp on"><span class="led warn"></span>TTS·4包</span>
+        <span class="lamp"><span class="led off"></span>TERM</span>
+        <span class="lamp"><span class="led err"></span>FAULT</span>
+        <span class="sp"></span>
+        <span class="meta"><span>gen <b>4</b></span><span>turns <b>7</b></span><span>upd <b>11:33:36</b></span><span class="er">bad_seq: expect 5 got 9</span></span>
+      </div>
+      <div class="tl">
+        <div class="grid"></div>
+        <div class="rg" style="left:0;width:28%"></div>
+        <div class="rg alt" style="left:28%;width:28%"></div>
+        <div class="rg live" style="left:56%;width:32%"></div>
+        <div class="rul">
+          <span class="tm" style="left:0%">11:31</span>
+          <span class="tm" style="left:28%">11:32</span>
+          <span class="tm" style="left:56%">11:33</span>
+          <span class="tm" style="left:84%">11:34</span>
+        </div>
+        <div class="ln up">
+          
+          <div class="sg" style="left:2%;width:11%"></div>
+          <div class="sg" style="left:32%;width:12%"></div>
+          <div class="sg" style="left:58%;width:15%"></div>
+        </div>
+        <div class="ln dn">
+          
+          <div class="sg" style="left:8%;width:18%"></div>
+          <div class="sg" style="left:37%;width:15%"></div>
+          <div class="sg live" style="left:66%;width:14%"></div>
+        </div>
+        <div class="ln ev">
+          
+          <div class="dot cmd" style="left:70%"></div>
+          <div class="dot cmd" style="left:76%"></div>
+          <div class="dot err" style="left:81%"></div>
+        </div>
+        <div class="rul b">
+          <span class="tm" style="left:0%">11:31</span>
+          <span class="tm" style="left:28%">11:32</span>
+          <span class="tm" style="left:56%">11:33</span>
+          <span class="tm" style="left:84%">11:34</span>
+        </div>
+        <div class="sil" style="left:80%;width:7%"></div>
+        <div class="now" style="left:87%"></div>
+      </div>
+      <div class="panel">
+        <div class="tabs"><span class="on">事件</span><span>回合</span><span>帧</span><span>历史</span><span class="cnt">47 条 · 过滤 ▾</span></div>
+        <div class="pbody">
+          <div class="pv on">
+            <div class="ev ok"><span class="t">11:33:29.10</span><span class="k">state→ready</span><span class="r">gen 4 · ws ok</span></div>
+            <div class="ev up"><span class="t">11:33:30.02</span><span class="k">uplink_frames</span><span class="r">17 包 · stage=2 · 52 KB</span></div>
+            <div class="ev"><span class="t">11:33:31.15</span><span class="k">asr_result</span><span class="r">final · session ok</span></div>
+            <div class="ev down"><span class="t">11:33:32.10</span><span class="k">tts_chunk</span><span class="r">frame=4 · 26.5 KB</span></div>
+            <div class="ev down"><span class="t">11:33:32.41</span><span class="k">command_received</span><span class="r">seq=7 playingMode=2 setVolume=60</span></div>
+            <div class="ev down"><span class="t">11:33:33.04</span><span class="k">trans_response</span><span class="r">path=/ota status=200</span></div>
+            <div class="ev err"><span class="t">11:33:35.44</span><span class="k">protocol_error</span><span class="r">bad_seq: expect 5 got 9</span></div>
+            <div class="ev down"><span class="t">11:33:36.01</span><span class="k">tts_done</span><span class="r">106 KB total</span></div>
+            <div class="ev up"><span class="t">11:33:41.22</span><span class="k">report_sent</span><span class="r">seq=12 battery=87</span></div>
+          </div>
+          <div class="pv conv">
+            <div class="mk">── turn_…91402 · 11:31:02 · silence_close ──</div>
+            <div class="say">上行 12 包 · 38 KB · 2.4s · stage2✓</div>
+            <div class="hr">asr_result final · 11:31:05</div>
+            <div class="rp">下行 9 包 · 240 KB · 6.0s · done</div>
+            <div class="mk">── turn_…92055 · 11:32:18 · silence_close ──</div>
+            <div class="say">上行 15 包 · 44 KB · 3.0s · stage2✓</div>
+            <div class="hr">asr_result final · 11:32:20</div>
+            <div class="rp">下行 7 包 · 190 KB · 3.2s · done</div>
+            <div class="mk">── turn_…07977 · 进行中 ──</div>
+            <div class="say">上行 17 包 · 52 KB · 3.4s · stage2✓</div>
+            <div class="rp">下行 4 包 · 106 KB · 接收中…</div>
+          </div>
+          <div class="pv frm">
+            <div><span class="fh">↑ 0</span> 4848 0101 0010 … fmt=pcm sr=16000 ch=1 stage=1 seq=1-17</div>
+            <div><span class="fh">↑ 0</span> 4848 0102 0010 … stage=2 fin</div>
+            <div><span class="fh">↓ 0</span> 4848 8101 … tts_chunk frame=1-4 · 26.5KB each</div>
+            <div><span class="fh">↓ 1</span> {"command":{"seq":7,"playingMode":2,"setVolume":60}}</div>
+            <div><span class="fh">↓ 3</span> {"topic":"dev/…/trans/client","status_code":200}</div>
+          </div>
+          <div class="pv his">
+            <div class="r"><span class="id">turn_…91402</span><span>11:31:02</span><span>8.4s</span><span>silence_close</span><span>▶ 上行 · ▶ 下行</span></div>
+            <div class="r"><span class="id">turn_…92055</span><span>11:32:18</span><span>6.2s</span><span>silence_close</span><span>▶ 上行 · ▶ 下行</span></div>
+            <div class="r"><span class="id">turn_…90177</span><span>11:28:44</span><span>11.0s</span><span>interrupt</span><span>▶ 上行</span></div>
+            <div class="r"><span class="id">turn_…88310</span><span>11:24:09</span><span>7.7s</span><span>silence_close</span><span>▶ 上行 · ▶ 下行</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="sp">
+        <span class="bt rec">● 录制</span>
+        <span class="bt">📁 选择文件</span>
+        <span class="in"><span class="ph">alarm.pcm · 16k 单声道</span></span>
+        <div class="tr"><span class="bt go">▶ 送出</span><span class="bt">⏸ 打断</span><span class="bt stop">⏹ 停止</span><span class="bt">⚙ 配置</span><span class="bt">⚠ 故障</span></div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ═══ 2 · 竖向双栏对话带 ═══ -->
+<section class="pane p2">
+  <div class="note">竖向对话带 —— 中间一条时间槽，你（上行）贴左、服务端（下行）贴右，同一高度=同一时刻。最像"对话"本身。</div>
+  <header class="top">
+    <span class="b">台架 · 设备调试</span>
+    <span class="gap"></span>
+    <span class="seg"><span class="on">实时</span><span>管理</span><span>产品</span></span>
+    <span class="ic">⚠ bad_seq</span><span class="ic">◐</span><span class="ic">?</span>
+  </header>
+  <div class="wrap">
+    <aside class="rail">
+      <div class="d sel"><span class="led on"></span><div>AGX…VIL<div class="mi">wifi · turn 7</div></div></div>
+      <div class="d"><span class="led on"></span><div>AGX…VIU<div class="mi">amr · idle</div></div></div>
+      <div class="d"><span class="led off"></span><div>sim_0001<div class="mi">down</div></div></div>
+      <div class="d"><span class="led off"></span><div>sim…122<div class="mi">down</div></div></div>
+      <div class="add">＋ 设备</div>
+    </aside>
+    <main class="main">
+      <div class="stream">
+        <div class="col up">
+          <div class="msg" style="width:34%"></div>
+          <div class="same"></div>
+          <div class="msg" style="width:42%"></div>
+          <div class="same"></div>
+          <div class="msg" style="width:47%"></div>
+        </div>
+        <div class="gut">
+          <span class="tk" style="top:4%">11:31:02</span>
+          <span class="tk" style="top:22%">11:31:05</span>
+          <span class="tk" style="top:40%">11:32:18</span>
+          <span class="tk" style="top:58%">11:32:20</span>
+          <span class="tk" style="top:76%">11:33:29</span>
+          <span class="tk" style="top:88%">11:33:31</span>
+        </div>
+        <div class="col dn">
+          <div class="same"></div>
+          <div class="msg" style="width:78%"></div>
+          <div class="same"></div>
+          <div class="msg" style="width:52%"></div>
+          <div class="ovh">‖</div>
+          <div class="msg live" style="width:38%"></div>
+          <div class="msg err"></div>
+          <div class="msg sys"></div>
+        </div>
+      </div>
+      <div class="sp2"><span class="in">继续说…</span><span class="b p">送出 ^↵</span><span class="b">打断</span><span class="b">故障</span></div>
+    </main>
+  </div>
+</section>
+
+<!-- ═══ 3 · 示波器 ═══ -->
+<section class="pane p3">
+  <div class="note">示波器 —— 双通道磷光屏：CH1=上行、CH2=下行，触发沿=turn 开始，右栏测量读数。最"仪器"的一版。</div>
+  <header class="top">
+    <span class="b">台架 SCOPE</span>
+    <span class="gap"></span>
+    <span class="st3">TRIG <b>turn_…07977</b> · 500ms/div · 采样 <b>live</b></span>
+  </header>
+  <div class="wrap">
+    <aside class="ch3">
+      <span class="cap3">输入通道</span>
+      <div class="d sel">AGX…VIL<span class="mi">CH1+CH2 · ready</span></div>
+      <div class="d">AGX…VIU<span class="mi">ready</span></div>
+      <div class="d">sim_0001<span class="mi">off</span></div>
+      <div class="d">sim…122<span class="mi">off</span></div>
+      <div class="add">＋</div>
+    </aside>
+    <div class="scope">
+      <div class="grat">
+        <div class="trig" style="left:56%"></div>
+        <div class="tr-up"><div class="bl"></div>
+          <div class="pl" style="left:3%;width:10%"></div>
+          <div class="pl" style="left:32%;width:11%"></div>
+          <div class="pl" style="left:58%;width:14%"></div>
+        </div>
+        <div class="tr-dn"><div class="bl"></div>
+          <div class="pl" style="left:8%;width:17%"></div>
+          <div class="pl" style="left:37%;width:14%"></div>
+          <div class="pl" style="left:66%;width:13%"></div>
+        </div>
+      </div>
+      <div class="read"><span>Δt(up,dn) <b>-2.1s</b> 下行提前</span><span>重叠 <b>38%</b></span><span>静默 <b>1s/2s</b></span><span>turn均长 <b>7.9s</b></span></div>
+    </div>
+    <aside class="side3">
+      <span class="cap3">测量</span>
+      <div class="ms"><div class="k">CONN</div><div class="v ok">ready</div></div>
+      <div class="ms"><div class="k">TURN</div><div class="v">running</div></div>
+      <div class="ms"><div class="k">静默计时</div><div class="v wr">1s / 2s</div></div>
+      <div class="ms"><div class="k">FAULT</div><div class="v er">bad_seq</div></div>
+      <span class="cap3">触发日志</span>
+      <div class="evt"><div class="e">11:33:32 tts_chunk</div><div class="e">11:33:33 trans 200</div><div class="er">11:33:35 bad_seq</div><div class="e">11:33:36 tts_done</div><div class="e">11:33:41 report</div></div>
+    </aside>
+  </div>
+  <div class="sp3"><span class="in">speak › …</span><span class="b p">▶ RUN</span><span class="b">SINGLE</span><span class="b">⏹ STOP</span><span class="b">⚙</span></div>
+</section>
+
+<!-- ═══ 4 · 多参数监护仪 ═══ -->
+<section class="pane p4">
+  <div class="note">监护仪 —— 上行/下行/事件三条持续走纸 + 左侧大数字读数 + 顶部告警条。数值可读性最强的一版。</div>
+  <div class="alarm"><span class="b4">⚠ ALARM</span><span class="d4">protocol_error · bad_seq: expect 5 got 9 · 11:33:35</span><span style="margin-left:auto" class="d4">ACK ☐</span></div>
+  <header class="top4">
+    <span class="b">台架 · 设备调试</span>
+    <span class="gap"></span>
+    <span class="seg"><span class="on">实时</span><span>管理</span><span>产品</span></span>
+  </header>
+  <div class="wrap">
+    <aside class="devs4">
+      <span class="cap4">监护对象</span>
+      <div class="d4r sel"><span class="led on"></span>AGX…VIL<span class="hr4">●</span></div>
+      <div class="d4r"><span class="led on"></span>AGX…VIU<span class="hr4">●</span></div>
+      <div class="d4r"><span class="led off"></span>sim_0001<span class="hr4">—</span></div>
+      <div class="d4r"><span class="led off"></span>sim…122<span class="hr4">—</span></div>
+    </aside>
+    <div class="mon">
+      <div class="traces">
+        <div class="tr up4">
+          <div class="lab"><span class="k">上行 UPLINK</span><span class="v">17</span><span class="u">包/本轮 · 52KB</span></div>
+          <div class="area"><div class="base"></div>
+            <div class="pl4" style="left:3%;width:9%"></div>
+            <div class="pl4" style="left:32%;width:10%"></div>
+            <div class="pl4" style="left:58%;width:13%"></div>
+
+
+
+          </div>
+        </div>
+        <div class="tr dn4">
+          <div class="lab"><span class="k">下行 DOWNLINK</span><span class="v">4…</span><span class="u">包/本轮 · 106KB · 接收中</span></div>
+          <div class="area"><div class="base"></div>
+            <div class="pl4" style="left:8%;width:16%"></div>
+            <div class="pl4" style="left:37%;width:13%"></div>
+            <div class="pl4" style="left:66%;width:12%"></div>
+
+
+
+          </div>
+        </div>
+        <div class="tr ev4">
+          <div class="lab"><span class="k">事件 EVENTS</span><span class="v">47<span style="font-size:10px"> 条</span></span><span class="u">最近: bad_seq</span></div>
+          <div class="area"><div class="base"></div>
+            <div class="pl4" style="left:14%"></div><div class="pl4" style="left:19%"></div>
+            <div class="pl4" style="left:43%"></div><div class="pl4" style="left:47%"></div>
+            <div class="pl4" style="left:70%"></div><div class="pl4" style="left:75%"></div>
+            <div class="pl4 err" style="left:80%"></div>
+            <div class="pl4" style="left:83%"></div>
+
+          </div>
+        </div>
+        <div class="now4"></div>
+      </div>
+      <div class="sp4"><span class="in">继续说…</span><span class="b p">送出</span><span class="b">打断</span><span class="b">事件详情</span><span class="b">⚠</span></div>
+    </div>
+    <aside class="sidep">
+      <span class="cap4">体征</span>
+      <div class="mx"><div class="k">连接</div><div class="v ok">ready · gen4</div></div>
+      <div class="mx"><div class="k">turn</div><div class="v">…07977 运行</div></div>
+      <div class="mx"><div class="k">静默</div><div class="v wr">1s / 2s</div></div>
+      <div class="mx"><div class="k">错误</div><div class="v" style="color:#ff6a5e">1</div></div>
+      <div class="mx"><div class="k">上行总量</div><div class="v">44包</div></div>
+      <div class="mx"><div class="k">下行总量</div><div class="v">20包</div></div>
+    </aside>
+  </div>
+</section>
+
+<script>
+const btns=[...document.querySelectorAll('.tabbar button')];
+function go(i){btns.forEach((b,j)=>b.classList.toggle('on',j===i));document.querySelectorAll('.pane').forEach((p,j)=>p.classList.toggle('on',j===i));}
+btns.forEach((b,i)=>b.onclick=()=>go(i));
+addEventListener('keydown',e=>{const n=+e.key;if(n>=1&&n<=4)go(n-1);});
+// p1 密网格
+document.querySelectorAll('.p1 .grid').forEach(g=>{
+  for(let i=0;i<=14;i++){const l=document.createElement('i');l.style.left=(i*7)+'%';if(i%4===0)l.className='mj';g.appendChild(l);}
+});
+// p1 页签切换
+const tabs=[...document.querySelectorAll('.p1 .tabs span')].filter(s=>!s.classList.contains('cnt'));
+const pvs=document.querySelectorAll('.p1 .pv');
+tabs.forEach((t,i)=>t.onclick=()=>{tabs.forEach(x=>x.classList.remove('on'));pvs.forEach(x=>x.classList.remove('on'));t.classList.add('on');if(pvs[i])pvs[i].classList.add('on');});
+// p3 示波器网格
+const grat=document.querySelector('.p3 .grat');
+for(let i=1;i<10;i++){const v=document.createElement('div');v.className='gv'+(i%5===0?' mj':'');v.style.left=(i*10)+'%';grat.appendChild(v);}
+for(let i=1;i<8;i++){const h=document.createElement('div');h.className='gh'+(i===4?' c':'');h.style.top=(i*12.5)+'%';grat.appendChild(h);}
+</script>
+</body>
+</html>

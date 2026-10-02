@@ -66,8 +66,11 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
               给了 device_id → 就那一台
               没给           → 从设备册随机挑（--count 决定几台）
             输出始终是数组：每台 × 每条音频一个元素
-            --asset ID           素材库里的音频资产（--asset / --tag / --audio-set 三选一）
+            --asset ID           素材库里的音频资产（--asset / --tag / --audio-set / --compose 四选一）
             --tag X              按内容标签挑第一条匹配的音频资产
+            --compose A,B,C      几段拼成一条连续音频，一轮送出（一句话问几件事）：
+                                 每项是 asset_id 或内容标签（取第一条），逗号/加号分隔；
+                                 各段切掉首尾静音首尾相接，存成「组合」素材，同组合复用
             --audio-set S        音频集 id 或名称：每台按集内顺序逐条送完整组
                                  单条 400/404（素材本身的问题）记错接着送；其它错误
                                  这台停下，剩下的条目记「未跑」
@@ -746,6 +749,32 @@ func resolveAssetByTag(listen, tag string) (string, error) {
 	return raw.Assets[0].AssetID, nil
 }
 
+// resolveCompose 把「你好,联网,ast_xxx」解析成来源列表（ast_ 开头是 asset_id，否则按
+// 内容标签取第一条），交给 POST /assets/compose 拼成一条连续音频。同组合服务端复用。
+func resolveCompose(listen, spec string) (string, error) {
+	parts := strings.FieldsFunc(spec, func(r rune) bool { return r == ',' || r == '，' || r == '+' })
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if strings.HasPrefix(p, "ast_") {
+			ids = append(ids, p)
+			continue
+		}
+		id, err := resolveAssetByTag(listen, p)
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, id)
+	}
+	var a struct {
+		AssetID string `json:"asset_id"`
+	}
+	if err := httpPost(listen, "/assets/compose", map[string]any{"asset_ids": ids}, &a); err != nil {
+		return "", fmt.Errorf("拼接失败：%w", err)
+	}
+	return a.AssetID, nil
+}
+
 func cmdProducts(listen string, args []string) int {
 	fs := newFS("products")
 	addListen(fs, &listen)
@@ -783,7 +812,7 @@ func parseSets(vals []string) (map[string]any, error) {
 
 func cmdRun(listen string, args []string) int {
 	fs := newFS("run")
-	var env, ent, dtype, asset, product, tag, audioSet, image string
+	var env, ent, dtype, asset, product, tag, audioSet, image, compose string
 	var sets setFlag
 	var count int
 	var parallel, dirty, force, restart bool
@@ -792,6 +821,7 @@ func cmdRun(listen string, args []string) int {
 	fs.StringVar(&asset, "asset", "", "音频库资产 id")
 	fs.StringVar(&tag, "tag", "", "按内容标签挑第一条匹配的音频资产")
 	fs.StringVar(&audioSet, "audio-set", "", "音频集 id 或名称：按集内顺序逐条送")
+	fs.StringVar(&compose, "compose", "", "几段拼成一条连续音频送：asset_id 或内容标签，逗号/加号分隔")
 	fs.StringVar(&product, "product", "", "产品 id")
 	fs.StringVar(&image, "image", "", "图片资产 id：每轮先传这张图再说话（带图送话）")
 	fs.Var(&sets, "set", "临时覆盖 路径=值，可重复")
@@ -804,13 +834,13 @@ func cmdRun(listen string, args []string) int {
 		return code
 	}
 	picked := 0
-	for _, v := range []string{asset, tag, audioSet} {
+	for _, v := range []string{asset, tag, audioSet, compose} {
 		if v != "" {
 			picked++
 		}
 	}
 	if picked != 1 {
-		return fail("run 需要 --asset / --tag / --audio-set 三选一")
+		return fail("run 需要 --asset / --tag / --audio-set / --compose 四选一")
 	}
 	assets := []string{asset}
 	switch {
@@ -826,6 +856,12 @@ func cmdRun(listen string, args []string) int {
 			return fail(err.Error())
 		}
 		assets = ids
+	case compose != "":
+		id, err := resolveCompose(listen, compose)
+		if err != nil {
+			return fail(err.Error())
+		}
+		assets = []string{id}
 	}
 	// Phase 11：三级不再是筛设备的条件，而是「这次挂成什么」，必须给全。
 	if env == "" || ent == "" || dtype == "" {

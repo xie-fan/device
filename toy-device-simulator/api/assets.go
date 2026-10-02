@@ -41,10 +41,12 @@ type assetObj struct {
 	sampleFormat string // wav 资产为 s16le；压缩格式无意义（空）
 	name         string
 	language     string
-	format       string // wav/mp3/amr/aac 或 jpg/png/bmp
-	kind         string // audio | image；旧索引缺省 audio
+	tags         []string // 内容标签（对话/联网/唱歌…），多值
+	format       string   // wav/mp3/amr/aac 或 jpg/png/bmp
+	kind         string   // audio | image；旧索引缺省 audio
 	bitrateKbps  float64
 	createdAt    int64             // unix ms
+	composedOf   []string          // 组合素材的来源 asset_id（按顺序）；普通素材为空
 	variants     map[string]string // 规格指纹 → 派生文件路径
 }
 
@@ -115,19 +117,21 @@ func specFP(spec media.Spec) string {
 // ---- 持久化 ----
 
 type assetIndexEntry struct {
-	ID           string  `json:"id"`
-	File         string  `json:"file"`
-	Name         string  `json:"name"`
-	Language     string  `json:"language"`
-	Format       string  `json:"format"`
-	Kind         string  `json:"kind,omitempty"`
-	Bytes        int     `json:"bytes"`
-	DurationMs   int     `json:"duration_ms"`
-	SampleRate   int     `json:"sample_rate"`
-	Channels     int     `json:"channels"`
-	SampleFormat string  `json:"sample_format"`
-	BitrateKbps  float64 `json:"bitrate_kbps"`
-	CreatedAt    int64   `json:"created_at"`
+	ID           string   `json:"id"`
+	File         string   `json:"file"`
+	Name         string   `json:"name"`
+	Language     string   `json:"language"`
+	Tags         []string `json:"tags,omitempty"`
+	Format       string   `json:"format"`
+	Kind         string   `json:"kind,omitempty"`
+	Bytes        int      `json:"bytes"`
+	DurationMs   int      `json:"duration_ms"`
+	SampleRate   int      `json:"sample_rate"`
+	Channels     int      `json:"channels"`
+	SampleFormat string   `json:"sample_format"`
+	BitrateKbps  float64  `json:"bitrate_kbps"`
+	CreatedAt    int64    `json:"created_at"`
+	ComposedOf   []string `json:"composed_of,omitempty"`
 }
 
 type assetIndexFile struct {
@@ -184,8 +188,8 @@ func (s *Server) loadAssetIndex() {
 			id: e.ID, path: p, epoch: 1,
 			bytes: e.Bytes, durationMs: e.DurationMs,
 			sampleRate: e.SampleRate, channels: e.Channels, sampleFormat: e.SampleFormat,
-			name: e.Name, language: e.Language, format: e.Format, kind: kind,
-			bitrateKbps: e.BitrateKbps, createdAt: e.CreatedAt,
+			name: e.Name, language: e.Language, tags: e.Tags, format: e.Format, kind: kind,
+			bitrateKbps: e.BitrateKbps, createdAt: e.CreatedAt, composedOf: e.ComposedOf,
 			variants: map[string]string{},
 		}
 		loaded++
@@ -198,10 +202,10 @@ func (s *Server) persistAssetIndexLocked() error {
 	idx := assetIndexFile{Assets: make([]assetIndexEntry, 0, len(s.assets))}
 	for _, a := range s.assets {
 		idx.Assets = append(idx.Assets, assetIndexEntry{
-			ID: a.id, File: filepath.Base(a.path), Name: a.name, Language: a.language,
+			ID: a.id, File: filepath.Base(a.path), Name: a.name, Language: a.language, Tags: a.tags,
 			Format: a.format, Kind: a.kind, Bytes: a.bytes, DurationMs: a.durationMs,
 			SampleRate: a.sampleRate, Channels: a.channels, SampleFormat: a.sampleFormat,
-			BitrateKbps: a.bitrateKbps, CreatedAt: a.createdAt,
+			BitrateKbps: a.bitrateKbps, CreatedAt: a.createdAt, ComposedOf: a.composedOf,
 		})
 	}
 	sort.Slice(idx.Assets, func(i, j int) bool { return idx.Assets[i].ID < idx.Assets[j].ID })
@@ -248,6 +252,7 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 		name = hdr.Filename
 	}
 	language := r.FormValue("language")
+	tags := parseTags(r.Form["tags"])
 
 	// 图片按魔数识别，不走 ffprobe/转码/时长上限，忽略 device_id。
 	if format := detectImageFormat(data); format != "" {
@@ -376,7 +381,7 @@ func (s *Server) handlePostAsset(w http.ResponseWriter, r *http.Request) {
 		id: id, path: final, epoch: 1,
 		bytes: int(st.Size()), durationMs: info.DurationMs,
 		sampleRate: info.SampleRate, channels: info.Channels, sampleFormat: sampleFormat,
-		name: name, language: language, format: info.Format, kind: assetKindAudio,
+		name: name, language: language, tags: tags, format: info.Format, kind: assetKindAudio,
 		bitrateKbps: info.BitrateKbps, createdAt: time.Now().UnixMilli(),
 		variants: map[string]string{},
 	}
@@ -479,20 +484,48 @@ func wavDurationMs(p core.PCM) int {
 
 // ---- 查询/管理 ----
 
+// parseTags 收多值标签：重复 tags 字段 + 逗号/顿号分隔混合都收，去空白去重。
+func parseTags(vals []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range vals {
+		for _, p := range strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == '，' || r == '、' || r == ';' || r == '；'
+		}) {
+			p = strings.TrimSpace(p)
+			if p != "" && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
 func assetPublic(a *assetObj) map[string]any {
-	return map[string]any{
+	tags := a.tags
+	if tags == nil {
+		tags = []string{}
+	}
+	m := map[string]any{
 		"asset_id": a.id, "bytes": a.bytes, "duration_ms": a.durationMs,
 		"sample_rate": a.sampleRate, "channels": a.channels,
 		"sample_format": a.sampleFormat, "container": a.format,
 		"format": a.format, "kind": a.kind, "name": a.name, "language": a.language,
+		"tags":         tags,
 		"bitrate_kbps": a.bitrateKbps, "created_at": a.createdAt, "epoch": a.epoch,
 	}
+	if len(a.composedOf) > 0 {
+		m["composed_of"] = a.composedOf
+	}
+	return m
 }
 
 func (s *Server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	fmtQ := r.URL.Query().Get("format")
 	langQ := r.URL.Query().Get("language")
 	kindQ := r.URL.Query().Get("kind")
+	tagQ := r.URL.Query().Get("tag")
 	s.assetMu.Lock()
 	list := make([]*assetObj, 0, len(s.assets))
 	for _, a := range s.assets {
@@ -501,6 +534,18 @@ func (s *Server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		}
 		if langQ != "" && a.language != langQ {
 			continue
+		}
+		if tagQ != "" {
+			hit := false
+			for _, t := range a.tags {
+				if t == tagQ {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
 		}
 		if kindQ != "" && a.kind != kindQ {
 			continue
@@ -544,11 +589,12 @@ func (s *Server) handlePatchAsset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if err := rejectUnknownKeys(raw, map[string]bool{"name": true, "language": true}); err != nil {
+	if err := rejectUnknownKeys(raw, map[string]bool{"name": true, "language": true, "tags": true}); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var name, language *string
+	var tags *[]string
 	if v, ok := raw["name"]; ok {
 		sv, ok := v.(string)
 		if !ok {
@@ -565,6 +611,30 @@ func (s *Server) handlePatchAsset(w http.ResponseWriter, r *http.Request) {
 		}
 		language = &sv
 	}
+	if v, ok := raw["tags"]; ok {
+		var tv []string
+		switch t := v.(type) {
+		case string:
+			tv = parseTags([]string{t})
+		case []any:
+			for _, item := range t {
+				sv, ok := item.(string)
+				if !ok {
+					writeErr(w, http.StatusBadRequest, "tags 元素必须是字符串")
+					return
+				}
+				tv = append(tv, sv)
+			}
+			tv = parseTags(tv)
+		default:
+			writeErr(w, http.StatusBadRequest, "tags 类型非法")
+			return
+		}
+		if tv == nil {
+			tv = []string{}
+		}
+		tags = &tv
+	}
 	s.assetMu.Lock()
 	a, ok := s.assets[id]
 	var resp map[string]any
@@ -574,6 +644,9 @@ func (s *Server) handlePatchAsset(w http.ResponseWriter, r *http.Request) {
 		}
 		if language != nil {
 			a.language = *language
+		}
+		if tags != nil {
+			a.tags = *tags
 		}
 		_ = persistWarn("index.json", s.persistAssetIndexLocked())
 		resp = assetPublic(a)
@@ -642,6 +715,12 @@ func (s *Server) handleDeleteAsset(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.assetMu.Lock()
 	a, ok := s.assets[id]
+	// 被音频集引用就拒绝，不级联：悄悄把回归集删短比删不掉更糟（同产品被类型引用，phase13.md）。
+	if refs := s.audioSetRefsLocked(id); ok && len(refs) > 0 {
+		s.assetMu.Unlock()
+		writeErr(w, http.StatusConflict, "被音频集引用："+strings.Join(refs, "、")+"（先从集里移出）")
+		return
+	}
 	if ok {
 		a.epoch++
 		_ = os.Remove(a.path)

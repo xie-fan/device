@@ -16,6 +16,8 @@ type speakBody struct {
 	AssetID    string        `json:"asset_id"`
 	Stream     []streamEntry `json:"stream"`
 	TimeoutSec *float64      `json:"timeout_sec"`
+	// ImageAssetID 带图送话（phase14）：发音频之前先用本轮 UUID 传这张图。
+	ImageAssetID string `json:"image_asset_id"`
 }
 
 type streamEntry struct {
@@ -121,6 +123,15 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 			}
 		}
 	}
+	var photo *core.Photo
+	if body.ImageAssetID != "" {
+		var code int
+		var msg string
+		if photo, code, msg = s.speakPhoto(body.ImageAssetID); code != 0 {
+			writeErr(w, code, msg)
+			return
+		}
+	}
 
 	s.mu.Lock()
 	d, ok = s.devices[id]
@@ -160,9 +171,9 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	var res core.SpeakResult
 	var err error
 	if streamOpen != nil {
-		res, err = inst.SpeakStreamPermit(streamOpen, durMs, chunkBytes, s.tryAcquireSpeak)
+		res, err = inst.SpeakStreamPermit(streamOpen, durMs, chunkBytes, photo, s.tryAcquireSpeak)
 	} else {
-		res, err = inst.SpeakPermit(pcm, s.tryAcquireSpeak)
+		res, err = inst.SpeakPermit(pcm, photo, s.tryAcquireSpeak)
 	}
 	if err != nil {
 		if errors.Is(err, core.ErrSpeakPermit) {
@@ -218,11 +229,12 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	}
 	ev, err := inst.WaitTurn(turnID, timeout)
 	if err != nil {
+		// 带上 turn_id / instance_id：等不到终态不等于没送出，调用方要能直接去查这一轮。
+		resp["error"] = err.Error()
 		if errors.Is(err, core.ErrWaitTimeout) {
-			writeErr(w, http.StatusGatewayTimeout, "speak_and_wait 超时")
-			return
+			resp["error"] = "speak_and_wait 超时"
 		}
-		writeErr(w, http.StatusGatewayTimeout, err.Error())
+		writeJSON(w, http.StatusGatewayTimeout, resp)
 		return
 	}
 	s.mu.Lock()
@@ -245,6 +257,18 @@ func (s *Server) doSpeak(w http.ResponseWriter, r *http.Request, wait bool) {
 	resp["event_seq"] = ev.EventSeq
 	resp["event_type"] = ev.Type
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// speakPhoto 带图送话的图在受理时读好字节：之后改、删资产不影响这一轮（phase14 §3.1）。
+func (s *Server) speakPhoto(id string) (*core.Photo, int, string) {
+	data, a, err := s.copyAsset(id)
+	if err != nil {
+		return nil, http.StatusNotFound, "image_asset_id 不存在"
+	}
+	if a.kind != assetKindImage {
+		return nil, http.StatusBadRequest, "image_asset_id 不是图片资产"
+	}
+	return &core.Photo{AssetID: id, Format: a.format, Data: data}, 0, ""
 }
 
 // buildSpeakPCM 组装上行 PCM。Phase 5c：资产格式与设备不符时经 ffmpeg

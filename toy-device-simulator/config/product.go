@@ -41,7 +41,7 @@ func DefaultProduct() Product {
 			Action:          "chatbot",
 			FirmwareVersion: "1.0.0",
 			NicType:         "wifi",
-			NicICCID:        "8986xxxxxxxxxx",
+			NicICCID:        "8986112520103445123",
 			PlayingMode:     1,
 			Audio: Audio{
 				Format:         "pcm",
@@ -60,7 +60,7 @@ func DefaultProduct() Product {
 				ReportEchoTimeoutSec:   5,
 				RegisterAckTimeoutSec:  5,
 				FirstReplyTimeoutSec:   20,
-				DownlinkIdleTimeoutSec: 20,
+				DownlinkIdleTimeoutSec: 2,
 				NonAudioFollowupSec:    5,
 				PostFinalASRSilenceSec: 5,
 				WaitTimeoutSlackSec:    5,

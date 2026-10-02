@@ -58,7 +58,7 @@ DELETE /devices/{id}/lease?lease_id=lse_xxx
 
 **惰性过期**：过期只在 acquire / `deviceView` / release 三处被观察，全都在 `s.mu` 里，`leaseHeldLocked` 一个函数就地清账。不起后台清扫协程。
 
-**不续租**。真出现超过 TTL 的 run，POST 时带上原 `lease_id` 视作续期即可（三行）。
+**不续租**。真出现超过 TTL 的 run，POST 时带上原 `lease_id` 视作续期即可（三行）。（Phase 13 已按此实现：音频集每条送话前续租，见 phase13.md §4。）
 
 ### 3.3 租约不落盘
 

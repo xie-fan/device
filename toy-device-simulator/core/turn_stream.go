@@ -33,6 +33,11 @@ func (d *DeviceInstance) uplinkTurnStream(turnID string, uuid uint32, sp streamS
 	d.slot.SetState(TurnSpeaking)
 	d.deviceMu.Unlock()
 
+	// 先传图再开流：-re 流一开就按实时速率产出，晚读会积成一阵突发。
+	if !d.uploadTurnPhoto(turnID, uuid) {
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	rc, err := sp.open(ctx)

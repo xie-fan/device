@@ -5,8 +5,8 @@
 本目录可单独阅读。同目录 `architecture.md` 与 `phase*.md` 可以互相参照；凡被参照的表，本目录内必须有全文。协议正文见 `docs/toy-device-websocket-protocol.md`。
 
 定位：忠实模拟 chatbot、批量并发、Agent API、调试 UI。  
-当前落地：Phase 1 CLI（speak / check / fixture）、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI（`GET /`）、Phase 4 全部主项——speak backlog、静默成功探针、raw PCM 上传、全局事件总线（`/ws/events/global`）、断开即 interrupt、wav 推流、Phase 5 多格式音频——设备可配 mp3/amr/aac 线上格式（含码率）、持久化音频库（导入/筛选/编辑/试听）、格式不符自动 ffmpeg 转码、压缩格式 `-re` 限速推流、下行/回放格式感知（契约见 phase5.md）、Phase 6 多格式本地闭环——echosrv 按上行格式回 TTS 且分包形态照抄真实服务端、音频库解码试听、mp3 去 ID3（见 phase6.md）、Phase 7 设备定义持久化——设备落盘 `data/devices.yaml` 跨重启存活，「定义」与「本次运行的当前值」分两层，独立的设备管理视图（见 phase7.md）、Phase 8 跨重启的历史——旧 `instance_id` 的 turn / 帧 / 音频 / 事件不再 404（盘就是真相源，事件落盘 `events.jsonl`），`GET /devices/{id}/instances` 列出每一次运行，界面「历史运行」抽屉可回看（见 phase8.md）、Phase 9 给 agent 的工具——`cmd/simctl`（skills + CLI，不是 MCP），九个动词，`run` 合并 speak_and_wait 与 GET /turns 给出判语（见 phase9.md）、Phase 10 按设备类型选台——`run` 跑几台由过滤粒度决定（给到 `--device-type` 就从该类型下随机挑一台），跑之前先占一道设备租约保证两个并发 run 不撞车（见 phase10.md）、Phase 11 设备册与挂靠分家——设备定义只剩「这台机子是什么」，环境/厂商/设备类型改在 start 时给，同一台设备可以换着机型跑（见 phase11.md）、Phase 12 产品——设备册只剩 `device_id`，音频格式、对话模式、身份字段与功能开关来自 start 时选的产品（设备类型可配默认产品），临时覆盖只活在 manager 内存里，素材库收图片，服务端下发拍照指令时自动传图、图片分析的语音回复算作本轮（见 phase12.md）。  
-阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需增强（speak backlog ≠ outbound buffer；见 phase4.md）；Phase 5 多格式音频 + ffmpeg 管线（见 phase5.md）；Phase 6 多格式的本地可重复验收（见 phase6.md）；Phase 7 设备定义持久化与设备管理（见 phase7.md）；Phase 8 跨重启的历史（见 phase8.md）；Phase 9 给 agent 的工具（见 phase9.md）；Phase 10 按类型选台与设备租约（见 phase10.md）；Phase 11 设备册与挂靠分家（见 phase11.md）；Phase 12 产品（见 phase12.md）。
+当前落地：Phase 1 CLI（speak / check / fixture）、Phase 2 Manager / REST / WS / Scenario、Phase 3 调试 UI（`GET /`）、Phase 4 全部主项——speak backlog、静默成功探针、raw PCM 上传、全局事件总线（`/ws/events/global`）、断开即 interrupt、wav 推流、Phase 5 多格式音频——设备可配 mp3/amr/aac 线上格式（含码率）、持久化音频库（导入/筛选/编辑/试听）、格式不符自动 ffmpeg 转码、压缩格式 `-re` 限速推流、下行/回放格式感知（契约见 phase5.md）、Phase 6 多格式本地闭环——echosrv 按上行格式回 TTS 且分包形态照抄真实服务端、音频库解码试听、mp3 去 ID3（见 phase6.md）、Phase 7 设备定义持久化——设备落盘 `data/devices.yaml` 跨重启存活，「定义」与「本次运行的当前值」分两层，独立的设备管理视图（见 phase7.md）、Phase 8 跨重启的历史——旧 `instance_id` 的 turn / 帧 / 音频 / 事件不再 404（盘就是真相源，事件落盘 `events.jsonl`），`GET /devices/{id}/instances` 列出每一次运行，界面「历史运行」抽屉可回看（见 phase8.md）、Phase 9 给 agent 的工具——`cmd/simctl`（skills + CLI，不是 MCP），九个动词，`run` 合并 speak_and_wait 与 GET /turns 给出判语（见 phase9.md）、Phase 10 按设备类型选台——`run` 跑几台由过滤粒度决定（给到 `--device-type` 就从该类型下随机挑一台），跑之前先占一道设备租约保证两个并发 run 不撞车（见 phase10.md）、Phase 11 设备册与挂靠分家——设备定义只剩「这台机子是什么」，环境/厂商/设备类型改在 start 时给，同一台设备可以换着机型跑（见 phase11.md）、Phase 12 产品——设备册只剩 `device_id`，音频格式、对话模式、身份字段与功能开关来自 start 时选的产品（设备类型可配默认产品），临时覆盖只活在 manager 内存里，素材库收图片，服务端下发拍照指令时自动传图、图片分析的语音回复算作本轮（见 phase12.md）、Phase 13 音频集——一组有序的音频整组送话（调试台送话下拉 / `simctl run --audio-set`），被音频集引用的资产删不掉，租约可续（见 phase13.md）、Phase 14 带图送话与传图留档——送话可带一张图（`image_asset_id` / `simctl run --image`），先用本轮 UUID 传图再说话，对上服务端的 imageChat；两条拍照路径传出的图都存进本轮目录，`GET …/turns/{turn_id}/photo` 取回（见 phase14.md）。  
+阶段：Phase 1 单设备 CLI；Phase 2 批量 + REST/WS + Scenario；Phase 3 UI；Phase 4 按需增强（speak backlog ≠ outbound buffer；见 phase4.md）；Phase 5 多格式音频 + ffmpeg 管线（见 phase5.md）；Phase 6 多格式的本地可重复验收（见 phase6.md）；Phase 7 设备定义持久化与设备管理（见 phase7.md）；Phase 8 跨重启的历史（见 phase8.md）；Phase 9 给 agent 的工具（见 phase9.md）；Phase 10 按类型选台与设备租约（见 phase10.md）；Phase 11 设备册与挂靠分家（见 phase11.md）；Phase 12 产品（见 phase12.md）；Phase 13 音频集（见 phase13.md）；Phase 14 带图送话与传图留档（见 phase14.md）。
 
 设备身份走配置树（环境 → 厂商 → 设备类型，`/registry`，落盘 `configs/registry.yaml`）：厂商/类型有名称与简称，wire 值与环境 url 占位符都用简称。**Phase 11 起挂靠在 start 时给**，不再写进设备定义（phase11.md；phase2.md §6.10 的创建体形状已过时）。**Phase 12 起设备只剩 `device_id`**，属性来自 start 时选的产品（`data/products.yaml`，设备类型可配默认产品）；phase7.md 的「定义」与模板已删除（phase12.md）。Phase 1 CLI 仍用单机平铺 YAML。
 
@@ -39,9 +39,11 @@
 | `phase10.md` | 按设备类型选台 / 设备租约（run 之间的协作锁）。选择语义已被 phase11 取代 |
 | `phase11.md` | 设备册与挂靠分家（三级从设备定义搬到 start）/ 校验分层 / 历史记录挂靠 |
 | `phase12.md` | 产品（设备只剩 id / 产品增删改与默认产品 / start 选产品与临时覆盖 / 素材库图片 / 拍照功能） |
+| `phase13.md` | 音频集（有序的一组音频 / `audio_sets` 端点 / 被引用的资产删不掉 / 租约续期 / `simctl run --audio-set` / 调试台整组送） |
+| `phase14.md` | 带图送话与传图留档（`image_asset_id` / 先传图再说话、同一 UUID / `photo_<uuid>` 留档与 `…/photo` 端点 / `simctl run --image` / 服务端 imageChat 的前提与缺陷） |
 
 ## 阅读顺序
 
 1. `architecture.md`
 2. `phase1.md` → `phase2.md` → `phase3.md`
-3. `phase4.md`、`phase5.md`、`phase6.md`、`phase7.md`、`phase8.md`、`phase9.md`、`phase10.md`、`phase11.md`、`phase12.md` 按需
+3. `phase4.md`、`phase5.md`、`phase6.md`、`phase7.md`、`phase8.md`、`phase9.md`、`phase10.md`、`phase11.md`、`phase12.md`、`phase13.md`、`phase14.md` 按需

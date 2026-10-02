@@ -125,6 +125,18 @@ func TestBuildImageFramesSingleSliceAndEmptyReserved(t *testing.T) {
 	}
 }
 
+// 带图送话：QuestionKey 与 Reserved 全 0，服务端据此只存图、不做图片分析。
+func TestBuildImageFramesEmptyQuestionKey(t *testing.T) {
+	frames, err := BuildImageFrames([]byte{1, 2, 3}, "jpg", "", "", 77)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := DecodeImageHeader(frames[0][1:])
+	if h.QuestionKey != ([16]byte{}) || h.Reserved != ([40]byte{}) || h.UUID != 77 {
+		t.Fatalf("QuestionKey 与 Reserved 应全 0、UUID 原样: %+v", h)
+	}
+}
+
 func TestBuildImageFramesRejects(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -134,7 +146,6 @@ func TestBuildImageFramesRejects(t *testing.T) {
 	}{
 		{"空图", nil, "jpg", "k", "amr", 1},
 		{"QuestionKey 超 16 字节", []byte{1}, "jpg", "0123456789abcdefX", "amr", 1},
-		{"QuestionKey 为空", []byte{1}, "jpg", "", "amr", 1},
 		{"格式超 8 字节", []byte{1}, "jpegjpegx", "k", "amr", 1},
 		{"格式为空", []byte{1}, "", "k", "amr", 1},
 		{"UUID 为 0", []byte{1}, "jpg", "k", "amr", 0},

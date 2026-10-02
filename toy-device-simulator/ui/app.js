@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
 
   const state = {
-    view: "bench",          // bench | manage | registry | products
+    view: "bench",          // bench | manage | registry | products | sets
     manageQ: "",
     devices: [],
     selectedId: null,
@@ -29,6 +29,14 @@
     wsKey: "",
     products: [],
     productForm: null,     // null | {mode:"new"} | {mode:"edit", id}
+    // 音频集（Phase 13）。setEdit：正在编辑的集 id，"new" = 新建表单；setSaving：PUT 在途，
+    // 编辑区禁用，连点 ↑↓ 不会叠请求。setRun：正在跑的那一组（开跑时钉住设备、实例与条目）；
+    // setLast：上一次跑完的汇总，留在送话条的 src-meta 里。
+    audioSets: [],
+    setEdit: null,
+    setSaving: false,
+    setRun: null,
+    setLast: null,
     attachProduct: "",
     registry: [],
     regSel: { env: "", ent: "", typ: "" },
@@ -52,8 +60,10 @@
     framePoll: 0,
     flashTimer: 0,
     sideTab: "tape",
-    // 送话源：'' | sample:<url> | asset:<id> | local
+    // 送话源：'' | sample:<url> | set:<id> | asset:<id> | rec | local
     srcKey: "",
+    // 带图送话（phase14）：'' 或图片资产 id，随每次送话带上
+    imgKey: "",
     srcName: "",
     samples: [],
     syncWait: false,
@@ -65,7 +75,9 @@
     globalEvents: [],
     globalNewest: 0,
     // newLang：下一次导入要标注的语言，和上面的 language（筛选用）是两回事。
-    lib: { rows: [], format: "", language: "", kind: "", newLang: "", editingId: null, armedId: null },
+    lib: { rows: [], format: "", language: "", kind: "", tag: "", newLang: "", editingId: null, armedId: null },
+    // 麦克风录制：mr 活着即在录；file 是录完封装的 WAV，可选为音源。
+    rec: { mr: null, stream: null, chunks: [], file: null, name: "" },
   };
 
   // 全局带最多留这么多条；调试面板不是归档，翻更早的去 /ws/events/global 拿回放。
@@ -122,13 +134,15 @@
     frame = 0;
     frameTimer = 0;
     const d = { ...dirty };
-    dirty.roster = dirty.stage = dirty.conv = dirty.tape = dirty.turns = dirty.global = false;
+    dirty.roster = dirty.stage = dirty.conv = dirty.tape = dirty.turns = dirty.global = dirty.deck = false;
     if (d.roster) renderRoster();
     if (d.stage) renderStage();
     if (d.conv) renderConv();
     if (d.tape) renderTape();
     if (d.turns) renderTurns();
     if (d.global) renderGlobalTape();
+    // 时间轴跟着 conv/stage 的数据走，另有 1s 心跳推 NOW 与静默区。
+    if (d.deck || d.conv || d.stage) renderDeck();
   }
 
   function paint(...keys) {
@@ -244,6 +258,12 @@
     let h = "#" + encodeURIComponent(state.selectedId);
     if (state.tombstone && state.instanceId) h += "?ins=" + encodeURIComponent(state.instanceId);
     if (location.hash !== h) history.replaceState(null, "", h);
+  }
+
+  // 通道条用的设备短名：前三位 + … + 后四位（AGX0447383XVIL → AGX…XVIL）。
+  function shortDev(s) {
+    s = String(s || "");
+    return s.length > 9 ? s.slice(0, 3) + "…" + s.slice(-4) : s;
   }
 
   function shortId(s) {
@@ -406,8 +426,21 @@
       if (state.lib.kind && kind !== state.lib.kind) return false;
       if (state.lib.format && a.format !== state.lib.format) return false;
       if (state.lib.language && a.language !== state.lib.language) return false;
+      const tagQ = (state.lib.tag || "").toLowerCase();
+      if (tagQ && !(a.tags || []).join(" ").toLowerCase().includes(tagQ)) return false;
       return true;
     });
+  }
+
+  async function loadAudioSets() {
+    try {
+      const data = await api("GET", "/audio_sets");
+      state.audioSets = data.audio_sets || [];
+    } catch {
+      state.audioSets = [];
+    }
+    renderSrc();
+    if (state.view === "sets") renderSets();
   }
 
   async function loadProducts() {
@@ -512,11 +545,12 @@
       const picked = state.checked.has(d.device_id);
       const path = [d.environment, d.enterprise, d.device_type].filter(Boolean).join(" · ");
       const tip = [shortId(d.instance_id), fmtTime(d.last_activity)].filter(Boolean).join(" · ");
-      return `<li class="device${on ? " is-on" : ""}" data-id="${esc(d.device_id)}" title="${esc(tip)}">
+      return `<li class="device${on ? " is-on" : ""}" data-id="${esc(d.device_id)}" title="${esc(tip)}" tabindex="0" role="button">
         <div class="device__top">
           <button type="button" class="device__box${picked ? " is-on" : ""}" data-check="${esc(d.device_id)}" title="多选以批量启停删" aria-pressed="${picked}">${picked ? "✓" : ""}</button>
           <span class="led led--${esc(st)}" aria-hidden="true"></span>
           <span class="device__id">${esc(d.device_id)}</span>
+          <span class="device__sid">${esc(shortDev(d.device_id))}</span>
           <span class="grow"></span>
           <span class="device__act">${esc(fmtHMS(d.last_activity))}</span>
         </div>
@@ -526,7 +560,8 @@
             <span class="${tagCls(insTone(st))}">${esc(st)}</span>
             <span class="${tagCls(connTone(d.connection_state))}">${esc(d.connection_state || "—")}</span>
             ${d.product ? `<span class="tag tag--acc" title="${esc(d.product)}">${esc(d.product)}</span>` : ""}
-            ${d.overridden ? `<span class="tag tag--warn">已临时改</span>` : ""}
+            ${d.overridden ? `<span class="tag tag--warn">临时覆盖</span>` : ""}
+            ${d.fault ? `<span class="tag tag--warn" title="已注入故障，行为会偏离正常设备">${esc(d.fault)}</span>` : ""}
             ${d.last_error ? `<span class="tag tag--err" title="${esc(d.last_error)}">error</span>` : ""}
           </div>
         </div>
@@ -551,7 +586,7 @@
     const kind = $("stage-kind");
     show(kind, has);
     if (has) {
-      setText(kind, state.tombstone ? "历史" : "对话");
+      setText(kind, state.tombstone ? "历史" : "实时");
       kind.className = state.tombstone ? "tag tag--mute" : "tag";
     }
 
@@ -566,7 +601,8 @@
       <span class="sep">|</span>
       <span title="speak backlog 排队数">backlog ${backlog}</span>
       ${live.product ? `<span class="sep">|</span><span class="tag tag--acc" title="本次运行的产品">${esc(live.product)}</span>` : ""}
-      ${live.overridden ? `<span class="tag tag--warn">已临时改</span>` : ""}
+      ${live.overridden ? `<span class="tag tag--warn">临时覆盖</span>` : ""}
+      ${live.fault ? `<span class="sep">|</span><span class="tag tag--warn" title="已注入故障，行为会偏离正常设备">fault: ${esc(live.fault)}</span>` : ""}
     `);
 
     // last_error 原来只藏在 title 里，工位上根本看不见。
@@ -594,6 +630,7 @@
     // 进来，不主动重画的话界面会停在最后一包上不动。renderConv 按签名增量重画，
     // 没变化时是空转，所以这里不加条件（加了反而漏：occupiedTurnId 不一定在）。
     renderConv();
+    renderDeck();
     setDisabled($("btn-start"), !has || state.tombstone || state.busy || !identityEditable() || !state.attachProduct);
     setDisabled($("btn-stop"), !has || state.tombstone || state.busy);
     setDisabled($("btn-delete"), !has || state.tombstone || state.busy);
@@ -608,7 +645,8 @@
     setDisabled($("btn-speak"), !can);
     $("btn-speak").title = state.occupiedTurnId && backlogEnabled()
       ? "槽占用 · 送出将进队列" : "Ctrl/⌘ + Enter 送出";
-    setDisabled($("btn-interrupt"), !interruptableUI() || state.busy);
+    // 跑音频集时 busy 一直为真，但打断必须能点：它同时是「这一条跑完就停」的开关。
+    setDisabled($("btn-interrupt"), !interruptableUI() || (state.busy && !state.setRun));
     $("form-speak").classList.toggle("is-ready", !blocked);
     renderSrc();
     if (state.drawer === "config") renderDrawer();
@@ -699,8 +737,26 @@
   // 气泡主行原本永远在讲 asr_result——而这些服务端根本不发这条（协议 §8.2：
   // 没有稳定的下行 Stage=2，也没规定必发 asr_result）。真正在变的是「收到哪了、
   // 还差几秒收尾」，所以主行改讲状态，asr 只在真有的时候占主行。
+  // 拍照两条路（phase14）：带图送话 = 先传图再说话，回复是普通 TTS；
+  // 指令拍照 = 指令 → 传图 → 图片分析的语音回复。
+  function isSpeakPhoto(t) {
+    return !t.photoCmd && t.photoUp.startsWith("source=speak");
+  }
+
+  // photoHref 传图留档；uuid 取自 photo_uploaded 的 reason。
+  function photoHref(t) {
+    const m = /(?:^| )uuid=(\d+)/.exec(t.photoUp || "");
+    return `/devices/${encodeURIComponent(state.selectedId || "")}/turns/${encodeURIComponent(t.id)}/photo?instance_id=${encodeURIComponent(state.instanceId || "")}${m ? "&uuid=" + m[1] : ""}`;
+  }
+
+  function photoThumb(t, title) {
+    return `<a class="bub__photo" href="${esc(photoHref(t))}" target="_blank" rel="noopener" title="${esc(title)} · 点开看原图">` +
+      `<img class="thumb" src="${esc(photoHref(t))}" alt="未留档（save_uplink_audio 关着）" loading="lazy"></a>`;
+  }
+
   function photoLine(t) {
     if (!t.photoCmd && !t.photoUp && !t.photoSkip) return "";
+    if (isSpeakPhoto(t)) return "";
     const bits = ["photo_command" + (t.photoCmd && t.photoCmd !== "拍照指令" ? " " + t.photoCmd : "")];
     if (t.photoUp) bits.push("photo_uploaded " + t.photoUp);
     else if (t.photoSkip) bits.push("photo_skipped " + t.photoSkip);
@@ -739,14 +795,14 @@
       <div class="bub bub--reply">
         <div class="bub__in">
           <div class="bub__head">
-            <span class="bub__who">设备回复</span>
+            <span class="bub__who">服务端回复</span>
             <span class="bub__sub">${esc(replyPhase(t).sub)}</span>
           </div>
           <p class="bub__asr${t.hasAsr || !t.done ? "" : " bub__asr--none"}">${esc(replyPhase(t).line)}</p>
           <div class="bub__rule"></div>
           ${bars(t.down, 30, t.phase === "tts", " bars--tts")}
           <div class="bub__meta"><span>${esc(ttsMeta)}</span></div>
-          ${photoLine(t) ? `<div class="bub__meta"><span>${esc(photoLine(t))}</span></div>` : ""}
+          ${photoLine(t) ? `<div class="bub__meta"><span>${esc(photoLine(t))}</span>${t.photoUp ? photoThumb(t, "指令拍照传出的图") : ""}</div>` : ""}
           ${t.done ? `<div class="bub__acts">${turnActs(t, "播放下行")}</div>` : ""}
         </div>
       </div>` : "";
@@ -762,6 +818,7 @@
             <span>${esc(upMeta)}</span>
             ${t.assetId ? `<span class="sep">|</span><span>${esc(t.assetId)}</span>` : ""}
           </div>
+          ${isSpeakPhoto(t) ? `<div class="bub__meta"><span>带图送话 · 先传图再说话</span>${photoThumb(t, "带图送话传出的图")}</div>` : ""}
         </div>
       </div>
       ${reply}
@@ -848,7 +905,7 @@
         setText($("conv-empty-body"), "选一台设备 → 启动并等待 Ready → 送一段音频 → 看服务端回了什么。四步都在这一条竖轴上。");
       } else if (st === "running") {
         setText($("conv-empty-title"), "这条连接还没有 turn");
-        setText($("conv-empty-body"), "在下面选一段音频按 ⌘⏎ 送出，我送了什么、设备回了什么、这轮怎么结束的都会按顺序落在这里。");
+        setText($("conv-empty-body"), "在下面选一段音频按 Ctrl+Enter 送出，我送了什么、服务端回了什么、这轮怎么结束的都会按顺序落在这里。");
       } else if (state.tombstone) {
         setText($("conv-empty-title"), "这个实例没有留下 turn");
         setText($("conv-empty-body"), "墓碑态只读回看；右栏事件带里仍能看到这次实例的全部原始事件。");
@@ -888,12 +945,24 @@
       const s = state.samples.find((x) => x.url === k.slice(7));
       return { name: (s && s.name) || "夹具", meta: "夹具 GET /samples · 入库时按设备音频规格转码" };
     }
+    if (k.startsWith("set:")) {
+      const s = state.audioSets.find((x) => x.id === k.slice(4));
+      if (!s) return { name: "（音频集已删除）", meta: "" };
+      // 进度与上次汇总都从状态算：renderSrc 每次渲染都会重写这一行。
+      const r = state.setRun;
+      if (r && r.id === s.id) {
+        return { name: s.name, meta: `正在送第 ${r.i + 1}/${r.ids.length} 条 · ${r.deviceId}${r.stop ? " · 这一条结束后停" : " · 打断 = 这一条结束后停"}` };
+      }
+      const last = state.setLast && state.setLast.id === s.id ? " · 上次：" + state.setLast.text : "";
+      return { name: s.name, meta: `音频集 · ${s.asset_ids.length} 条 · 逐条送、每条等终态${last}` };
+    }
     if (k.startsWith("asset:")) {
       const a = state.lib.rows.find((x) => x.asset_id === k.slice(6));
       if (!a) return { name: "（素材已不在库里）", meta: "" };
       return {
         name: a.name,
-        meta: [a.format, a.sample_rate ? a.sample_rate + " Hz" : "", fmtDurMs(a.duration_ms), "格式不符自动 ffmpeg 转码"]
+        meta: [a.format, a.sample_rate ? a.sample_rate + " Hz" : "", fmtDurMs(a.duration_ms),
+          a.tags && a.tags.length ? "标签 " + a.tags.join("、") : "", "格式不符自动 ffmpeg 转码"]
           .filter(Boolean).join(" · "),
       };
     }
@@ -902,6 +971,11 @@
       if (f) return { name: f.name, meta: `${fmtBytes(f.size)} · 送出时入库为 asset` };
       return { name: "未选择文件", meta: "点这里从本机挑一个 .wav，或直接拖到中栏" };
     }
+    if (k === "rec") {
+      const f = state.rec.file;
+      if (f) return { name: f.name, meta: `麦克风录音 · ${fmtBytes(f.size)} · 送出时入库为 asset` };
+      return { name: "未录制", meta: "点 ● 录制 开始" };
+    }
     return { name: "—", meta: "" };
   }
 
@@ -909,9 +983,14 @@
     const sel = $("src-select");
     const html = `<option value="">选音频源…</option>` +
       state.samples.map((s) => `<option value="sample:${esc(s.url)}">夹具 · ${esc(s.name)}</option>`).join("") +
-      audioLib().map((a) => `<option value="asset:${esc(a.asset_id)}">素材库 · ${esc(a.name)}</option>`).join("") +
+      state.audioSets.map((s) => `<option value="set:${esc(s.id)}">音频集 · ${esc(s.name)}（${s.asset_ids.length} 条）</option>`).join("") +
+      audioLib().map((a) => `<option value="asset:${esc(a.asset_id)}">素材库 · ${esc(a.name)}${a.tags && a.tags.length ? " · " + esc(a.tags.join("/")) : ""}</option>`).join("") +
+      (state.rec.file ? `<option value="rec">录音 · ${esc(state.rec.name)}</option>` : "") +
       `<option value="local">本机文件 · 选择 .wav</option>`;
     if (state.srcKey.startsWith("asset:") && !audioLib().some((a) => a.asset_id === state.srcKey.slice(6))) {
+      state.srcKey = "";
+    }
+    if (state.srcKey.startsWith("set:") && !state.audioSets.some((s) => s.id === state.srcKey.slice(4))) {
       state.srcKey = "";
     }
     if (sel.dataset.sig !== html) {
@@ -919,9 +998,23 @@
       sel.dataset.sig = html;
     }
     if (sel.value !== state.srcKey) sel.value = state.srcKey;
+    const imgSel = $("img-select");
+    const imgHtml = `<option value="">不带图</option>` +
+      imageLib().map((a) => `<option value="${esc(a.asset_id)}">带图 · ${esc(a.name || a.asset_id)}</option>`).join("");
+    if (state.imgKey && !imageLib().some((a) => a.asset_id === state.imgKey)) state.imgKey = "";
+    if (imgSel.dataset.sig !== imgHtml) {
+      imgSel.innerHTML = imgHtml;
+      imgSel.dataset.sig = imgHtml;
+    }
+    if (imgSel.value !== state.imgKey) imgSel.value = state.imgKey;
     const info = srcInfo();
     setText($("src-name"), info.name);
-    setText($("src-meta"), info.meta);
+    setText($("src-meta"), info.meta + (state.imgKey ? " · 先传图再说话" : ""));
+  }
+
+  // speakBody 送话请求体：带图送话时加 image_asset_id（phase14）。
+  function speakBody(assetId) {
+    return state.imgKey ? { asset_id: assetId, image_asset_id: state.imgKey } : { asset_id: assetId };
   }
 
   // ——— 右栏 · Turn 页签 ———
@@ -1120,7 +1213,7 @@
   function renderTape() {
     const ol = $("tape");
     const rows = groupedTape().filter(rowPasses);
-    setNum($("tape-count"), state.events.length);
+    setNum($("tape-count"), rows.length);
     setNum($("fab-count"), state.events.length);
 
     if (!rows.length) {
@@ -1347,7 +1440,8 @@
       refreshTurnsQuiet();
       maybePlayDownlink(ev);
       const extra = [ev.reply_kind, ev.turn_end_reason].filter(Boolean).join(" / ");
-      flash("本轮结束" + (extra ? " · " + extra : "") + " · 可再送出", "ok");
+      // 跑音频集时每轮都弹会挤掉最后的汇总；进度在送话条上。
+      if (!state.setRun) flash("本轮结束" + (extra ? " · " + extra : "") + " · 可再送出", "ok");
     }
     if (ev.event_type === "speak_dequeued" && ev.turn_id) {
       // backlog 出队即上槽：跟上新 turn，帧轮询与横幅都指向它。
@@ -1625,6 +1719,8 @@
     }
     state.busy = true;
     renderStage();
+    const startBtn = $("btn-start");
+    setText(startBtn, "启动中…");
     flash("正在启动…", "info");
     try {
       const started = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/start`, {
@@ -1639,10 +1735,20 @@
       }
       connectWS({ fromOldest: state.events.length === 0 });
       renderStage();
-      const ready = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/wait_ready`, {
-        instance_id: started.instance_id,
-        conn_generation: started.conn_generation,
-      });
+      // wait_ready 最长 30s，按钮上给秒数免得盲等。
+      const t0 = Date.now();
+      const tick = setInterval(() => {
+        setText(startBtn, `等待 Ready… ${Math.round((Date.now() - t0) / 1000)}s`);
+      }, 500);
+      let ready;
+      try {
+        ready = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/wait_ready`, {
+          instance_id: started.instance_id,
+          conn_generation: started.conn_generation,
+        });
+      } finally {
+        clearInterval(tick);
+      }
       flash("wait_ready 返回 · " + state.selectedId + " 已 " + (ready.connection_state || "ready"), "ok");
       await refreshList();
       try {
@@ -1657,6 +1763,7 @@
       apiErr(err);
       await refreshList();
     } finally {
+      setText($("btn-start"), "启动并等待 Ready");
       state.busy = false;
       renderStage();
       renderConv();
@@ -1762,7 +1869,7 @@
     const wait = state.syncWait;
     const path = `/devices/${encodeURIComponent(state.selectedId)}/${wait ? "speak_and_wait" : "speak"}`;
     if (wait) flash("已送出，等 turn_terminal…", "info");
-    const spoken = await api("POST", path, { asset_id: assetId });
+    const spoken = await api("POST", path, speakBody(assetId));
     if (spoken.turn_id) {
       // 登记为本会话发起的 turn：终态时才允许自动播放下行。
       state.myTurns.add(spoken.turn_id);
@@ -1795,8 +1902,55 @@
     loadLibrary().catch(() => {});
   }
 
+  // 音频集：逐条 speak_and_wait。开跑时钉住设备与实例、拍一份条目快照——跑到一半
+  // 改集不影响这一组；切了设备、点了打断、遇到第一个错误就停（人在旁边看着，不必分类）。
+  async function runSet(id) {
+    const set = state.audioSets.find((x) => x.id === id);
+    if (!set || !set.asset_ids.length) {
+      flash("这个音频集是空的，先去「音频集」视图加条目", "err");
+      return;
+    }
+    const run = state.setRun = {
+      id, name: set.name, deviceId: state.selectedId, instanceId: state.instanceId,
+      ids: set.asset_ids.slice(), i: 0, stop: false,
+    };
+    const ends = {};
+    let done = 0;
+    let why = "";
+    try {
+      for (; run.i < run.ids.length; run.i++) {
+        if (run.stop) { why = "已打断"; break; }
+        if (state.selectedId !== run.deviceId || state.instanceId !== run.instanceId) { why = "换了设备"; break; }
+        const blocked = blockedReason();
+        if (blocked) { why = blocked; break; }
+        renderSrc();
+        const assetId = run.ids[run.i];
+        const a = state.lib.rows.find((x) => x.asset_id === assetId);
+        const res = await api("POST", `/devices/${encodeURIComponent(run.deviceId)}/speak_and_wait`, speakBody(assetId));
+        if (res.turn_id) {
+          state.myTurns.add(res.turn_id);
+          state.turnMeta[res.turn_id] = { name: `[${run.name} ${run.i + 1}/${run.ids.length}] ${a ? a.name : assetId}`, assetId };
+        }
+        const end = res.turn_end_reason || "—";
+        ends[end] = (ends[end] || 0) + 1;
+        done++;
+        await refreshTurnsQuiet();
+        paint("conv", "turns", "stage");
+      }
+    } catch (err) {
+      why = (err.status ? err.status + " " : "") + err.message;
+    } finally {
+      const text = `${done}/${run.ids.length} 条` +
+        Object.entries(ends).map(([k, n]) => ` · ${k} ${n}`).join("") + (why ? ` · 停：${why}` : "");
+      state.setRun = null;
+      state.setLast = { id, text };
+      flash(`音频集 ${run.name} · ${text}`, why ? "err" : "ok");
+    }
+  }
+
   async function speak(ev) {
     if (ev) ev.preventDefault();
+    if (state.setRun) return; // 一次只跑一组
     const blocked = blockedReason();
     if (blocked) {
       flash(blocked, "err");
@@ -1810,7 +1964,9 @@
     state.busy = true;
     renderStage();
     try {
-      if (k.startsWith("asset:")) {
+      if (k.startsWith("set:")) {
+        await runSet(k.slice(4));
+      } else if (k.startsWith("asset:")) {
         const id = k.slice(6);
         const a = state.lib.rows.find((x) => x.asset_id === id);
         await speakAsset(id, a ? a.name : "");
@@ -1822,6 +1978,12 @@
         if (!res.ok) throw new Error("读不到夹具 " + name);
         const blob = await res.blob();
         await uploadAndSpeak(new File([blob], name, { type: "audio/wav" }));
+      } else if (k === "rec") {
+        if (!state.rec.file) {
+          flash("还没有录音，点 ● 录制", "err");
+          return;
+        }
+        await uploadAndSpeak(state.rec.file);
       } else {
         const f = $("wav-file").files[0];
         if (!f) {
@@ -1843,6 +2005,10 @@
   }
 
   async function interrupt() {
+    if (state.setRun) {
+      state.setRun.stop = true; // 当前这一条被打断后，不再往下送
+      renderSrc();
+    }
     if (!state.instanceId) return;
     try {
       const res = await api("POST", `/devices/${encodeURIComponent(state.selectedId)}/interrupt`, {
@@ -1904,16 +2070,17 @@
   // 这里编辑的是落盘的「定义」；调试台的配置抽屉改的是本次运行的当前值。
 
   function setView(v) {
-    state.view = ["manage", "registry", "products"].includes(v) ? v : "bench";
+    state.view = ["manage", "registry", "products", "sets"].includes(v) ? v : "bench";
     closeDrawer();
     state.adding = null;
     state.regEdit = "";
     $("manage").hidden = state.view !== "manage";
     $("registry").hidden = state.view !== "registry";
     $("products").hidden = state.view !== "products";
+    $("sets").hidden = state.view !== "sets";
     document.querySelector("main.bench").hidden = state.view !== "bench";
     $("segwrap-mode").hidden = state.view !== "bench";
-    for (const view of ["bench", "manage", "registry", "products"]) {
+    for (const view of ["bench", "manage", "registry", "products", "sets"]) {
       const on = state.view === view;
       $("btn-view-" + view).classList.toggle("is-on", on);
       $("btn-view-" + view).setAttribute("aria-pressed", String(on));
@@ -1921,6 +2088,10 @@
     if (state.view === "manage") renderManage();
     if (state.view === "registry") renderRegistry();
     if (state.view === "products") renderProducts();
+    if (state.view === "sets") {
+      renderSets();
+      loadAudioSets(); // agent 可能刚经 REST 改过
+    }
   }
 
   function renderRegistry() {
@@ -2209,6 +2380,181 @@
     });
   }
 
+  // ——— 音频集（Phase 13）———
+
+  function renderSets() {
+    const rows = state.audioSets;
+    setNum($("sets-count"), rows.length);
+    const byId = Object.fromEntries(state.lib.rows.map((a) => [a.asset_id, a]));
+    const table = rows.length ? `<table class="grid">
+      <thead><tr><th>名称</th><th>条数</th><th>总时长</th><th>id</th><th class="grid__ops">操作</th></tr></thead>
+      <tbody>${rows.map((s) => `<tr data-id="${esc(s.id)}" data-sel="${state.setEdit === s.id ? 1 : 0}">
+        <td>${esc(s.name)}</td>
+        <td class="mono">${s.asset_ids.length}</td>
+        <td class="mono">${esc(fmtDurMs(s.asset_ids.reduce((n, id) => n + ((byId[id] || {}).duration_ms || 0), 0)))}</td>
+        <td class="grid__id">${esc(s.id)}</td>
+        <td class="grid__ops">
+          <button type="button" class="btn btn--sub btn--tiny" data-sact="edit">编辑</button>
+          <button type="button" class="btn btn--danger btn--tiny" data-sact="del" data-armed="0">删除</button>
+        </td>
+      </tr>`).join("")}</tbody></table>`
+      : `<div class="blank"><p class="blank__title">还没有音频集</p><p class="blank__body">把素材库里的音频按顺序编成一组：调试台送话下拉里选它，或 simctl run --audio-set 整组送。</p></div>`;
+    setHTML($("sets-body"), table + setFormHTML(byId));
+  }
+
+  function setFormHTML(byId) {
+    if (!state.setEdit) return "";
+    const off = state.setSaving ? " disabled" : "";
+    const nameFld = (v, zh) => `<div class="fields"><label class="fld fld--wide">
+      <span class="fld__head"><span class="fld__name">name</span><span class="fld__zh">${esc(zh)}</span></span>
+      <input name="name" value="${esc(v)}" placeholder="冒烟" autocomplete="off"${off}></label></div>`;
+    if (state.setEdit === "new") {
+      return `<form id="form-set" class="prod-form sheet sheet--tight">
+        <div class="grp__head"><span class="grp__title">新建音频集</span></div>
+        ${nameFld("", "名称，不能重名；建好后再加条目")}
+        <div class="foot">
+          <button type="submit" class="btn btn--primary"${off}>创建</button>
+          <button type="button" class="btn btn--sub" data-sact="close">取消</button>
+          <span class="grow"></span><span class="api">POST /audio_sets</span>
+        </div>
+      </form>`;
+    }
+    const set = state.audioSets.find((x) => x.id === state.setEdit);
+    if (!set) return "";
+    const last = set.asset_ids.length - 1;
+    const items = set.asset_ids.map((id, i) => {
+      const a = byId[id];
+      return `<li class="setitem" data-i="${i}">
+        <span class="setitem__n">${i + 1}</span>
+        <span class="setitem__name">${esc(a ? a.name || id : "（素材已不在库里）")}</span>
+        <span class="setitem__meta">${esc(a ? [a.language, a.format, fmtDurMs(a.duration_ms)].filter(Boolean).join(" · ") : id)}</span>
+        <button type="button" class="btn btn--ghost btn--tiny" data-sact="up" aria-label="上移"${i === 0 ? " disabled" : off}>↑</button>
+        <button type="button" class="btn btn--ghost btn--tiny" data-sact="down" aria-label="下移"${i === last ? " disabled" : off}>↓</button>
+        <button type="button" class="btn btn--ghost btn--tiny" data-sact="rm" aria-label="移出"${off}>✕</button>
+      </li>`;
+    }).join("");
+    const opts = audioLib().map((a) => ({ v: a.asset_id, t: [a.name || a.asset_id, a.language, fmtDurMs(a.duration_ms)].filter(Boolean).join(" · ") }));
+    return `<form id="form-set" class="prod-form sheet sheet--tight">
+      <div class="grp__head"><span class="grp__title">编辑 ${esc(set.name)}</span><span class="rule"></span><span class="api">${esc(set.id)}</span></div>
+      ${nameFld(set.name, "改完离开输入框即保存")}
+      <div class="grp">
+        <div class="grp__head"><span class="grp__title">条目 · 按顺序送</span><span class="rule"></span></div>
+        ${set.asset_ids.length ? `<ol class="setlist">${items}</ol>` : `<p class="fld__note">还没有条目，从下面的素材库下拉里加。</p>`}
+        <div class="setadd">
+          <select id="set-add" aria-label="从素材库选音频"${off}>${selOpts(opts, "", "选素材库里的音频…")}</select>
+          <button type="button" class="btn btn--sub btn--sm" data-sact="add"${off}>加入</button>
+        </div>
+      </div>
+      <div class="foot">
+        <button type="button" class="btn btn--sub" data-sact="close">收起</button>
+        <button type="button" class="btn btn--sub" data-sact="compose" title="各条切掉首尾静音、首尾相接拼成一条连续音频存进素材库，一轮送出（一句话问几件事）"${set.asset_ids.length < 2 ? " disabled" : off}>拼成一条素材</button>
+        <span class="grow"></span><span class="api">PUT /audio_sets/${esc(set.id)} · 每次改动立即保存 · 拼接 POST /assets/compose</span>
+      </div>
+    </form>`;
+  }
+
+  // putSet 整份替换。在途时编辑区禁用，所以一次只会有一个 PUT。
+  async function putSet(set, patch) {
+    if (state.setSaving) return;
+    state.setSaving = true;
+    renderSets();
+    try {
+      const saved = await api("PUT", `/audio_sets/${encodeURIComponent(set.id)}`,
+        { name: set.name, asset_ids: set.asset_ids, ...patch });
+      state.audioSets = state.audioSets.map((x) => (x.id === saved.id ? saved : x));
+    } catch (err) {
+      apiErr(err);
+    } finally {
+      state.setSaving = false;
+      renderSets();
+      renderSrc();
+    }
+  }
+
+  async function createSet() {
+    const input = $("sets-body").querySelector('[name="name"]');
+    const name = input ? input.value.trim() : "";
+    if (!name) { flash("名称不能空", "err"); return; }
+    try {
+      const set = await api("POST", "/audio_sets", { name });
+      state.audioSets.push(set);
+      state.setEdit = set.id; // 建完直接进编辑，接着加条目
+      flash("已创建音频集 " + name, "ok");
+    } catch (err) {
+      apiErr(err);
+    }
+    renderSets();
+    renderSrc();
+  }
+
+  // composeSet 把集里的条目按顺序拼成一条连续音频素材。同组合服务端复用，不会重复建。
+  async function composeSet(set) {
+    try {
+      const a = await api("POST", "/assets/compose", { asset_ids: set.asset_ids });
+      flash(`${a.reused ? "已有" : "已拼成"}「${a.name}」（${fmtDurMs(a.duration_ms)}），送话下拉里选它`, "ok");
+      await loadLibrary();
+    } catch (err) {
+      apiErr(err);
+    }
+  }
+
+  async function deleteSet(id) {
+    try {
+      await api("DELETE", `/audio_sets/${encodeURIComponent(id)}`);
+      state.audioSets = state.audioSets.filter((x) => x.id !== id);
+      if (state.setEdit === id) state.setEdit = null;
+      flash("已删除音频集（音频还在素材库里）", "ok");
+    } catch (err) {
+      apiErr(err);
+    }
+    renderSets();
+    renderSrc();
+  }
+
+  function bindSets() {
+    $("btn-view-sets").addEventListener("click", () => setView("sets"));
+    $("sets-new").addEventListener("click", () => { state.setEdit = "new"; renderSets(); });
+    const body = $("sets-body");
+    body.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-sact]");
+      if (!btn || btn.disabled) return;
+      const act = btn.dataset.sact;
+      if (act === "close") { state.setEdit = null; renderSets(); return; }
+      const row = btn.closest("tr");
+      if (row) {
+        if (act === "edit") { state.setEdit = row.dataset.id; renderSets(); }
+        else if (act === "del") armThen(btn, () => deleteSet(row.dataset.id));
+        return;
+      }
+      const set = state.audioSets.find((x) => x.id === state.setEdit);
+      if (!set) return;
+      if (act === "compose") { composeSet(set); return; }
+      const ids = set.asset_ids.slice();
+      const li = btn.closest("[data-i]");
+      const i = li ? Number(li.dataset.i) : -1;
+      if (act === "up" && i > 0) [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+      else if (act === "down" && i >= 0 && i < ids.length - 1) [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
+      else if (act === "rm" && i >= 0) ids.splice(i, 1);
+      else if (act === "add") {
+        const pick = $("set-add").value;
+        if (!pick) { flash("先在下拉里选一条音频", "err"); return; }
+        ids.push(pick);
+      } else return;
+      putSet(set, { asset_ids: ids });
+    });
+    // 改名：离开输入框（或回车）即保存；清空不算，留着原名。
+    body.addEventListener("change", (e) => {
+      if (e.target.name !== "name" || state.setEdit === "new") return;
+      const set = state.audioSets.find((x) => x.id === state.setEdit);
+      const name = e.target.value.trim();
+      if (set && name && name !== set.name) putSet(set, { name });
+    });
+    body.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (state.setEdit === "new") createSet();
+    });
+  }
+
   function manageRows() {
     const q = state.manageQ.trim().toLowerCase();
     if (!q) return state.devices;
@@ -2234,12 +2580,12 @@
         <td class="grid__pick"><input type="checkbox" data-pick="${esc(d.device_id)}"${picked ? " checked" : ""} aria-label="选择 ${esc(d.device_id)}"></td>
         <td class="grid__id">${esc(d.device_id)}</td>
         <td class="grid__path">${esc(d.environment || "—")} · ${esc(d.enterprise || "—")} · ${esc(d.device_type || "—")}</td>
-        <td class="mono">${esc(d.product || "—")}${over ? ` <span class="${tagCls("warn")}">已临时改</span>` : ""}</td>
+        <td class="mono">${esc(d.product || "—")}${over ? ` <span class="${tagCls("warn")}">临时覆盖</span>` : ""}</td>
         <td class="mono">${esc(a.format || "—")}</td>
         <td class="mono">${esc(a.sample_rate || "—")}</td>
         <td class="mono grid__dim">${esc(d.playing_mode || "—")}</td>
         <td><span class="${tagCls(d.instance_state === "running" ? "ok" : "")}">${esc(d.instance_state || "—")}</span></td>
-        <td>${over ? `<span class="${tagCls("warn")}">已临时改</span>` : `<span class="grid__dim">—</span>`}</td>
+        <td>${over ? `<span class="${tagCls("warn")}">临时覆盖</span>` : `<span class="grid__dim">—</span>`}</td>
         <td class="grid__ops">
           <button type="button" class="btn btn--ghost btn--tiny" data-mact="open" title="到调试台选中这台">调试</button>
           <button type="button" class="btn btn--danger btn--tiny" data-mact="del" data-armed="0">删除</button>
@@ -2321,7 +2667,6 @@
   };
 
   function openDrawer(which) {
-    if (which === "new" && state.view !== "manage") setView("manage");
     if (state.drawer === "sheet" && which !== "sheet") restoreSide();
     state.drawer = which;
     state.adding = null;
@@ -2482,7 +2827,7 @@
         <span class="fld__name">${esc(f.name)}</span>
         <span class="fld__zh">${esc(f.zh || "")}</span>
         ${f.ro ? `<span class="fld__ro">只读</span>` : ""}
-        ${f.dirty ? `<span class="tag tag--warn">已临时改</span>` : ""}
+        ${f.dirty ? `<span class="tag tag--warn">临时覆盖</span>` : ""}
       </span>
       ${control}
       ${f.note ? `<span class="fld__note">${esc(f.note)}</span>` : ""}
@@ -2608,7 +2953,7 @@
         <button type="button" class="btn btn--sub" data-act="report"${conn === "ready" && !noProd && !state.tombstone ? "" : " disabled"}
           title="POST /devices/{id}/report {playingMode} · 仅 connection_state=ready">热更新对话模式</button>
         <span class="grow"></span>
-        <span class="api">${cfg.overridden ? "已临时改 · " : ""}connection_state = ${esc(conn)}</span>
+        <span class="api">${cfg.overridden ? "临时覆盖 · " : ""}connection_state = ${esc(conn)}</span>
       </div>
     </form>`;
   }
@@ -2632,6 +2977,7 @@
         <select data-lib="kind" style="width:120px">${selOpts([{ v: "audio", t: "音频" }, { v: "image", t: "图片" }], state.lib.kind, "全部类型")}</select>
         <select data-lib="format" style="width:140px">${selOpts(fmtOpts, state.lib.format, "全部格式")}</select>
         <select data-lib="lang" style="width:140px">${selOpts(LANGS, state.lib.language, "全部语言")}</select>
+        <input data-lib="tag" type="search" placeholder="按标签过滤" value="${esc(state.lib.tag)}" style="width:110px" title="内容标签：对话 / 联网 / 唱歌…">
         <span class="grow"></span>
         <span style="display:flex;align-items:center;gap:8px;flex:none">
           <span class="dim" style="font-size:11.5px">导入语言</span>
@@ -2650,6 +2996,7 @@
               <div class="fields">
                 <label class="fld"><span class="fld__name">名称</span><input data-edit="name" value="${esc(a.name)}"></label>
                 <label class="fld"><span class="fld__name">语言</span><select data-edit="language">${selOpts(LANGS, a.language || "", "不标注")}</select></label>
+                <label class="fld"><span class="fld__name">标签</span><input data-edit="tags" value="${esc((a.tags || []).join(", "))}" placeholder="对话, 联网, 唱歌"></label>
               </div>
               <div class="bar">
                 <button type="button" class="btn btn--primary btn--sm" data-asset="save">保存</button>
@@ -2658,12 +3005,13 @@
               </div>
             </div>`;
           }
-          return `<div class="row" data-id="${esc(a.asset_id)}">
+          return `<div class="row" data-id="${esc(a.asset_id)}" data-tags="${esc((a.tags || []).join(" "))}">
             <div class="row__top">
               ${img ? `<img class="thumb" src="/assets/${esc(a.asset_id)}/content" alt="">` : ""}
               <span class="row__name" title="${esc(a.asset_id)}">${esc(a.name)}</span>
               <span class="${tagCls("acc")}">${esc(a.format)}</span>
               <span class="tag tag--mute">${esc(a.kind || "audio")}</span>
+              ${(a.tags || []).map((t) => `<span class="tag tag--ok">${esc(t)}</span>`).join("")}
               <span class="grow"></span>
               ${img ? "" : `<button type="button" class="btn btn--ok btn--tiny" data-asset="play" title="试听（服务端解码为 wav）">▶</button>`}
               <button type="button" class="btn btn--ghost" data-asset="edit">改名</button>
@@ -2692,6 +3040,7 @@
     ["playing_mode", "对话模式，取值 1 按键 / 2 连续 / 3 唤醒。Ready 状态下可以不重启直接热更新。"],
     ["nic_iccid", "模拟设备上报的 SIM 卡 ICCID。换产品或改 ICCID 会让真实服务端重新校验这台设备。"],
     ["photo_command", "收到拍照指令，reason 是 QuestionKey。之后是 photo_uploaded 或 photo_skipped，再等图片分析的语音回复。"],
+    ["photo_uploaded", "传完一张图。reason 的 source=speak 是带图送话（先传图再说话，图与音频同一个 UUID，回复是普通 TTS），source=command 是指令拍照；uuid 用来取本轮留档的那张图。"],
     ["stage2", "uplink_end_reason 的一种：上行音频推完了整个第二阶段才结束，不是被打断或超时。"],
     ["speak_backlog_depth", "送话排队深度。0 表示不排队，槽被占用时直接 409；大于 0 时新的送话进队列等前一轮结束。"],
     ["turn_terminal", "一轮对话的终结事件，带 reply_kind（回了什么）、turn_end_reason（怎么结束的）、uplink_end_reason（上行怎么停的）。"],
@@ -2704,7 +3053,7 @@
     ["connection_state", ["disconnected", "connected", "registering", "registered", "reporting", "ready"],
       "ready 之前送话都会被拒；keepalive 必须明显短于服务端约 60s 的踢线阈值。"],
     ["一个 turn 的生命周期", ["speak 受理", "上行推包", "asr_result", "photo_command", "photo_uploaded", "tts_chunk ×N", "turn_terminal"],
-      "拍照路径是指令 → 传图 → 图片分析的语音回复；没开拍照或没配图则 photo_skipped。"],
+      "拍照路径是指令 → 传图 → 图片分析的语音回复；没开拍照或没配图则 photo_skipped。带图送话则是 speak 受理 → photo_uploaded → 上行推包 → tts_chunk ×N → turn_terminal。"],
   ];
 
   function helpDrawerHTML() {
@@ -2845,8 +3194,10 @@
   function faultsDrawerHTML() {
     const st = (state.live && state.live.instance_state) || "";
     const can = st === "created" || st === "stopped";
+    const cur = (state.live && state.live.fault) || "";
     return `<div class="sheet sheet--tight">
       <p class="hint">POST /devices/{id}/faults · 往这台设备的连接上注入一个故障，用来验证服务端的异常分支。</p>
+      ${cur ? `<p class="warnbar">已挂：<b class="mono">${esc(cur)}</b> ——这台设备的行为现在偏离正常，点下面「清除故障」恢复。</p>` : ""}
       ${can ? "" : `<p class="warnbar">当前 instance_state 是 ${esc(st || "—")}，仅 created / stopped 可设 fault，先停止设备。</p>`}
       ${FAULTS.map(([k, zh]) => `<div class="row row--flat">
         <div class="grow" style="display:flex;flex-direction:column;gap:5px">
@@ -3163,6 +3514,7 @@
         await api("PATCH", `/assets/${encodeURIComponent(id)}`, {
           name: row.querySelector('[data-edit="name"]').value.trim(),
           language: row.querySelector('[data-edit="language"]').value.trim(),
+          tags: row.querySelector('[data-edit="tags"]').value,
         });
         state.lib.editingId = null;
         flash("已保存", "ok");
@@ -3312,6 +3664,208 @@
     if (setHTML(ol, html)) ol.scrollTop = ol.scrollHeight;
   }
 
+  // ——— 调音台皮肤：灯位桥 + 连续时间轴 ———
+  // 道内一律不放文字；详情挂 title，文字信息全在下方 side 面板。
+
+  const TL_WIN_MS = 10 * 60 * 1000; // 时间轴最多回看 10 分钟
+  const TL_DOTS_SKIP = new Set(["tts_chunk", "uplink_frames", "downlink_frames"]);
+
+  function deckModel() {
+    const now = Date.now();
+    let tMin = Infinity;
+    const firstEv = new Map(), lastEv = new Map();
+    for (const ev of state.events) {
+      const t = Date.parse(ev.ts);
+      if (!isFinite(t)) continue;
+      if (ev.turn_id) {
+        if (!firstEv.has(ev.turn_id)) firstEv.set(ev.turn_id, t);
+        lastEv.set(ev.turn_id, t);
+      }
+    }
+    const ups = [], downs = [], bands = [];
+    for (const t of convTurns()) {
+      const f = state.framesByTurn[t.id] || { up: [], down: [] };
+      const t0 = firstEv.get(t.id);
+      const live = state.occupiedTurnId === t.id;
+      if (t0) bands.push({ t0, t1: t.done ? (lastEv.get(t.id) || t0) : now, live, id: t.id });
+      if (f.up.length) {
+        ups.push({ t0: Date.parse(f.up[0].ts), t1: Date.parse(f.up[f.up.length - 1].ts), id: t.id, live: t.phase === "up", tip: `${t.id} · 上行 ${f.up.length} 包 · ${fmtBytes(sumBytes(f.up))}` });
+      } else if (live && t0) {
+        ups.push({ t0, t1: now, id: t.id, live: true, tip: t.id + " · 上行（等帧日志）" });
+      }
+      if (f.down.length) {
+        downs.push({ t0: Date.parse(f.down[0].ts), t1: Date.parse(f.down[f.down.length - 1].ts), id: t.id, live: live && !t.done, tip: `${t.id} · 下行 ${f.down.length} 包 · ${fmtBytes(sumBytes(f.down))}` });
+      }
+    }
+    const dots = [];
+    for (const ev of state.events) {
+      const t = Date.parse(ev.ts);
+      if (!isFinite(t) || TL_DOTS_SKIP.has(ev.event_type)) continue;
+      dots.push({ t, err: isErrEvent(ev), tip: `${fmtClock(ev.ts)} ${ev.event_type}${ev.turn_id ? " · " + ev.turn_id : ""}${ev.reason ? " · " + ev.reason : ""}` });
+    }
+    for (const s of [...ups, ...downs, ...bands, ...dots.map((x) => ({ t0: x.t }))]) {
+      if (s.t0 < tMin) tMin = s.t0;
+    }
+    if (!isFinite(tMin)) tMin = now - 60000;
+    if (now - tMin > TL_WIN_MS) tMin = now - TL_WIN_MS;
+    const tMax = now + Math.max(2000, (now - tMin) * 0.03);
+    // 下行静默预算区：上一包下行 → +downlink_idle_timeout_sec
+    let sil = null;
+    if (state.occupiedTurnId) {
+      let lastDown = 0;
+      for (let i = state.events.length - 1; i >= 0; i--) {
+        const ev = state.events[i];
+        if (ev.turn_id !== state.occupiedTurnId) continue;
+        if (ev.event_type === "tts_chunk" || ev.event_type === "tts_done") { lastDown = Date.parse(ev.ts); break; }
+      }
+      const budget = Number(((state.config || {}).behavior || {}).downlink_idle_timeout_sec) || 0;
+      if (lastDown && budget) sil = { t0: lastDown, t1: lastDown + budget * 1000 };
+    }
+    return { tMin, tMax, ups, downs, bands, dots, sil, now };
+  }
+
+  function tlTicks(tMin, tMax) {
+    const span = tMax - tMin;
+    const steps = [2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].map((s) => s * 1000);
+    let step = steps[steps.length - 1];
+    for (const s of steps) { if (span / s <= 9) { step = s; break; } }
+    const ticks = [];
+    for (let t = Math.ceil(tMin / step) * step; t <= tMax; t += step) ticks.push(t);
+    return ticks;
+  }
+
+  function renderDeck() {
+    const deck = $("deck");
+    if (!deck || document.documentElement.dataset.skin !== "console") return;
+    const live = state.live || {};
+    const cur = convTurns().find((t) => t.id === state.occupiedTurnId);
+    const conn = live.connection_state || "—";
+    const lamps = [
+      ["CONN", conn === "ready" || conn === "registered" || conn === "reporting", conn],
+      ["READY", live.instance_state === "running" && conn === "ready", live.instance_state || "—"],
+      ["UP", !!(cur && !cur.done && cur.phase === "up"), cur ? `${cur.up} 包` : ""],
+      ["DOWN", !!(cur && !cur.done && cur.down > 0), cur ? `${cur.down} 包` : ""],
+      ["FAULT", !!live.fault, live.fault || ""],
+    ];
+    setHTML($("deck-bridge"),
+      lamps.map(([n, on, v]) =>
+        `<span class="lamp${on ? " is-on" : ""}${n === "FAULT" && on ? " is-err" : ""}" title="${esc(n + " " + v)}"><i></i>${n}</span>`).join("") +
+      `<span class="deck__meta mono">${esc(state.selectedId || "—")} · gen ${esc(state.connGeneration ?? live.conn_generation ?? "—")} · turns ${convTurns().length}${state.occupiedTurnId ? " · " + esc(shortTurn(state.occupiedTurnId)) + esc(idleNoteFor(state.occupiedTurnId)) : ""}</span>`);
+
+    const empty = $("deck-empty");
+    const d = deckModel();
+    const span = d.tMax - d.tMin;
+    const pc = (t) => Math.max(0, Math.min(100, ((t - d.tMin) / span) * 100));
+    const has = d.ups.length || d.downs.length || d.dots.length || d.bands.length;
+    show(empty, !has);
+    setText(empty, state.selectedId
+      ? "还没有活动。送出一段音频后，上行/下行会按真实帧时间铺在这里。"
+      : "从左边通道选一台设备。");
+    if (!has) { setHTML($("deck-inner"), ""); return; }
+
+    const seg = (s, cls) =>
+      `<i class="seg ${cls}${s.live ? " is-live" : ""}" style="left:${pc(s.t0)}%;width:${Math.max(0.5, pc(s.t1) - pc(s.t0))}%" title="${esc(s.tip)}"></i>`;
+    const ticks = tlTicks(d.tMin, d.tMax);
+    const rulerHtml = ticks.map((t) =>
+      `<i class="tick" style="left:${pc(t)}%"><b></b>${new Date(t).toTimeString().slice(0, 8)}</i>`).join("");
+    const grid = ticks.map((t) => `<i class="gl" style="left:${pc(t)}%"></i>`).join("");
+    setHTML($("deck-inner"), `
+      <div class="tlr tlr--top">${rulerHtml}</div>
+      <div class="tla">
+        ${grid}
+        ${d.bands.map((b) => `<i class="band${b.live ? " is-live" : ""}" style="left:${pc(b.t0)}%;width:${Math.max(0.5, pc(b.t1) - pc(b.t0))}%" title="${esc(b.id)}"></i>`).join("")}
+        <div class="lane lane--up">${d.ups.map((s) => seg(s, "seg--up")).join("")}</div>
+        <div class="lane lane--down">
+          ${d.downs.map((s) => seg(s, "seg--down")).join("")}
+          ${d.sil ? `<i class="sil" style="left:${pc(d.sil.t0)}%;width:${Math.max(0.4, pc(Math.min(d.sil.t1, d.now)) - pc(d.sil.t0))}%" title="下行静默收尾窗口"></i>` : ""}
+        </div>
+        <div class="lane lane--dots">${d.dots.map((x) => `<i class="dot${x.err ? " is-err" : ""}" style="left:${pc(x.t)}%" title="${esc(x.tip)}"></i>`).join("")}</div>
+        <i class="nowl" style="left:${pc(d.now)}%"></i>
+      </div>
+      <div class="tlr tlr--bot">${rulerHtml}</div>`);
+  }
+
+  // ——— 麦克风录制 → WAV → 音源 ———
+
+  function wavFromBlob(blob) {
+    return new Promise((resolve, reject) => {
+      const rd = new FileReader();
+      rd.onerror = () => reject(new Error("录音读取失败"));
+      rd.onload = () => {
+        const ac = new (window.AudioContext || window.webkitAudioContext)();
+        ac.decodeAudioData(rd.result).then((buf) => {
+          const sr = buf.sampleRate;
+          const nCh = Math.min(buf.numberOfChannels, 2);
+          const len = buf.length * nCh;
+          const out = new DataView(new ArrayBuffer(44 + len * 2));
+          const wstr = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+          wstr(0, "RIFF"); out.setUint32(4, 36 + len * 2, true); wstr(8, "WAVE");
+          wstr(12, "fmt "); out.setUint32(16, 16, true); out.setUint16(20, 1, true);
+          out.setUint16(22, nCh, true); out.setUint32(24, sr, true);
+          out.setUint32(28, sr * nCh * 2, true); out.setUint16(32, nCh * 2, true); out.setUint16(34, 16, true);
+          wstr(36, "data"); out.setUint32(40, len * 2, true);
+          let off = 44;
+          const chans = [];
+          for (let c = 0; c < nCh; c++) chans.push(buf.getChannelData(c));
+          for (let i = 0; i < buf.length; i++) {
+            for (let c = 0; c < nCh; c++) {
+              const v = Math.max(-1, Math.min(1, chans[c][i]));
+              out.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+              off += 2;
+            }
+          }
+          ac.close();
+          resolve(new File([out.buffer], state.rec.name || "mic.wav", { type: "audio/wav" }));
+        }, () => { ac.close(); reject(new Error("录音解码失败")); });
+      };
+      rd.readAsArrayBuffer(blob);
+    });
+  }
+
+  async function toggleRec() {
+    const btn = $("btn-rec");
+    if (state.rec.mr) {
+      state.rec.mr.stop(); // onstop 里收尾
+      return;
+    }
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      flash("这个浏览器不支持录音", "err");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      state.rec = { mr, stream, chunks: [], file: state.rec.file, name: state.rec.name };
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) state.rec.chunks.push(e.data); };
+      mr.onstop = async () => {
+        state.rec.stream.getTracks().forEach((t) => t.stop());
+        state.rec.mr = null;
+        state.rec.stream = null;
+        btn.classList.remove("is-on");
+        btn.setAttribute("aria-pressed", "false");
+        setText(btn, "● 录制");
+        try {
+          const blob = new Blob(state.rec.chunks, { type: mr.mimeType || "audio/webm" });
+          state.rec.name = "mic-" + new Date().toTimeString().slice(0, 8).replace(/:/g, "") + ".wav";
+          state.rec.file = await wavFromBlob(blob);
+          state.srcKey = "rec";
+          flash("录音完成 " + state.rec.name + " · 已选为音源", "ok");
+        } catch (err) {
+          flash(err.message, "err");
+        }
+        renderSrc();
+        renderStage();
+      };
+      mr.start();
+      btn.classList.add("is-on");
+      btn.setAttribute("aria-pressed", "true");
+      setText(btn, "■ 停止录制");
+      flash("录音中…再点一次结束", "info");
+    } catch (err) {
+      flash("麦克风不可用：" + err.message, "err");
+    }
+  }
+
   // ——— 主题 ———
 
   const THEMES = ["system", "light", "dark"];
@@ -3338,6 +3892,30 @@
   function cycleTheme() {
     const cur = readTheme();
     applyTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
+  }
+
+  // ——— 布局皮肤：经典 / 调音台 ———
+
+  function readSkin() {
+    try {
+      const s = localStorage.getItem("bench.skin");
+      return s === "console" ? "console" : "classic";
+    } catch {
+      return "classic";
+    }
+  }
+
+  function applySkin(s) {
+    if (s === "console") document.documentElement.dataset.skin = "console";
+    else delete document.documentElement.dataset.skin;
+    const con = s === "console";
+    $("btn-skin-classic").classList.toggle("is-on", !con);
+    $("btn-skin-console").classList.toggle("is-on", con);
+    $("btn-skin-classic").setAttribute("aria-pressed", String(!con));
+    $("btn-skin-console").setAttribute("aria-pressed", String(con));
+    $("deck").hidden = !con;
+    try { localStorage.setItem("bench.skin", s); } catch { /* 隐私模式下忽略 */ }
+    renderDeck();
   }
 
   // ——— 绑定 ———
@@ -3372,6 +3950,8 @@
   function bindShell() {
     $("btn-refresh").addEventListener("click", () => refreshList().catch(apiErr));
     $("btn-theme").addEventListener("click", cycleTheme);
+    $("btn-skin-classic").addEventListener("click", () => applySkin("classic"));
+    $("btn-skin-console").addEventListener("click", () => applySkin("console"));
     $("btn-mode-bubble").addEventListener("click", () => setMode("bubble"));
     $("btn-mode-cards").addEventListener("click", () => setMode("cards"));
     $("btn-help").addEventListener("click", () => openDrawer("help"));
@@ -3421,6 +4001,15 @@
       const row = e.target.closest(".device");
       if (row) selectDevice(row.dataset.id);
     });
+    // 名册行是 li + 键盘支持：Tab 到位后 Enter/Space 选中；
+    // 焦点在勾选框上时放行，让原生 button 行为去切勾选。
+    $("roster-list").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const row = e.target.closest(".device");
+      if (!row || e.target.closest("[data-check]")) return;
+      e.preventDefault();
+      selectDevice(row.dataset.id);
+    });
     $("roster-empty-cta").addEventListener("click", () => {
       const k = $("roster-empty").dataset.kind;
       if (k === "none") openDrawer("new");
@@ -3439,7 +4028,7 @@
     });
     $("btn-batch-start").addEventListener("click", () => batchAct("start"));
     $("btn-batch-stop").addEventListener("click", () => batchAct("stop"));
-    $("btn-batch-delete").addEventListener("click", () => batchAct("delete"));
+    $("btn-batch-delete").addEventListener("click", (e) => armThen(e.currentTarget, () => batchAct("delete")));
   }
 
   function bindStage() {
@@ -3455,6 +4044,8 @@
     $("btn-stop").addEventListener("click", stopDevice);
     $("btn-delete").addEventListener("click", deleteDevice);
     $("btn-interrupt").addEventListener("click", interrupt);
+    $("btn-rec").addEventListener("click", toggleRec);
+    $("btn-file").addEventListener("click", () => $("wav-file").click());
     $("form-speak").addEventListener("submit", speak);
     $("chk-sync").addEventListener("change", () => { state.syncWait = $("chk-sync").checked; });
     $("src-select").addEventListener("change", () => {
@@ -3462,6 +4053,10 @@
       if (state.srcKey === "local") $("wav-file").click();
       renderSrc();
       renderStage();
+    });
+    $("img-select").addEventListener("change", () => {
+      state.imgKey = $("img-select").value;
+      renderSrc();
     });
     $("wav-file").addEventListener("change", () => {
       if ($("wav-file").files[0]) state.srcKey = "local";
@@ -3621,6 +4216,16 @@
         importAsset(f, f.name.replace(/\.[^.]+$/, ""), state.lib.newLang).catch(apiErr);
       }
     });
+    // 标签过滤直接改行可见性——重绘抽屉会把正在输入的焦点打掉。
+    body.addEventListener("input", (e) => {
+      const t = e.target;
+      if (!t.getAttribute || t.getAttribute("data-lib") !== "tag") return;
+      state.lib.tag = t.value.trim();
+      const q = state.lib.tag.toLowerCase();
+      for (const row of body.querySelectorAll(".list .row")) {
+        row.hidden = !!q && !(row.dataset.tags || "").toLowerCase().includes(q);
+      }
+    });
     body.addEventListener("submit", (e) => {
       e.preventDefault();
       if (e.target.getAttribute("id") === "form-config") saveConfig(e);
@@ -3676,6 +4281,7 @@
     bindManage();
     bindRegistry();
     bindProducts();
+    bindSets();
     bindKeys();
     setFollow(true);
     setMode("bubble");
@@ -3684,6 +4290,7 @@
     await loadProducts();
     await loadSamples();
     await loadLibrary();
+    await loadAudioSets(); // 调试台的送话下拉也要用，不能等进了「音频集」视图才拉
     try {
       await refreshList();
     } catch (err) {
@@ -3691,6 +4298,7 @@
     }
     const { id, ins } = parseHash();
     if (id) await selectDevice(id, ins);
+    applySkin(readSkin());
     renderStage();
     renderConv();
     renderTape();
@@ -3698,6 +4306,11 @@
       if (document.hidden) return;
       refreshList().catch(() => {});
     }, 2000);
+    // NOW 线与静默区靠这秒心跳前进；经典皮肤下 renderDeck 直接返回，开销可忽略。
+    setInterval(() => {
+      if (document.hidden) return;
+      paint("deck");
+    }, 1000);
   }
 
   init();

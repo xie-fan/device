@@ -43,8 +43,9 @@ type Server struct {
 	speakUsed atomic.Int64
 	runs      map[string]*scenarioRun
 
-	assetMu sync.Mutex
-	assets  map[string]*assetObj
+	assetMu   sync.Mutex
+	assets    map[string]*assetObj
+	audioSets []audioSet // 创建顺序；与 assets 同一把 assetMu（Phase 13）
 }
 
 func New(opts Options) (http.Handler, error) {
@@ -75,15 +76,22 @@ func New(opts Options) (http.Handler, error) {
 		runs:     map[string]*scenarioRun{},
 	}
 	s.loadAssetIndex()
+	s.loadAudioSets() // 要在素材库之后：剔除已不在库里的资产
 	s.loadDevices()
 	mux := http.NewServeMux()
 	s.mux = mux
 	mux.HandleFunc("POST /assets", s.handlePostAsset)
+	mux.HandleFunc("POST /assets/compose", s.handleComposeAsset)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
 	mux.HandleFunc("GET /assets/{id}", s.handleGetAsset)
 	mux.HandleFunc("PATCH /assets/{id}", s.handlePatchAsset)
 	mux.HandleFunc("GET /assets/{id}/content", s.handleGetAssetContent)
 	mux.HandleFunc("DELETE /assets/{id}", s.handleDeleteAsset)
+
+	mux.HandleFunc("GET /audio_sets", s.handleListAudioSets)
+	mux.HandleFunc("POST /audio_sets", s.handlePostAudioSet)
+	mux.HandleFunc("PUT /audio_sets/{id}", s.handlePutAudioSet)
+	mux.HandleFunc("DELETE /audio_sets/{id}", s.handleDeleteAudioSet)
 
 	mux.HandleFunc("POST /devices", s.handlePostDevices)
 	mux.HandleFunc("GET /devices", s.handleListDevices)
@@ -103,6 +111,7 @@ func New(opts Options) (http.Handler, error) {
 	mux.HandleFunc("POST /devices/{id}/speak_and_wait", s.handleSpeakAndWait)
 	mux.HandleFunc("POST /devices/{id}/interrupt", s.handleInterrupt)
 	mux.HandleFunc("POST /devices/{id}/report", s.handleReport)
+	mux.HandleFunc("POST /devices/{id}/trans", s.handleTrans)
 	mux.HandleFunc("POST /devices/{id}/faults", s.handleFaults)
 
 	mux.HandleFunc("GET /devices/{id}/turns", s.handleListTurns)
@@ -110,6 +119,7 @@ func New(opts Options) (http.Handler, error) {
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/frames", s.handleGetFrames)
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/audio/uplink", s.handleGetAudioUplink)
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/audio/downlink", s.handleGetAudioDownlink)
+	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}/photo", s.handleGetPhoto)
 	mux.HandleFunc("GET /devices/{id}/events", s.handleGetEvents)
 	mux.HandleFunc("GET /devices/{id}/instances", s.handleListInstances)
 	mux.HandleFunc("DELETE /devices/{id}/instances/{instance_id}", s.handleDeleteInstance)

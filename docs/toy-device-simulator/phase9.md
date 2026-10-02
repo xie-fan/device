@@ -16,7 +16,7 @@ REST 端点的粒度不是 agent 任务的粒度。铁证：`POST /devices/{id}/
 `cmd/speak` 是 Phase 1 的单机 CLI，不走 manager，不动它。
 
 服务的场景是**交互式排障 + 自主探索**。CI 回归走现成的 `POST /scenarios/run`。
-「测试集」是人将来要加的上层概念，现在不猜它的接口。
+「测试集」是人将来要加的上层概念，现在不猜它的接口。（Phase 13 已落地，定名「音频集」：按一组音频回归走 `simctl run --audio-set`，见 phase13.md。）
 
 ## 1. 边界（本阶段不做）
 

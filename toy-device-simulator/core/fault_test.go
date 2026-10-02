@@ -15,7 +15,7 @@ func TestFaultDropMatrix(t *testing.T) {
 }
 
 func TestBadSeqStartsAtLeastOne(t *testing.T) {
-	frames := BuildUplinkFrames(make([]byte, 3200), 3, 16000, 100, FaultBadSeq, 0)
+	frames := BuildUplinkFrames(make([]byte, 3200), 3, 16000, 100, FaultBadSeq, 0, "pcm")
 	h, err := protocol.DecodeHeader(frames[0][1:])
 	if err != nil {
 		t.Fatal(err)
@@ -26,14 +26,14 @@ func TestBadSeqStartsAtLeastOne(t *testing.T) {
 }
 
 func TestOversizePayloadExceeds51200(t *testing.T) {
-	frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultOversize, 0)
+	frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultOversize, 0, "pcm")
 	if len(frames[0])-1-protocol.HeaderBytes <= 51200 {
 		t.Fatalf("payload=%d", len(frames[0])-1-protocol.HeaderBytes)
 	}
 }
 
 func TestOversizeUsesMaxPayloadSizePlusOne(t *testing.T) {
-	frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultOversize, 100)
+	frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultOversize, 100, "pcm")
 	got := len(frames[0]) - 1 - protocol.HeaderBytes
 	if got != 101 {
 		t.Fatalf("payload=%d, 应为 max_payload_size+1=101", got)
@@ -42,7 +42,7 @@ func TestOversizeUsesMaxPayloadSizePlusOne(t *testing.T) {
 
 func TestOversizeNonPositiveFallsBackTo51200(t *testing.T) {
 	for _, max := range []int{0, -1} {
-		frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultOversize, max)
+		frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultOversize, max, "pcm")
 		got := len(frames[0]) - 1 - protocol.HeaderBytes
 		if got != 51201 {
 			t.Fatalf("max=%d payload=%d, 应回退 51201", max, got)
@@ -51,7 +51,7 @@ func TestOversizeNonPositiveFallsBackTo51200(t *testing.T) {
 }
 
 func TestBadHeaderIsShorterThan100AfterFirstByte(t *testing.T) {
-	frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultBadHeader, 0)
+	frames := BuildUplinkFrames(make([]byte, 100), 3, 16000, 100, FaultBadHeader, 0, "pcm")
 	if len(frames[0])-1 >= protocol.HeaderBytes {
 		t.Fatalf("header_len=%d, 应 < 100", len(frames[0])-1)
 	}
@@ -61,7 +61,7 @@ func TestBadHeaderIsShorterThan100AfterFirstByte(t *testing.T) {
 }
 
 func TestSkipRegisterStillSendsLegalAudioAndStage2(t *testing.T) {
-	frames := BuildUplinkFrames(make([]byte, 3200), 3, 16000, 100, FaultSkipRegister, 0)
+	frames := BuildUplinkFrames(make([]byte, 3200), 3, 16000, 100, FaultSkipRegister, 0, "pcm")
 	if len(frames) < 2 {
 		t.Fatal("应有 Stage=1 与 Stage=2")
 	}

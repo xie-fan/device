@@ -85,6 +85,25 @@ func serve(c *websocket.Conn, tc *media.Toolchain, ttsMs int) {
 				echo, _ := protocol.EncodeManage(strings.TrimSuffix(env.Topic, "server")+"client", json.RawMessage(env.Data))
 				_ = send(echo)
 			}
+		case protocol.FirstTrans:
+			req, err := protocol.DecodeTransRequest(msg)
+			if err != nil {
+				continue
+			}
+			req.Response.StatusCode = 200
+			req.Response.Body = map[string]interface{}{"echo": req.Request.Body}
+			data, err := json.Marshal(req)
+			if err != nil {
+				continue
+			}
+			env, err := json.Marshal(protocol.Envelope{
+				Topic: req.Enterprise + "/" + req.DeviceType + "/" + req.DeviceID + "/trans/client",
+				Data:  data,
+			})
+			if err != nil {
+				continue
+			}
+			_ = send(append([]byte{protocol.FirstTrans}, env...))
 		case protocol.FirstAudio:
 			view := protocol.Inspect(msg)
 			if !view.OKHeader || view.Header.Stage != protocol.StageUploading {

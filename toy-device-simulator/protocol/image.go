@@ -71,12 +71,12 @@ func EncodeImageFrame(h ImageHeader, payload []byte) ([]byte, error) {
 	return out, nil
 }
 
+// BuildImageFrames questionKey 为空 = 带图送话（phase14）：服务端只存图，
+// 等同 UUID 的语音轮来取；非空 = 指令拍照（phase12）。
 func BuildImageFrames(img []byte, format, questionKey, replyFormat string, uuid uint32) ([][]byte, error) {
 	switch {
 	case len(img) == 0:
 		return nil, errors.New("空图")
-	case questionKey == "":
-		return nil, errors.New("QuestionKey 为空")
 	case len(questionKey) > 16:
 		return nil, errors.New("QuestionKey 超过 16 字节")
 	case format == "":
@@ -119,6 +119,21 @@ func BuildImageFrames(img []byte, format, questionKey, replyFormat string, uuid 
 		frames = append(frames, frame)
 	}
 	return frames, nil
+}
+
+// ImageAck 对齐基线 types.ImageAck：服务端对图像分片/合并的应答。
+type ImageAck struct {
+	SequenceNumber uint32   `json:"sequence_number"`
+	UUID           uint32   `json:"uuid"`
+	Code           uint32   `json:"code"`
+	Message        string   `json:"message"`
+	Data           []uint32 `json:"data"`
+}
+
+func DecodeImageAck(data json.RawMessage) (ImageAck, error) {
+	var a ImageAck
+	err := json.Unmarshal(data, &a)
+	return a, err
 }
 
 type PhotoCommand struct {

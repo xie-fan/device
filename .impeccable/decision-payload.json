@@ -1,0 +1,110 @@
+{
+  "title": "选择新视觉世界",
+  "question": "本轮指派了「广播调音台」。保留它、换一张备选卡、还是重掷。",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "广播调音台",
+      "kicker": "THE ROLL",
+      "lineage": "直播调音台 / on-air 控制台面",
+      "thesis": "每台设备是台面上的一条通道：上行下行是两组 VU 表，连接与终态是指示灯，启动/故障/删除是带护盖的开关。它恰好是音频设备的本命仪器。",
+      "palette": ["#191b1f", "#e8dcc0", "#d8a13a", "#c8442e", "#3fae6a", "#8a9099"],
+      "materials": ["喷塑钢板", "VU 表盘", "指示灯", "刻字面板"],
+      "viewport": "左栏是通道条机架（一设备一条，灯+VU 直上直下）；中栏是主表桥，turn 流水线像多轨走带；右栏事件带是走带计数纸带。",
+      "risk": "拟物过头会退化成皮肤包。纪律：只借表盘语言（灯、表、刻字、分条），不画旋钮不画推子照片。",
+      "raised": [
+        { "from": "challenger-j-card", "raise": "单一分栏几何：所有面板服从同一 channel-strip 分割，无漂浮卡片。" },
+        { "from": "challenger-ascii", "raise": "单墨色亮度分级：面板内部层级只靠同一墨色明暗，颜色只给状态。" },
+        { "from": "challenger-cloud", "raise": "颜色住在边缘与灯位：状态色做窄条/灯点，不洗内容区。" },
+        { "from": "challenger-rain", "raise": "每个面板只许一个主 accent，互不抢戏。" }
+      ]
+    },
+    {
+      "id": "model-pick",
+      "label": "抓包分析器",
+      "kicker": "IMPECCABLE'S PICK",
+      "lineage": "Wireshark 系协议分析器",
+      "thesis": "事件带=包列表按消息类型着色，轮次卡=包详情树，过滤 chips 就是 display filter——用户手指已有的肌肉记忆直接复用。",
+      "palette": ["#26282c", "#3a5a8c", "#5a8c3a", "#8c6d3a", "#7a3a8c", "#d4d6da"],
+      "materials": ["分栏包列表", "着色行", "详情树"],
+      "viewport": "三栏 = list / details / bytes 的经典分析器构图：左名册像接口列表，中栏卡片像 packet details，右带像 packet list。",
+      "risk": "熟悉是它的上限：这个品类十次有八次落在这里，稳妥但难惊艳。"
+    },
+    {
+      "id": "challenger-timetable",
+      "label": "时刻表滑片架",
+      "verdict": "competitive",
+      "lineage": "1971 口袋航班时刻表 × 灯箱玻璃片",
+      "thesis": "所有文字同一个字号，层级全靠字重/大写/反白——对事件带这种高密度流是极纪律化的排版方案。",
+      "palette": ["#d4a017", "#3d4756", "#1b1c1e", "#f2ead8", "#c0392b", "#1e5631"],
+      "materials": ["染色玻璃片", "灯箱底", "单字号排印"],
+      "viewport": "整页是一排 11° 斜倚的玻璃片，每片自带标题，横向行进，一格一态（填=有/空=无/朱红划=错/绿=成）。",
+      "case": "信息密度与单字号纪律极强；但时刻表是'读'的语法，操作面（启动/注入/发送）借不到力。",
+      "risk": "玻璃片质感新鲜但离仪器场景一层，且 11° 斜排对中文宽字符不友好。",
+      "hero": "https://impeccable.style/worlds/cards/rw-timetable-slide-rack-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/rw-timetable-slide-rack.webp"
+    },
+    {
+      "id": "challenger-splitflap",
+      "label": "车站翻牌大屏",
+      "verdict": "competitive",
+      "lineage": "铁路大厅 split-flap 到发牌",
+      "thesis": "事件带天然就是那张牌：行是活实体、列永不动、状态改色不破网格，逐字翻动刚好对应流式事件。",
+      "palette": ["#101113", "#f0f0ea", "#8a9099", "#e0a02a", "#a03028"],
+      "materials": ["黑牌面白字", "钢框", "琥珀警示灯"],
+      "viewport": "右栏事件带成为主角：定列翻牌行，延误=琥珀灯、取消=暗红字；左中栏退成牌框内的功能区。",
+      "case": "认读性六张里最强；但它是纯显示语法——按钮、开关、表、抽屉这些'操作'它管不了。",
+      "risk": "翻牌动画是装饰性最强的部分，做不好就是 gimmick；且黑白牌面对彩色状态语义无承载。",
+      "hero": "https://impeccable.style/worlds/cards/signals-instruments-split-flap-concourse-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/signals-instruments-split-flap-concourse.webp"
+    },
+    {
+      "id": "challenger-j-card",
+      "label": "磁带 J 卡手写",
+      "verdict": "declined",
+      "lineage": "圆珠笔手抄 mixtape 内页",
+      "case": "手写字迹与协议 wire 值正面冲突——调试工具首先要机器可读。",
+      "kept": "单一分栏几何：一张折页统治所有版面 → 已捐给调音台。",
+      "hero": "https://impeccable.style/worlds/cards/vernacular-ephemera-cassette-j-card-hero.webp"
+    },
+    {
+      "id": "challenger-ascii",
+      "label": "ASCII 实时渲染",
+      "verdict": "declined",
+      "lineage": "字符密度即亮度的磷光渲染",
+      "case": "终端仿真是这个品类'可预测的反面'，且字符画会牺牲可选中可复制的事件文本。",
+      "kept": "单墨色亮度分级：层级靠同一墨色的明暗 → 已捐给调音台。",
+      "hero": "https://impeccable.style/worlds/cards/medium-native-ascii-live-scene-render-hero.webp"
+    },
+    {
+      "id": "challenger-cloud",
+      "label": "虹彩云边",
+      "verdict": "declined",
+      "lineage": "云边衍射的薄荷-玫瑰-紫罗兰窄带",
+      "case": "浅色粉彩与暗房仪器场景反向，且色相不携带协议语义。",
+      "kept": "颜色只住边缘窄带、内容区保持无彩 → 已捐给调音台。",
+      "hero": "https://impeccable.style/worlds/cards/clouds-storms-auroras-iridescent-cloud-edge-hero.webp"
+    },
+    {
+      "id": "challenger-rain",
+      "label": "重力雨花园",
+      "verdict": "declined",
+      "lineage": "按云色决定坠落方向的超现实花园",
+      "case": "物理模拟很美但与'协议事实第一'完全无关。",
+      "kept": "每个区域只许一个主导力 → 翻成'每面板单 accent'捐给调音台。",
+      "hero": "https://impeccable.style/worlds/cards/dream-surreal-impossible-worlds-gravity-rain-garden-hero.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "steer": true,
+  "canon": true,
+  "canonCard": {
+    "label": "品类标准答案",
+    "thesis": "Grafana 系暗色 ops 控制台：面板网格+状态点+时间轴，执行力拉满但正是它现在的样子。",
+    "palette": ["#111217", "#1f2127", "#5794f2", "#73bf69", "#f2495c"],
+    "materials": ["面板网格", "状态点", "细分割线"],
+    "viewport": "你现在已经看到的这个：暗底、细边框面板、紫蓝 accent——做到极致仍是它。",
+    "risk": "按设计就是与所有同类工具难以区分。"
+  },
+  "buildPath": { "value": "code", "toggle": false }
+}

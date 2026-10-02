@@ -165,3 +165,37 @@ func TestLeaseUnknownDevice404(t *testing.T) {
 		t.Fatalf("释放不存在的设备应 404，得到 %d %s", code, body)
 	}
 }
+
+// 续租（Phase 13）：音频集逐条送，整组远超 TTL，每条之前拿现任 lease_id 再 POST 一次。
+func TestLeaseRenew(t *testing.T) {
+	e := newEnv(t)
+	e.createDevice(t, "sim_l8")
+	_, body := e.post(t, leasePath("sim_l8"), map[string]any{"owner": "runA", "ttl_sec": 1})
+	m := decodeMap(t, body)
+	lid, exp := strField(m, "lease_id"), strField(m, "expires_at")
+
+	// 现任 id：id 不变，过期时间往后推。
+	code, body := e.post(t, leasePath("sim_l8"), map[string]any{"owner": "runA", "lease_id": lid})
+	m = decodeMap(t, body)
+	if code != http.StatusOK || strField(m, "lease_id") != lid {
+		t.Fatalf("续租应 200 且 id 不变，得到 %d %s", code, body)
+	}
+	before, _ := time.Parse(time.RFC3339Nano, exp)
+	after, _ := time.Parse(time.RFC3339Nano, strField(m, "expires_at"))
+	if !after.After(before) {
+		t.Fatalf("续租应推迟过期: %s → %s", exp, strField(m, "expires_at"))
+	}
+
+	// 别人的 id：照旧 409，不能拿错 id 续走别人的租约。
+	if code, body := e.post(t, leasePath("sim_l8"), map[string]any{"owner": "runB", "lease_id": "lse_deadbeef"}); code != http.StatusConflict {
+		t.Fatalf("错的 lease_id 应 409，得到 %d %s", code, body)
+	}
+
+	// 已过期：按普通获取发新 id，调用方以响应为准。
+	e.post(t, leasePath("sim_l8"), map[string]any{"owner": "runA", "lease_id": lid, "ttl_sec": 0.05})
+	time.Sleep(120 * time.Millisecond)
+	code, body = e.post(t, leasePath("sim_l8"), map[string]any{"owner": "runA", "lease_id": lid})
+	if fresh := strField(decodeMap(t, body), "lease_id"); code != http.StatusOK || fresh == "" || fresh == lid {
+		t.Fatalf("过期后续租应发新 id，得到 %d %s", code, body)
+	}
+}

@@ -28,9 +28,33 @@ type ReportData struct {
 	PlayingMode    int `json:"playingMode"`
 }
 
+// CommandData 对齐基线 types.CommandConfig：字段均可选，零值即未下发。
 type CommandData struct {
-	SequenceNumber int `json:"sequence_number"`
-	NeedAck        int `json:"need_ack"`
+	Code           int             `json:"code"`
+	Message        string          `json:"message"`
+	SequenceNumber int             `json:"sequence_number"`
+	SetVolume      int             `json:"setVolume"`
+	SetTimbre      string          `json:"setTimbre"`
+	ShutDown       bool            `json:"shutDown"`
+	PlayingMode    int             `json:"playingMode"`
+	Total          int             `json:"total"`
+	Light          int             `json:"light"`
+	Fan            int             `json:"fan"`
+	Movements      []Movement      `json:"movements"`
+	Movement       Movement        `json:"movement"`
+	Data           json.RawMessage `json:"data"`
+	NeedAck        int             `json:"need_ack"`
+}
+
+// Movement 对齐基线 types.Movement。
+type Movement struct {
+	Behavior   int    `json:"behavior"`
+	Angle      int    `json:"angle"`
+	Distance   int    `json:"distance"`
+	StartText  string `json:"start_text"`
+	EndText    string `json:"end_text"`
+	StartVoice string `json:"start_voice"`
+	EndVoice   string `json:"end_voice"`
 }
 
 func DecodeRegisterAck(data json.RawMessage) (RegisterAck, error) {

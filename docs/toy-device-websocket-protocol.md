@@ -11,7 +11,9 @@
 - 下行 TTS / 提示音
 - 这一路上会碰到的管理 JSON、ASR 文本、指令、ACK、打断、VAD
 
-不包含：babycare/ipc 的 JSON frame、MQTT 独立订阅进程的订阅清单、拍照 `'2'`、转发 `'3'`。MQTT 与 WebSocket **音频头相同**，差异只在传输封装，文末附录说明。
+另含这条连接上的转发 `'3'`（§9.5）与图片上传 `'2'`（§9.6）。
+
+不包含：babycare/ipc 的 JSON frame、MQTT 独立订阅进程的订阅清单。MQTT 与 WebSocket **音频头相同**，差异只在传输封装，文末附录说明。
 
 对应服务入口：`docker/ai-chat-bot-distributed/core/main.go`  
 本地默认：`ws://127.0.0.1:8089`（`config.yaml` 的 `app.webSocketPort`）
@@ -114,8 +116,8 @@ WebSocket opcode：服务端 **下行一律 `TextMessage`**，payload 可以是�
 |---|---|---|---|
 | `'0'` `0x30` | `AudioMsg` | 音频 | 100 字节 `AudioHeader` + payload |
 | `'1'` `0x31` | `ManageFirstByte` | 管理 JSON | UTF-8 JSON：`{"topic","data"}` |
-| `'2'` | 拍照 | 不在本文主路径 | |
-| `'3'` | 转发 | 不在本文主路径 | |
+| `'2'` `0x32` | `ImageFirstByte` | 图片 | 上行：100 字节 `ImageHeader` + 分片（§9.6）；下行：当前实现不发（模拟器仍容错解析 `upload_image_slice/client` 的 ImageAck 信封） |
+| `'3'` `0x33` | `TransFirstByte` | 转发 | 上行：扁平 `TransferData` JSON；下行：`{"topic","data"}` 信封（`trans/client`） |
 | `'4'` | 下行 ACK 二进制 | 28 字节 `DeviceAckMsg` | |
 | `'{'` `0x7B` | 无前缀 JSON | 服务端 `ResponseJson` | `{"RequestID","Code","CodeMsg","Data"}` |
 
@@ -311,6 +313,9 @@ Magic：`Head = 0x4848`。**当前上行解析不校验 magic**，但仍应填�
 
 不认识则丢弃该帧。
 
+一轮内的所有上行帧（Stage=1/2/3/5）都应写本轮线上格式——包括空载荷的
+Stage=2/3 收尾帧，服务端按头字段理解，不要硬编码 `pcm`。
+
 ### 6.6 载荷长度
 
 服务端取 payload 用的是 **帧长 − 100**，不是头里的 `AudioPayloadLen`。头字段仍应填对。单帧 payload **最大 50 KiB**（`MaxBodySize`），超出丢弃。
@@ -478,6 +483,9 @@ WebSocket 完整帧与上行相同：
 
 设备执行指令与播放 TTS 是独立通道；长音频不应堵住指令。
 
+模拟器已按上表解码全部字段并写进 `command_received` 事件的 `reason`（形如
+`seq=3 playingMode=2 movements=2[601,205] need_ack`），仅展示，不做行为响应。
+
 ### 9.3 VAD 通知
 
 `'0'` + 头，Stage=4，Seq=0，payload 空，UUID=本轮，格式与当前会话相同，采样率常 16000。
@@ -496,6 +504,87 @@ WebSocket 完整帧与上行相同：
 ```
 
 `Code=0` 成功。`Code=1` 失败。`Code=14007` 用量拒绝。
+
+### 9.5 转发消息（trans）
+
+设备可借这条 WS 通道直接调服务端 Open API（`deviceOpenApiModule.Trans`）。
+
+上行：`'3'` + 扁平 JSON（**不是**管理信封，没有 `topic` 字段）：
+
+```json
+{
+  "device_id": "...",
+  "enterprise": "...",
+  "device_type": "...",
+  "event_type": "...",
+  "timestamp": 1730000000,
+  "request": {"path": "/open/xxx", "header": {}, "body": {}}
+}
+```
+
+下行：`'3'` + 信封 `{topic: "{enterprise}/{deviceType}/{deviceID}/trans/client", data: <同一 TransferData，response 已回填>}`：
+
+```json
+{
+  "topic": "ent/type/id/trans/client",
+  "data": {
+    "device_id": "...", "request": {"path": "...", "header": {}, "body": {}},
+    "response": {"status_code": 200, "header": {}, "body": {}}
+  }
+}
+```
+
+模拟器：`POST /devices/{id}/trans`（body `{event_type, path, header, body}`，仅 Ready）
+发送上行；下行解为 `trans_response` 事件（reason=`path=… status=N`）。
+`'2'` 下行同样容错：ImageAck 信封记 `image_ack`，100 字节 ImageHeader 记 `image_downlink`。
+
+### 9.6 图片上传（`'2'`）
+
+依据：`websocket/controller/handle.go` `ImageHandle`、`module/camera/image.go` `Slice`、
+`mqtt/controller/uploadImageFinish.go`、`service/skills/camera.go`。
+
+上行每片：`'2'` + 100 字节小端 `ImageHeader` + 分片数据。
+
+| 偏移 | 长度 | 字段 | 值 |
+|---|---|---|---|
+| 0 | 4 | `Head` | `0x5050`（音频是 `0x4848`） |
+| 4 | 4 | `Stage` | 1 上传中；2 末片（**末片必须带数据**）；3 中断，服务端清掉已收的分片 |
+| 8 | 4 | `SequenceNumber` | 等于 `SliceIndex` |
+| 12 | 4 | `UUID` | 一次上传共用 |
+| 16 | 4 | `Total` | 这次要传几张图 |
+| 20 | 4 | `TotalSize` | 本张图总字节数 |
+| 24 | 4 | `SliceTotal` | 片数 |
+| 28 | 4 | `SliceIndex` | 从 0 开始 |
+| 32 | 4 | `SliceSize` | 本片字节数 |
+| 36 | 16 | `QuestionKey` | ASCII，补 0；空 = 只存图 |
+| 52 | 8 | `ImageFormat` | `jpg` `png` `bmp`，补 0 |
+| 60 | 40 | `Reserved` | 指令拍照时写回复音频格式，全 0 按 aac |
+
+单片载荷 ≤ 50 KiB（`MaxBodySize`）。服务端**不回 ack**：WS 与 HTTP 入口都是 `go camera.Slice(...)`，
+丢掉了 `ImageAck`（`example/img` 里等 ack、重发缺片的客户端是旧行为）。
+
+末片到达后按 QuestionKey 分两条路：
+
+| | 指令拍照 | 带图送话（服务端叫 imageChat） |
+|---|---|---|
+| 触发 | 服务端先下发 `command`：`movement.behavior=601`，`data.QuestionKey` 非空，可带 `start_voice`（base64 语音） | 设备自己决定，比如按键拍照后说话 |
+| QuestionKey | 指令里给的 | 空 |
+| 图的 UUID | 设备任取 | **等于随后那轮语音的 UUID** |
+| 服务端 | 合并、传 OSS，用 QuestionKey 取回问题做图片分析，TTS 回复的 **UUID 恒为 0** | 合并、传 OSS，URL 存 redis `{device_id}_{uuid}`，10 分钟过期 |
+| 回复 | UUID=0 的下行音频 | 那轮语音的普通 TTS，UUID 等于本轮 |
+
+带图送话的前提：设备类型配置 `imageChat=true`，语音轮才会带上 UUID 去大模型层取图
+（`module/voiceModule/turn/turn_stage_dialogue.go`）。会取图的路径：gemini、阿里自定义应用、
+火山 bot / chatmix；gemini 把 MIME 写死 `image/jpeg`，用 jpg。取不到图只打日志
+`ImageURL is empty`，照常回答，所以「回复没提到图里的东西」要先查这几项。
+
+已知缺陷：服务端每收一片起一个 goroutine。末片先于前面的分片落盘时，`CheckImageSlice`
+发现缺片后 `time.Sleep(time.Millisecond * delay)`，而 `delay` 已是 100ms，实际睡约 28 小时，
+这张图等于丢了。设备在片与片之间留间隔（模拟器默认 50ms）能压低概率。
+
+模拟器：指令拍照按产品的 `features.photo` 自动传图（phase12）；带图送话在 `speak` /
+`speak_and_wait` 的 body 里带 `image_asset_id`（phase14）。两条路传出的图都存进本轮目录，
+`GET /devices/{id}/turns/{turn_id}/photo` 取回。
 
 ---
 

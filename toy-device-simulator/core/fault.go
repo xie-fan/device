@@ -30,7 +30,8 @@ func FaultExpectsDrop(f Fault) bool {
 
 // BuildUplinkFrames 按 fault 生成实际上行帧（必须能进 frames.jsonl outbound）。
 // 切片按 Phase 1 的 1ch/16bit（Validate 已保证）。oversize 长度为 maxPayloadSize+1；≤0 回退 51200。
-func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, f Fault, maxPayloadSize int) [][]byte {
+// format 为设备线上格式（pcm/wav），写入帧头 AudioFormat。
+func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, f Fault, maxPayloadSize int, format string) [][]byte {
 	parts := SlicePCM(pcm, int(sampleRate), 1, 16, sliceMs)
 	if len(parts) == 0 {
 		parts = [][]byte{{}}
@@ -51,12 +52,12 @@ func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, 
 		}
 		stage := protocol.StageUploading
 		seq := startSeq + uint32(i)
-		frame, _ := protocol.EncodeAudioFrame(protocol.NewPCMHeader(stage, seq, uuid, 0, sampleRate), payload)
+		frame, _ := protocol.EncodeAudioFrame(protocol.NewAudioHeader(format, stage, seq, uuid, 0, sampleRate), payload)
 		if f == FaultBadHeader && i == 0 {
 			frame = append([]byte{protocol.FirstAudio}, make([]byte, 40)...) // '0' + 不足 100
 		}
 		if f == FaultBadStage && i == 0 {
-			frame, _ = protocol.EncodeAudioFrame(protocol.NewPCMHeader(99, seq, uuid, 0, sampleRate), payload)
+			frame, _ = protocol.EncodeAudioFrame(protocol.NewAudioHeader(format, 99, seq, uuid, 0, sampleRate), payload)
 		}
 		frames = append(frames, frame)
 	}
@@ -64,7 +65,7 @@ func BuildUplinkFrames(pcm []byte, uuid uint32, sampleRate uint32, sliceMs int, 
 		frames = append([][]byte{append([]byte(nil), frames[0]...)}, frames...)
 	}
 	if f != FaultOversize && f != FaultBadHeader {
-		fin, _ := protocol.EncodeAudioFrame(protocol.NewPCMHeader(protocol.StageFinished, startSeq+uint32(len(parts)), uuid, 0, sampleRate), nil)
+		fin, _ := protocol.EncodeAudioFrame(protocol.NewAudioHeader(format, protocol.StageFinished, startSeq+uint32(len(parts)), uuid, 0, sampleRate), nil)
 		frames = append(frames, fin)
 	}
 	return frames

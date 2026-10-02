@@ -3,6 +3,7 @@ package core
 import (
 	"cmp"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -36,6 +37,10 @@ func (d *DeviceInstance) handleInbound(raw []byte) {
 		d.handleManageDownlink(raw)
 	case protocol.FirstJSON:
 		d.handleUnprefixedJSON(raw)
+	case protocol.FirstImage:
+		d.handleImageDownlink(raw)
+	case protocol.FirstTrans:
+		d.handleTransDownlink(raw)
 	case protocol.FirstAck:
 		return
 	default:
@@ -125,7 +130,7 @@ func (d *DeviceInstance) enqueueStage2NowLocked() {
 	if d.turn == nil || d.finalizeStarted {
 		return
 	}
-	raw, err := protocol.EncodeAudioFrame(protocol.NewPCMHeader(protocol.StageFinished, 0, d.slot.UUID(), 0, d.sampleRate), nil)
+	raw, err := protocol.EncodeAudioFrame(protocol.NewAudioHeader(d.cfg.Audio.Format, protocol.StageFinished, 0, d.slot.UUID(), 0, d.sampleRate), nil)
 	if err != nil {
 		return
 	}
@@ -202,7 +207,7 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 			st := d.slot.State()
 			related = st == TurnSpeaking || st == TurnFinishingUpload || st == TurnWaitingReply
 		}
-		_, n := d.appendEventLocked("command_received", turnID, "", "", "", "")
+		_, n := d.appendEventLocked("command_received", turnID, summarizeCommand(cmd), "", "", "")
 		acc = append(acc, n)
 		if cmd.NeedAck == 1 {
 			d.enqueueAckLocked(uint32(cmd.SequenceNumber), protocol.DownlinkCommand, 0, env.Topic)
@@ -218,6 +223,121 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 	}
 }
 
+// handleImageDownlink 处理 '2' 下行：信封 JSON（upload_image_slice/client 的
+// ImageAck）或 100 字节 ImageHeader 二进制帧。只记事件，不进 turn 完成矩阵。
+func (d *DeviceInstance) handleImageDownlink(raw []byte) {
+	var acc []EventNotify
+	var tn TerminalNotify
+	d.deviceMu.Lock()
+	defer func() {
+		d.deviceMu.Unlock()
+		d.finishCritical(acc, tn)
+	}()
+	turnID := ""
+	if d.slot.Occupied() {
+		turnID = d.slot.ID()
+	}
+	var env protocol.Envelope
+	if err := json.Unmarshal(raw[1:], &env); err == nil && env.Topic != "" {
+		ack, err := protocol.DecodeImageAck(env.Data)
+		if err != nil {
+			_, n := d.appendEventLocked("image_downlink", turnID, env.Topic, "", "", "")
+			acc = append(acc, n)
+			return
+		}
+		_, n := d.appendEventLocked("image_ack", turnID,
+			fmt.Sprintf("code=%d missing=%d", ack.Code, len(ack.Data)), "", "", "")
+		acc = append(acc, n)
+		return
+	}
+	if h, err := protocol.DecodeImageHeader(raw[1:]); err == nil && h.Head == protocol.ImageHeadMagic {
+		_, n := d.appendEventLocked("image_downlink", turnID,
+			fmt.Sprintf("stage=%d seq=%d bytes=%d", h.Stage, h.SequenceNumber, len(raw)-1-protocol.ImageHeaderBytes), "", "", "")
+		acc = append(acc, n)
+		return
+	}
+	_, n := d.appendEventLocked("protocol_error", turnID, "图片下行无法解码", "", "", "")
+	acc = append(acc, n)
+}
+
+// handleTransDownlink 处理 '3' 下行：{topic:"…/trans/client", data:TransferData}，
+// Response 由服务端回填。只记事件，不进 turn 完成矩阵。
+func (d *DeviceInstance) handleTransDownlink(raw []byte) {
+	var acc []EventNotify
+	var tn TerminalNotify
+	d.deviceMu.Lock()
+	defer func() {
+		d.deviceMu.Unlock()
+		d.finishCritical(acc, tn)
+	}()
+	turnID := ""
+	if d.slot.Occupied() {
+		turnID = d.slot.ID()
+	}
+	_, data, err := protocol.DecodeTransDownlink(raw)
+	if err != nil {
+		_, n := d.appendEventLocked("protocol_error", turnID, "转发下行无法解码", "", "", "")
+		acc = append(acc, n)
+		return
+	}
+	_, n := d.appendEventLocked("trans_response", turnID,
+		fmt.Sprintf("path=%s status=%d", data.Request.Path, data.Response.StatusCode), "", "", "")
+	acc = append(acc, n)
+}
+
+// summarizeCommand 把下行指令压成一行摘要写进 command_received 的 reason，
+// 只列下发过的（非零）字段，不做行为响应。
+func summarizeCommand(c protocol.CommandData) string {
+	var b []string
+	if c.SequenceNumber != 0 {
+		b = append(b, fmt.Sprintf("seq=%d", c.SequenceNumber))
+	}
+	if c.Code != 0 {
+		b = append(b, fmt.Sprintf("code=%d", c.Code))
+	}
+	if c.Message != "" {
+		b = append(b, fmt.Sprintf("msg=%q", c.Message))
+	}
+	if c.SetVolume != 0 {
+		b = append(b, fmt.Sprintf("setVolume=%d", c.SetVolume))
+	}
+	if c.SetTimbre != "" {
+		b = append(b, fmt.Sprintf("setTimbre=%s", c.SetTimbre))
+	}
+	if c.ShutDown {
+		b = append(b, "shutDown")
+	}
+	if c.PlayingMode != 0 {
+		b = append(b, fmt.Sprintf("playingMode=%d", c.PlayingMode))
+	}
+	if c.Total != 0 {
+		b = append(b, fmt.Sprintf("total=%d", c.Total))
+	}
+	if c.Light != 0 {
+		b = append(b, fmt.Sprintf("light=%d", c.Light))
+	}
+	if c.Fan != 0 {
+		b = append(b, fmt.Sprintf("fan=%d", c.Fan))
+	}
+	if len(c.Movements) > 0 {
+		ids := make([]string, 0, len(c.Movements))
+		for _, m := range c.Movements {
+			ids = append(ids, strconv.Itoa(m.Behavior))
+		}
+		b = append(b, fmt.Sprintf("movements=%d[%s]", len(c.Movements), strings.Join(ids, ",")))
+	}
+	if c.Movement.Behavior != 0 {
+		b = append(b, fmt.Sprintf("movement=%d", c.Movement.Behavior))
+	}
+	if len(c.Data) > 0 {
+		b = append(b, "data")
+	}
+	if c.NeedAck != 0 {
+		b = append(b, "need_ack")
+	}
+	return strings.Join(b, " ")
+}
+
 type photoUploadJob struct {
 	turnID      string
 	questionKey string
@@ -225,8 +345,9 @@ type photoUploadJob struct {
 	replyFormat string
 	interval    time.Duration
 
-	uuid uint32
-	tr   *turnRuntime
+	uuid    uint32
+	tr      *turnRuntime
+	related bool // 指令落在活跃轮里：传出的图才留档（同 photo_start_voice）
 }
 
 func (d *DeviceInstance) handlePhotoCommandLocked(photo protocol.PhotoCommand, turnID string, related bool, acc *[]EventNotify) *photoUploadJob {
@@ -270,6 +391,7 @@ func (d *DeviceInstance) handlePhotoCommandLocked(photo protocol.PhotoCommand, t
 		interval:    time.Duration(cmp.Or(feat.SliceIntervalMs, 50)) * time.Millisecond,
 		uuid:        d.allocUUIDLocked(),
 		tr:          d.turn,
+		related:     related,
 	}
 }
 
@@ -290,8 +412,11 @@ func (d *DeviceInstance) runPhotoUpload(job photoUploadJob) {
 		}
 		d.enqueueOrFinalize(Frame{Kind: KindManage, Raw: raw, turn: job.tr})
 	}
+	if job.related {
+		d.savePhoto(job.tr, job.uuid, format, data)
+	}
 	d.deviceMu.Lock()
-	_, n := d.appendEventLocked("photo_uploaded", job.turnID, fmt.Sprintf("bytes=%d slices=%d", len(data), len(frames)), "", "", "")
+	_, n := d.appendEventLocked("photo_uploaded", job.turnID, photoReason("command", job.imageID, job.uuid, len(data), len(frames)), "", "", "")
 	d.deviceMu.Unlock()
 	d.finishCritical([]EventNotify{n}, TerminalNotify{})
 }
@@ -587,7 +712,7 @@ func (d *DeviceInstance) armTTSIdleLocked() {
 	stopTimer(d.turn.ttsIdle)
 	dur := seconds(d.cfg.Behavior.DownlinkIdleTimeoutSec)
 	if dur <= 0 {
-		dur = 20 * time.Second
+		dur = 2 * time.Second
 	}
 	turnID := d.slot.ID()
 	d.turn.ttsIdle = time.AfterFunc(dur, func() { d.onTTSIdle(turnID) })
