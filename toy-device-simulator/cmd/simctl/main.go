@@ -30,6 +30,7 @@ const (
 	pidPath         = "data/manager.pid"
 	exePath         = "data/manager.exe"
 	logPath         = "data/manager.log"
+	seedDevice      = "sim_0001"
 )
 
 const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON 到 stdout，没有 --json 开关。
@@ -46,6 +47,7 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
 动词:
   up        后台起 manager。先 go build -o data/manager.exe ./cmd/manager 再拉起。
             幂等，不自动关。pid → data/manager.pid，日志追加 data/manager.log。
+            设备册为空时顺手建一台 sim_0001（输出 seeded_device）。
             探活 GET /devices。Windows 上 simctl 退出后进程继续活着。
             --registry FILE  配置树，默认 configs/registry.yaml。真实环境的 url
                              只能放 gitignore 的 configs/registry.local.yaml，
@@ -463,7 +465,15 @@ func cmdUp(cfg, listen string, args []string) int {
 	if !waitAlive(listen, 15*time.Second) {
 		return fail(fmt.Sprintf("manager pid=%d 起了但 GET /devices 不通，见 %s", pid, logPath))
 	}
-	return out(map[string]any{"ok": true, "started": true, "pid": pid, "listen": listen})
+	res := map[string]any{"ok": true, "started": true, "pid": pid, "listen": listen}
+	// 新环境拉下仓库，设备册（data/devices.yaml，不入库）是空的，run 挑不到设备。
+	// 建一台 sim_0001 就能跑：身份字段来自默认产品，不是哪台真机。
+	if devs, err := listDevices(listen); err == nil && len(devs) == 0 {
+		if err := httpPost(listen, "/devices", map[string]any{"device_id": seedDevice}, nil); err == nil {
+			res["seeded_device"] = seedDevice
+		}
+	}
+	return out(res)
 }
 
 func cmdDown(listen string, args []string) int {

@@ -16,7 +16,7 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 ## 首次接入
 
 1. 用 `context` 一次查齐：Manager 是否活着、设备（id/状态/当前挂靠/租约）、挂靠三级树（环境名 → 厂商简称 → 类型简称 → 默认产品，空串表示 run 要带 `--product`）、产品、音频标签计数、音频集、图片资产。`alive=false` 且任务需要时用 `up`，再 `context`；仅查看状态的请求不启动进程。自定义地址在后续调用中保持一致。
-2. 从 `context` 里取真实 ID；要看具体素材再用 `assets --tag X`（默认精简字段，`--full` 才全量）。不猜 ID；列表为空时说明缺少什么，引导用户在调试 UI 准备设备、产品或导入素材，再重新查询。这些准备工作不在此 CLI 的范围内。**新增音频素材时必须写 `tags` 内容标签**（`POST /assets` 的 `tags` 字段，`对话`/`联网`/`唱歌` 等）——没标签的素材 `run --tag` 选不中。
+2. 从 `context` 里取真实 ID；要看具体素材再用 `assets --tag X`（默认精简字段，`--full` 才全量）。不猜 ID；配置树里没有要测的环境、或素材库里没有要用的音频时，按 [references/setup.md](references/setup.md) 在本机准备（配置树和音频都不入库，各机器自备），或引导用户在调试 UI 准备，再重新查询。**新增音频素材时必须写 `tags` 内容标签**（`POST /assets` 的 `tags` 字段，`对话`/`联网`/`唱歌` 等）——没标签的素材 `run --tag` 选不中。
 3. 需要送话时，先读 [references/run.md](references/run.md)，确认选择范围、产品与覆盖、配置副作用，再对选定设备执行 `run`。测拍照识别时再读 [references/photo.md](references/photo.md)（备料、开拍照功能、判读）。只读排障直接查历史或轮次，不为获得结果额外送话。
 4. 读取每台设备的结果，依据本次测试目标判断；需要证据时读 [references/inspect.md](references/inspect.md)，用返回的 `instance_id` / `turn_id` 下钻。
 
@@ -47,6 +47,12 @@ Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
 路径里的环境名要 URL 编码。这组接口会整份重写 `--registry` 指向的文件，文件头注释会丢，改完补回。
 
 人和 agent 共用 Manager。只在用户要求停止时用 `down`，不把它作为测试后的自动清理步骤。
+
+**测试中新建的东西要留下，不要用完就删**，它们是后续测试的素材：
+- 新导入的音频、图片，以及 `--compose` 拼出来的组合素材，都留在素材库里。导入时打好内容标签，名字写清楚内容，下次能用 `--tag` 选中或在 `context` 里认出来。
+- 为测试加进配置树（`registry.local.yaml`）的环境、厂商、设备类型留着，文件头注释补回。
+- 新建的音频集、产品也留着。
+- 用户明确要求时才删。报告里列出这次新增了哪些素材 id 和配置树条目。
 
 业务结果输出 JSON，帮助和参数解析错误还需检查 stderr。`run` 的退出码只表示调用链是否成功，不代表测试通过：退出 `0` 仍可能得到 `no_reply` 或 `error` 判语。逐项检查数组中的 `error` 和 `verdict`，不要只看进程退出码。
 

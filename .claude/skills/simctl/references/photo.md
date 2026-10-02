@@ -7,12 +7,7 @@
 - **图片资产**：白底大字的 jpg，字选猜不中的词（如「紫色的大象」），识图结果才能逐字核对。现成的在 `context` 的 `images` 里（或 `assets --kind image`）。
 - **问图话术**：让决策走 Camera 的问句，如「请看一下这张图片，上面写的是什么？」。素材库里打了 `识图` 标签的就是，`--tag 识图` 直接选中。
 
-自己做图（Windows）：把字写进 UTF-8 文件，用 `textfile=` 引用。中文直接写进命令行参数会被转码弄坏，`curl -F` 的中文字段同理，改用 `-F "name=<文件"`。
-
-```text
-ffmpeg -f lavfi -i "color=c=white:s=640x480" -vf "drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':textfile=label.txt:fontcolor=purple:fontsize=110:x=(w-text_w)/2:y=(h-text_h)/2" -frames:v 1 label.jpg
-curl -X POST http://127.0.0.1:8090/assets -F "file=@label.jpg" -F "name=<name.txt"
-```
+库里没有时按 [setup.md](setup.md)「本机自己准备的部分」备齐：图片用任意手段做，导入走 `POST /assets`。Windows 命令行里的中文字段先写进 UTF-8 文件再从文件读，直接写在参数里会被转码弄坏。
 
 ## 跑
 
@@ -23,7 +18,7 @@ go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称
 - 拍照功能来自产品：产品里已开拍照并配好图，就不用最后两个 `--set`。它们和其它覆盖一样只在 start 时生效，设备在跑加 `--restart`。
 - 图由设备收到拍照指令后自动传，命令里只配 `features.photo`；`--image` 是另一条路（见文末「带图送话」）。
 - `downlink_idle_timeout_sec=6`：默认 2 秒会把分段到达的回复截短。
-- 实测通过：`--env 杭州 --enterprise XYMH --device-type MH6W`（2026-09-23、2026-10-02，`photo.result=ok`）。杭州环境只在 `configs/registry.local.yaml` 里，类型没配默认产品，所以带 `--product default`。`测试`/A3-TEST 不回话，`硅谷-经XYMH`/MH6W-EN 不下发拍照指令，都测不了。
+- 实测通过：`--env 杭州 --enterprise XYMH --device-type MH6W`（2026-09-23、2026-10-02，`photo.result=ok`）。XYMH / MH6W 这一级只在本机配置树里（不入库，新机器按 [setup.md](setup.md) 自己加），类型没配默认产品，所以带 `--product default`。`测试`/A3-TEST 不回话，`硅谷-经XYMH`/MH6W-EN 不下发拍照指令，都测不了。
 
 ## 读结果
 
@@ -40,7 +35,7 @@ go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称
 
 `turn` 的事件依次是 `vad` → `command_received`（`movement=601`）→ `photo_command`（reason 是 QuestionKey）→ `photo_uploaded`（`source=command`）→ `tts_done` → `turn_terminal`。下行里 UUID=0 的音频是识图回复；本轮 UUID 的那一包（配了提示音的机型才有）是断句提示音。
 
-- **转写**：`simctl audio <device_id> --instance <id> --turn <id> --side downlink --out reply.wav` 取回复，用 grok-media skill（`C:\Users\xie_f\.agents\skills\grok-media`）的 `transcribe` 转写，对照图上的字。
+- **转写**：`simctl audio <device_id> --instance <id> --turn <id> --side downlink --out reply.wav` 取回复，用手边的语音转写手段转成文字，对照图上的字。没有转写手段时如实报告「未核对内容」，不要只凭 `photo.result=ok` 宣布通过。
 - **留档**：本轮目录里 `photo_<uuid>.<格式>` 是实际传出的图（uuid 取自 `photo_uploaded` 的 reason），`photo_start_voice.<格式>` 是指令带的开场语音。也可以 `GET /devices/{id}/turns/{turn_id}/photo?instance_id=…&uuid=…` 取图。
 - 服务端不回传图 ack，传成功与否只看后续回复。
 
