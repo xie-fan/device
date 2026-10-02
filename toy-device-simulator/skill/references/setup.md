@@ -15,7 +15,7 @@
 go run ./cmd/simctl install
 ```
 
-默认装到 `~/.claude/skills/simctl/`（`--to` 可改），装完的目录里有：
+默认装到 `~/.agents/skills/simctl/`（`--to` 可改），并在 `~/.claude/skills/simctl` 不存在时建一个指向它的目录链接：两处是同一份，配置和数据不分家。装完的目录里有：
 
 - `bin/`：`simctl`、`manager`、`echosrv`（本地回环服务端）。
 - `SKILL.md`、`references/`：每次安装都覆盖成仓库里的版本。

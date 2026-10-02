@@ -47,9 +47,10 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
 
 动词:
   install   在仓库 toy-device-simulator/ 下跑一次：编好 simctl / manager / echosrv 放进
-            skill 目录的 bin/（默认 ~/.claude/skills/simctl，--to 改），复制 skill 文档；
-            configs/ 没有才放默认的。之后从任何目录用 <skill>/bin/simctl，
-            它以 skill 目录为家：configs/、data/、recordings/ 都在那
+            skill 目录的 bin/（默认 ~/.agents/skills/simctl，--to 改），复制 skill 文档；
+            configs/ 没有才放默认的；~/.claude/skills/simctl 不存在时链到安装目录。
+            之后从任何目录用 <skill>/bin/simctl，它以 skill 目录为家：
+            configs/、data/、recordings/ 都在那
   up        后台起 manager。装好的用 bin/manager；仓库里先 go build -o data/manager.exe ./cmd/manager。
             幂等，不自动关。pid → data/manager.pid，日志追加 data/manager.log。
             设备册为空时顺手建一台 sim_0001（输出 seeded_device）。
@@ -533,7 +534,7 @@ func cmdUp(cfg, listen string, args []string) int {
 func cmdInstall(args []string) int {
 	fs := newFS("install")
 	home, _ := os.UserHomeDir()
-	to := filepath.Join(home, ".claude", "skills", "simctl")
+	to := filepath.Join(home, ".agents", "skills", "simctl")
 	fs.StringVar(&to, "to", to, "安装目录")
 	if code, ok := parseFS(fs, args); !ok {
 		return code
@@ -562,9 +563,33 @@ func cmdInstall(args []string) int {
 			return fail(err.Error())
 		}
 	}
+	// ~/.claude/skills/simctl 链到安装目录：两边是同一份，数据不分家。已存在就不动。
+	link := filepath.Join(home, ".claude", "skills", "simctl")
+	linkNote := "已存在，没动"
+	if filepath.Clean(link) == filepath.Clean(to) {
+		linkNote = "就是安装目录"
+	} else if _, err := os.Lstat(link); os.IsNotExist(err) {
+		if err := makeDirLink(link, to); err != nil {
+			linkNote = "建链接失败：" + err.Error()
+		} else {
+			linkNote = "已链到安装目录"
+		}
+	}
 	return out(map[string]any{
 		"installed": to, "simctl": filepath.Join(to, "bin", "simctl"+exeExt()), "configs_kept": kept,
+		"claude_link": link, "claude_link_note": linkNote,
 	})
+}
+
+// makeDirLink：Windows 建目录联接（不要管理员权限），其它系统建符号链接。
+func makeDirLink(link, target string) error {
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/c", "mklink", "/J", link, target).Run()
+	}
+	return os.Symlink(target, link)
 }
 
 func copyTree(src, dst string) error {
