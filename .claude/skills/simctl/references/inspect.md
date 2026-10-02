@@ -6,6 +6,8 @@
 
 某一轮的事件流 + 帧统计（不是把 frames.jsonl 整份倒出来）。
 
+- 事件里不再重复顶层的 `device_id` / `instance_id` / `turn_id`；连续的 `tts_chunk` 合成一条，`count` 是包数、`payload_len` 是字节和。拍照轮典型形态：`tts_chunk` ×1（1900 字节提示音）→ `command_received` → `photo_command` → `photo_uploaded` → `tts_chunk` ×N（识图回复）。
+
 - 事件按 `turn_id` 过滤；同 instance 上其它轮不会混进来。
 - 帧日志方向是 `outbound`（设备→服务端，上行）和 `inbound`（服务端→设备，下行），不是 up/down 这两个词。
 - **下行指令的内容不在事件里**，事件只有 `command_received`。要看服务端下发了什么（动作、表情的 `behavior`），读 `recordings/<device_id>/<instance_id>/<turn_id>/frames.jsonl` 里 `direction` 为 `inbound`、`topic` 以 `/command/client` 结尾的行，`text` 字段是整条下行 JSON。

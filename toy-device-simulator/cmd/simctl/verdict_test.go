@@ -80,3 +80,24 @@ func TestPhotoResult(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactEventsFoldsTTSChunks(t *testing.T) {
+	ev := func(typ, turn string, n float64) map[string]any {
+		return map[string]any{"event_type": typ, "turn_id": turn, "device_id": "d", "instance_id": "i", "payload_len": n}
+	}
+	got := compactEvents([]map[string]any{
+		ev("vad", "t1", 0),
+		ev("tts_chunk", "t1", 100), ev("tts_chunk", "t1", 200), ev("tts_chunk", "other", 999), ev("tts_chunk", "t1", 300),
+		ev("command_received", "t1", 0),
+		ev("tts_chunk", "t1", 50),
+	}, "t1")
+	if len(got) != 4 {
+		t.Fatalf("应折成 vad / tts_chunk×3 / command_received / tts_chunk×1，得到 %v", got)
+	}
+	if got[1]["count"] != 3 || got[1]["payload_len"] != 600.0 || got[3]["count"] != 1 {
+		t.Fatalf("折叠计数不对: %v", got)
+	}
+	if _, has := got[0]["device_id"]; has {
+		t.Fatalf("顶层已有的 id 不该留在每条事件里: %v", got[0])
+	}
+}

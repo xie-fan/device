@@ -20,7 +20,7 @@ curl -X POST http://127.0.0.1:8090/assets -F "file=@label.jpg" -F "name=<name.tx
 go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --product default --tag 识图 --set audio.format=amr --set behavior.downlink_idle_timeout_sec=6 --set features.photo.enabled=true --set features.photo.image=<图片资产 id>
 ```
 
-- 拍照功能来自产品：产品里已开拍照并配好图，就不用最后两个 `--set`。它们和其它覆盖一样只在 start 时生效，设备在跑先 stop。
+- 拍照功能来自产品：产品里已开拍照并配好图，就不用最后两个 `--set`。它们和其它覆盖一样只在 start 时生效，设备在跑加 `--restart`。
 - 图由设备收到拍照指令后自动传，命令里只配 `features.photo`；`--image` 是另一条路（见文末「带图送话」）。
 - `downlink_idle_timeout_sec=6`：默认 2 秒会把分段到达的回复截短。
 - 实测通过：`--env 杭州 --enterprise XYMH --device-type MH6W`（2026-09-23、2026-10-02，`photo.result=ok`）。杭州环境只在 `configs/registry.local.yaml` 里，类型没配默认产品，所以带 `--product default`。`测试`/A3-TEST 不回话，`硅谷-经XYMH`/MH6W-EN 不下发拍照指令，都测不了。

@@ -25,6 +25,7 @@ type productStub struct {
 	startBody  map[string]any
 	starts     int
 	resets     int
+	stops      int
 	speaks     int
 	speakBody  map[string]any // 最后一次 speak_and_wait 的请求体
 }
@@ -60,6 +61,13 @@ func (s *productStub) handler() http.Handler {
 	})
 	mux.HandleFunc("DELETE /devices/{id}/lease", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"released":true}`))
+	})
+	mux.HandleFunc("POST /devices/{id}/stop", func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.stops++
+		s.state = "stopped"
+		_, _ = w.Write([]byte(`{"device_id":"sim_1"}`))
 	})
 	mux.HandleFunc("POST /devices/{id}/config/reset", func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
@@ -333,8 +341,13 @@ func TestRunWithoutImageOmitsImageAssetID(t *testing.T) {
 	if _, has := stub.speakBody["image_asset_id"]; has {
 		t.Fatalf("不带 --image 时请求体不该有 image_asset_id: %v", stub.speakBody)
 	}
-	if r := decodeRows(t, out)[0]; r["image_asset_id"] != "" {
-		t.Fatalf("没带图时结果的 image_asset_id 应为空串: %s", out.Bytes())
+	// 结果省空值：没带图就没有 image_asset_id，这轮与拍照无关也没有 photo。
+	r := decodeRows(t, out)[0]
+	if _, has := r["image_asset_id"]; has {
+		t.Fatalf("没带图时结果不该有 image_asset_id: %s", out.Bytes())
+	}
+	if _, has := r["photo"]; has {
+		t.Fatalf("与拍照无关时结果不该有 photo: %s", out.Bytes())
 	}
 }
 
@@ -363,5 +376,49 @@ func TestProductsVerb(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte("mh8w")) {
 		t.Fatalf("products 应原样输出 GET /products: %s", out.Bytes())
+	}
+}
+
+// --restart：在跑且覆盖不同，不报脏，而是 stop → reset → 按这次的 --set start。
+func TestRunRestartStopsResetsThenStarts(t *testing.T) {
+	stub := &productStub{state: "running", overridden: true, product: "test",
+		overrides: map[string]any{"audio.format": "mp3"}}
+	host := stub.serve(t)
+	out := withIO(t)
+	if code := simctl(runArgs(host, "--set", "audio.format=wav", "--restart")); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	if stub.stops != 1 || stub.resets != 1 || stub.starts != 1 || stub.speaks != 1 {
+		t.Fatalf("应 stop→reset→start→送话：stops=%d resets=%d starts=%d speaks=%d",
+			stub.stops, stub.resets, stub.starts, stub.speaks)
+	}
+	if ov, _ := stub.startBody["overrides"].(map[string]any); ov["audio.format"] != "wav" {
+		t.Fatalf("start 应带这次的 --set: %v", stub.startBody)
+	}
+}
+
+func TestStopVerbStopsAndResets(t *testing.T) {
+	stub := &productStub{state: "running", overridden: true, product: "test",
+		overrides: map[string]any{"audio.format": "mp3"}}
+	host := stub.serve(t)
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "stop", "sim_1", "--reset"}); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	if stub.stops != 1 || stub.resets != 1 {
+		t.Fatalf("stops=%d resets=%d", stub.stops, stub.resets)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"state":"stopped"`)) || bytes.Contains(out.Bytes(), []byte(`"overridden":true`)) {
+		t.Fatalf("应回停机且无覆盖: %s", out.Bytes())
+	}
+}
+
+// 已经停着的不再调 stop（created 调了会变 stopped）。
+func TestStopVerbSkipsStoppedDevice(t *testing.T) {
+	stub := &productStub{state: "created"}
+	host := stub.serve(t)
+	out := withIO(t)
+	if code := simctl([]string{"--listen", host, "stop", "sim_1"}); code != 0 || stub.stops != 0 {
+		t.Fatalf("code=%d stops=%d out=%s", code, stub.stops, out.Bytes())
 	}
 }

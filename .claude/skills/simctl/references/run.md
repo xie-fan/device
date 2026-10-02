@@ -55,7 +55,7 @@
 
 **身份字段属于产品。** 换一个 ICCID 不同的产品，或 `--set nic_iccid=...`，真实服务端会重新校验这台设备；校验不过会把它标成不可用，记录留在共享环境里。对真实环境跑之前，确认产品里的 ICCID、网卡就是这台设备在服务端登记的值；用户没要求时保持身份字段不变。
 
-**这些参数只在 start 那一刻生效。** 设备已在跑时，`run` 复用现有连接，挂靠三级、`--product`、`--set` 都不起作用，也不报错。结果里的 `product` / `overrides` 是设备实际值，拿它核对；三级用 `devices` 核对。要换就先 `POST /devices/{id}/stop` 再 `run`。
+**这些参数只在 start 那一刻生效。** 设备已在跑时，`run` 复用现有连接，挂靠三级、`--product`、`--set` 都不起作用，也不报错。结果里的 `product` / `overrides` 是设备实际值，拿它核对；三级用 `devices` 核对。要换就加 `--restart`：在跑也先停机、清覆盖，再按这次的挂靠/产品/`--set` 起。会断开当前连接，那台可能有人在看，用户没要求换配置时别加。
 
 ## 租约（并发不撞车）
 
@@ -72,8 +72,8 @@
 `overridden=true` 表示设备上有临时覆盖：人在调试台上改的，或上一次带 `--set` 的 run 留下的。覆盖只活在 manager 内存里，重启即清空。`run` 结果里的 `overridden` 是送话时设备的当前值，和同一元素的 `overrides` 对得上；被自动 reset 掉的旧覆盖不会在结果里留痕。
 
 - `Created` / `Stopped` 且 overridden → run **自动** `POST /config/reset` 再 start（带本次的 `--product` / `--set`），CLI 不会另行确认。执行前说明会丢弃临时覆盖；用户是否要保留当前值不明确时先询问。
-- `Running` / `Starting` 且 overridden：覆盖与本次 `--set` 一致 → 复用；不一致 → **报错**「我不动它」。不带 `--set` 也算不一致：上一次带 `--set` 的 run 把设备留在运行态后，之后的普通 run 都会被拦，直到它停下。用户明确要求使用当前覆盖配置时才加 `--dirty`；它不是通用重试开关，也不能阻止停止设备的自动 reset。
-- 原因：Running 时 reset 返回 409；要回到产品默认值就得先 stop，而那台可能正是人在看着的。不要抢。
+- `Running` / `Starting` 且 overridden：覆盖与本次 `--set` 一致 → 复用；不一致 → **报错**「我不动它」。不带 `--set` 也算不一致：上一次带 `--set` 的 run 把设备留在运行态后，之后的普通 run 都会被拦，直到它停下。要换成这次的 `--set` 用 `--restart`；用户明确要求沿用当前覆盖时才加 `--dirty`；它不是通用重试开关，也不能阻止停止设备的自动 reset。
+- 原因：Running 时 reset 返回 409；要回到产品默认值就得先 stop，而那台可能正是人在看着的。默认不抢，`--restart` 是显式的抢。
 
 设备没启动就 start + `wait_ready`。素材只引用素材库里现成的音频资产，不做 TTS 合成。
 
@@ -123,4 +123,4 @@
 
 Phase 9 之前的老录音没有 `down_bytes`（读出来是 0）。含 tts 且 `down_format` 非空则当 `replied`，不能因为老数据一律判 `silent`。`down_format` 为空表示这一轮没有下行音频。
 
-`run` 只给摘要 + `turn_id` / `instance_id`。事件流和帧日志走 `turn`。
+`run` 只给摘要 + `turn_id` / `instance_id`，空值字段省掉（没带图就没有 `image_asset_id`，没回话就没有 `reply_kind`）；`photo` 只在这轮与拍照有关时出现。事件流和帧日志走 `turn`。

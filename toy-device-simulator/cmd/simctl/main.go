@@ -83,18 +83,23 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
             --parallel           多台时并行（默认串行）
             --dirty              在跑且覆盖≠这次 --set 时放行，否则报错不动它
             --force              抢占别的 run 的租约（确认那个 run 已经死了再用）
+            --restart            在跑也先停机、清覆盖，再按这次的挂靠/产品/--set 起
+                                 （换环境、换 --set 用它，不用先 stop）
             跑之前先 POST /devices/{id}/lease 占住，跑完还——两个并发 run 不会
             撞同一台。音频集每条之前续租。随机档撞上被占的会换下一台；
             跑失败不换台，故障照报。
             租约不挡人在调试台上的操作，只在 run 之间生效。
             Created/Stopped 且有覆盖时自动 POST /config/reset 再 start（无声）
             没启动就 start + wait_ready
-            在跑：覆盖与这次 --set 不同才报脏；挂靠/产品/--set 静默不生效
+            在跑：覆盖与这次 --set 不同才报脏；挂靠/产品/--set 静默不生效（--restart 例外）
+            结果省掉空值字段；photo 只在这轮与拍照有关时出现
             换产品或改 ICCID 会让真实服务端重新校验这台设备
             结果多两项判读：hint_only=true 是 replied 但只收到断句提示音（没回答）；
             photo.result = ok / no_reply / not_uploaded / image_sent /
             no_command / skipped:原因，空 = 这轮与拍照无关
-  turn      一轮的事件流与帧统计
+  stop      停一台设备（只停在跑的；先拿租约，别的 run 占着就报错）
+            位置参数 device_id；--reset 停完清临时覆盖；--force 抢租约
+  turn      一轮的事件流与帧统计（连续 tts_chunk 合成一条，带 count 与 payload_len 总和）
             位置参数 device_id；--turn ID --instance ID 必填
   audio     把上行或下行音频落到文件（stdout 仍是 JSON 指针）
             位置参数 device_id
@@ -136,21 +141,22 @@ type deviceRow struct {
 type runResult struct {
 	DeviceID        string         `json:"device_id"`
 	AssetID         string         `json:"asset_id"`
-	ImageAssetID    string         `json:"image_asset_id"`
+	ImageAssetID    string         `json:"image_asset_id,omitempty"`
 	InstanceID      string         `json:"instance_id"`
 	TurnID          string         `json:"turn_id"`
 	Verdict         string         `json:"verdict"`
 	TurnEndReason   string         `json:"turn_end_reason"`
-	UplinkEndReason string         `json:"uplink_end_reason"`
-	ReplyKind       string         `json:"reply_kind"`
-	UpFormat        string         `json:"up_format"`
-	DownFormat      string         `json:"down_format"`
+	UplinkEndReason string         `json:"uplink_end_reason,omitempty"`
+	ReplyKind       string         `json:"reply_kind,omitempty"`
+	UpFormat        string         `json:"up_format,omitempty"`
+	DownFormat      string         `json:"down_format,omitempty"`
 	DownBytes       int            `json:"down_bytes"`
-	Overridden      bool           `json:"overridden"`
-	Product         string         `json:"product"`
-	Overrides       map[string]any `json:"overrides"`
+	Overridden      bool           `json:"overridden,omitempty"`
+	Product         string         `json:"product,omitempty"`
+	Overrides       map[string]any `json:"overrides,omitempty"`
 	HintOnly        bool           `json:"hint_only,omitempty"`
-	Photo           photoSummary   `json:"photo"`
+	// 这轮与拍照无关（三项事实全空、result 也空）时整个省掉。
+	Photo *photoSummary `json:"photo,omitempty"`
 }
 
 type photoSummary struct {
@@ -191,6 +197,8 @@ func simctl(args []string) int {
 		return cmdProducts(listen, rest)
 	case "run":
 		return cmdRun(listen, rest)
+	case "stop":
+		return cmdStop(listen, rest)
 	case "turn":
 		return cmdTurn(listen, rest)
 	case "audio":
@@ -241,7 +249,7 @@ func parseFS(fs *flag.FlagSet, args []string) (code int, ok bool) {
 // flagsFirst 把位置参数挪到后面。stdlib flag 碰到第一个非 flag 就停，
 // 但规格写法是 `simctl run sim_1 --asset ast_xxx`。
 func flagsFirst(args []string) []string {
-	boolFlag := map[string]bool{"parallel": true, "dirty": true, "force": true, "full": true, "help": true, "h": true}
+	boolFlag := map[string]bool{"parallel": true, "dirty": true, "force": true, "full": true, "restart": true, "reset": true, "help": true, "h": true}
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -778,7 +786,7 @@ func cmdRun(listen string, args []string) int {
 	var env, ent, dtype, asset, product, tag, audioSet, image string
 	var sets setFlag
 	var count int
-	var parallel, dirty, force bool
+	var parallel, dirty, force, restart bool
 	addListen(fs, &listen)
 	addFilter(fs, &env, &ent, &dtype)
 	fs.StringVar(&asset, "asset", "", "音频库资产 id")
@@ -791,6 +799,7 @@ func cmdRun(listen string, args []string) int {
 	fs.BoolVar(&parallel, "parallel", false, "N 台并行")
 	fs.BoolVar(&dirty, "dirty", false, "在跑且覆盖≠这次 --set 时放行")
 	fs.BoolVar(&force, "force", false, "抢占别的 run 的租约")
+	fs.BoolVar(&restart, "restart", false, "在跑也先停机、清覆盖再按这次参数起")
 	if code, ok := parseFS(fs, args); !ok {
 		return code
 	}
@@ -826,7 +835,7 @@ func cmdRun(listen string, args []string) int {
 	if err != nil {
 		return fail(err.Error())
 	}
-	b := bind{Env: env, Ent: ent, Typ: dtype, Product: product, Overrides: overrides, Image: image}
+	b := bind{Env: env, Ent: ent, Typ: dtype, Product: product, Overrides: overrides, Image: image, Restart: restart}
 	devs, err := listDevices(listen)
 	if err != nil {
 		return fail(err.Error())
@@ -975,7 +984,10 @@ func runOneLeased(listen string, d deviceRow, b bind, assets []string, dirty, fo
 			continue
 		}
 		r.Overridden, r.Product, r.Overrides = over, snap.Product, snap.Overrides
-		r.Photo.Result = photoResult(r.Photo, r.ReplyKind, r.Verdict, r.HintOnly, cfg.Features.Photo.Enabled)
+		r.Photo.Result = photoResult(*r.Photo, r.ReplyKind, r.Verdict, r.HintOnly, cfg.Features.Photo.Enabled)
+		if *r.Photo == (photoSummary{}) {
+			r.Photo = nil
+		}
 		out = append(out, r)
 	}
 	return out, false
@@ -1141,6 +1153,7 @@ func speakOnce(listen, dev, ins, asset, image string) (runResult, bool, error) {
 		UpFormat:        turn.UpFormat,
 		DownFormat:      turn.DownFormat,
 		DownBytes:       turn.DownBytes,
+		Photo:           &photoSummary{},
 	}
 	// 失败保持零值，不让 run 失败。既有桩没有这个路由。
 	var evWrap struct {
@@ -1191,6 +1204,7 @@ type bind struct {
 	Product       string
 	Overrides     map[string]any
 	Image         string // --image：每轮都带的图（phase14），不参与 start
+	Restart       bool   // --restart：在跑也先停机、清覆盖，再按这次的挂靠/产品/--set 起
 }
 
 // overridesEqual：nil 与空 map 相等。JSON 数字是 float64，与 parseSets 一致。
@@ -1219,6 +1233,12 @@ func dirtyBlocked(d deviceRow, sets map[string]any, dirty bool) bool {
 func ensureReady(listen string, d deviceRow, b bind, dirty bool) (instanceID string, overridden bool, err error) {
 	over := d.Overridden
 	idPath := "/devices/" + url.PathEscape(d.DeviceID)
+	if b.Restart && (d.InstanceState == "running" || d.InstanceState == "starting") {
+		if err := httpPost(listen, idPath+"/stop", nil, nil); err != nil {
+			return "", over, err
+		}
+		d.InstanceState = "stopped" // 下面的 stopped 分支负责 reset + start
+	}
 	switch d.InstanceState {
 	case "created", "stopped":
 		if over {
@@ -1272,6 +1292,44 @@ func ensureReady(listen string, d deviceRow, b bind, dirty bool) (instanceID str
 	}
 }
 
+// cmdStop 停一台设备，--reset 顺带清掉临时覆盖。先拿租约：别的 run 正用着就不停它。
+func cmdStop(listen string, args []string) int {
+	fs := newFS("stop")
+	var reset, force bool
+	addListen(fs, &listen)
+	fs.BoolVar(&reset, "reset", false, "停完再清临时覆盖")
+	fs.BoolVar(&force, "force", false, "抢占别的 run 的租约")
+	if code, ok := parseFS(fs, args); !ok {
+		return code
+	}
+	dev := fs.Arg(0)
+	if dev == "" {
+		return fail("stop 需要 device_id")
+	}
+	l, _, err := tryLease(listen, dev, force)
+	if err != nil {
+		return fail(err.Error())
+	}
+	defer releaseLease(listen, dev, l.ID)
+	idPath := "/devices/" + url.PathEscape(dev)
+	// created 也 stop 会把它变成 stopped，没必要；只停真在跑的。
+	if st := l.Device.InstanceState; st != "created" && st != "stopped" {
+		if err := httpPost(listen, idPath+"/stop", nil, nil); err != nil {
+			return fail(err.Error())
+		}
+	}
+	if reset {
+		if err := httpPost(listen, idPath+"/config/reset", nil, nil); err != nil {
+			return fail(err.Error())
+		}
+	}
+	var row deviceRow
+	if err := httpGet(listen, idPath, &row); err != nil {
+		return fail(err.Error())
+	}
+	return out(map[string]any{"device_id": dev, "state": row.InstanceState, "overridden": row.Overridden})
+}
+
 func cmdTurn(listen string, args []string) int {
 	fs := newFS("turn")
 	var turnID, ins string
@@ -1315,12 +1373,7 @@ func cmdTurn(listen string, args []string) int {
 	if err := httpGet(listen, "/devices/"+esc+"/events"+q, &evWrap); err != nil {
 		return fail(err.Error())
 	}
-	filtered := make([]map[string]any, 0, len(evWrap.Events))
-	for _, e := range evWrap.Events {
-		if s, _ := e["turn_id"].(string); s == turnID {
-			filtered = append(filtered, e)
-		}
-	}
+	filtered := compactEvents(evWrap.Events, turnID)
 	code, raw, _, err := httpRaw("GET", listen, "/devices/"+esc+"/turns/"+url.PathEscape(turnID)+"/frames"+q, nil)
 	st := map[string]any{}
 	if err != nil {
@@ -1339,6 +1392,36 @@ func cmdTurn(listen string, args []string) int {
 		"events":      filtered,
 		"frames":      st,
 	})
+}
+
+// compactEvents 只留本轮事件，去掉顶层已有的 device_id / instance_id / turn_id，
+// 连续的 tts_chunk 合成一条：count 是包数，payload_len 是字节和。一轮几十包分片
+// 原样倒出来全是噪音。
+func compactEvents(all []map[string]any, turnID string) []map[string]any {
+	out := make([]map[string]any, 0, len(all))
+	for _, e := range all {
+		if s, _ := e["turn_id"].(string); s != turnID {
+			continue
+		}
+		n, _ := e["payload_len"].(float64)
+		if e["event_type"] == "tts_chunk" && len(out) > 0 && out[len(out)-1]["event_type"] == "tts_chunk" {
+			last := out[len(out)-1]
+			last["count"] = last["count"].(int) + 1
+			last["payload_len"] = last["payload_len"].(float64) + n
+			continue
+		}
+		c := make(map[string]any, len(e))
+		for k, v := range e {
+			if k != "device_id" && k != "instance_id" && k != "turn_id" {
+				c[k] = v
+			}
+		}
+		if e["event_type"] == "tts_chunk" {
+			c["count"], c["payload_len"] = 1, n
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func summarizeFrames(ndjson []byte) map[string]any {
