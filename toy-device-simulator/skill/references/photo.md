@@ -12,7 +12,7 @@
 ## 跑
 
 ```text
-go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --product default --tag 识图 --set audio.format=amr --set behavior.downlink_idle_timeout_sec=6 --set features.photo.enabled=true --set features.photo.image=<图片资产 id>
+simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --product default --tag 识图 --set audio.format=amr --set behavior.downlink_idle_timeout_sec=6 --set features.photo.enabled=true --set features.photo.image=<图片资产 id>
 ```
 
 - 拍照功能来自产品：产品里已开拍照并配好图，就不用最后两个 `--set`。它们和其它覆盖一样只在 start 时生效，设备在跑加 `--restart`。

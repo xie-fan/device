@@ -35,7 +35,8 @@ const (
 
 const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON 到 stdout，没有 --json 开关。
 
-在 toy-device-simulator/ 下运行。人和 agent 共用同一个 manager。
+装好后（见 install）用 <skill 目录>/bin/simctl，从任何目录调用都以 skill 目录为家；
+没装时在仓库 toy-device-simulator/ 下 go run ./cmd/simctl。人和 agent 共用同一个 manager。
 
 用法:
   simctl [--config FILE] [--listen ADDR] <动词> [参数]
@@ -45,7 +46,11 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
   --listen  manager 地址，默认 127.0.0.1:8090（cmd/manager 的 --listen，不在 yaml 里）
 
 动词:
-  up        后台起 manager。先 go build -o data/manager.exe ./cmd/manager 再拉起。
+  install   在仓库 toy-device-simulator/ 下跑一次：编好 simctl / manager / echosrv 放进
+            skill 目录的 bin/（默认 ~/.claude/skills/simctl，--to 改），复制 skill 文档；
+            configs/ 没有才放默认的。之后从任何目录用 <skill>/bin/simctl，
+            它以 skill 目录为家：configs/、data/、recordings/ 都在那
+  up        后台起 manager。装好的用 bin/manager；仓库里先 go build -o data/manager.exe ./cmd/manager。
             幂等，不自动关。pid → data/manager.pid，日志追加 data/manager.log。
             设备册为空时顺手建一台 sim_0001（输出 seeded_device）。
             探活 GET /devices。Windows 上 simctl 退出后进程继续活着。
@@ -171,7 +176,47 @@ type photoSummary struct {
 	Result   string `json:"result,omitempty"`
 }
 
-func main() { os.Exit(simctl(os.Args[1:])) }
+func main() {
+	enterHome()
+	os.Exit(simctl(os.Args[1:]))
+}
+
+var (
+	callerWD    string // 调用时的当前目录：audio --out 的相对路径按它算
+	homeManager string // 装好的 skill 里 bin/ 下的 manager；空 = 仓库里，up 现编
+)
+
+// enterHome：装进 skill 后 simctl 在 <skill>/bin/ 里，以 <skill> 为家——configs/、data/、
+// recordings/ 都在那，从哪个目录调用都一样。仓库里 go run 时可执行文件在临时目录，不切。
+func enterHome() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	bin := filepath.Dir(exe)
+	if filepath.Base(bin) != "bin" {
+		return
+	}
+	callerWD, _ = os.Getwd()
+	if err := os.Chdir(filepath.Dir(bin)); err != nil {
+		return
+	}
+	if m := filepath.Join(bin, "manager"+exeExt()); fileExists(m) {
+		homeManager = m
+	}
+}
+
+func exeExt() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
 
 func simctl(args []string) int {
 	cfg, listen, rest := peelGlobal(args)
@@ -184,6 +229,8 @@ func simctl(args []string) int {
 	}
 	verb, rest := rest[0], rest[1:]
 	switch verb {
+	case "install":
+		return cmdInstall(rest)
 	case "up":
 		return cmdUp(cfg, listen, rest)
 	case "down":
@@ -443,17 +490,21 @@ func cmdUp(cfg, listen string, args []string) int {
 	if err := os.MkdirAll("data", 0o755); err != nil {
 		return fail(err.Error())
 	}
-	build := exec.Command("go", "build", "-o", exePath, "./cmd/manager")
-	build.Stdout, build.Stderr = stderr, stderr
-	if err := build.Run(); err != nil {
-		return fail("go build manager 失败: " + err.Error())
+	mgr := homeManager
+	if mgr == "" { // 仓库里：现编
+		mgr = exePath
+		build := exec.Command("go", "build", "-o", exePath, "./cmd/manager")
+		build.Stdout, build.Stderr = stderr, stderr
+		if err := build.Run(); err != nil {
+			return fail("go build manager 失败: " + err.Error())
+		}
 	}
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fail(err.Error())
 	}
 	defer logf.Close()
-	cmd := exec.Command(exePath, "--config", cfg, "--listen", listen, "--registry", registry)
+	cmd := exec.Command(mgr, "--config", cfg, "--listen", listen, "--registry", registry)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	detachCmd(cmd)
 	if err := cmd.Start(); err != nil {
@@ -474,6 +525,67 @@ func cmdUp(cfg, listen string, args []string) int {
 		}
 	}
 	return out(res)
+}
+
+// cmdInstall 在仓库的 toy-device-simulator/ 下跑：把 skill/（源文件）装成一个自带程序的目录。
+// bin/ 放编好的 simctl、manager、echosrv；SKILL.md 与 references/ 每次覆盖成仓库版本；
+// configs/ 只在没有时放默认的——装好后它和 data/、recordings/ 都是本机自己的，重装不动。
+func cmdInstall(args []string) int {
+	fs := newFS("install")
+	home, _ := os.UserHomeDir()
+	to := filepath.Join(home, ".claude", "skills", "simctl")
+	fs.StringVar(&to, "to", to, "安装目录")
+	if code, ok := parseFS(fs, args); !ok {
+		return code
+	}
+	if !fileExists("cmd/simctl") {
+		return fail("install 要在仓库的 toy-device-simulator/ 目录下跑")
+	}
+	for _, c := range []string{"simctl", "manager", "echosrv"} {
+		b := exec.Command("go", "build", "-o", filepath.Join(to, "bin", c+exeExt()), "./cmd/"+c)
+		b.Stdout, b.Stderr = stderr, stderr
+		if err := b.Run(); err != nil {
+			return fail("编译 " + c + " 失败（装好的 manager 在跑会占住文件，先 simctl down）：" + err.Error())
+		}
+	}
+	if err := copyTree("skill", to); err != nil {
+		return fail("复制 skill 文档失败：" + err.Error())
+	}
+	var kept []string
+	for _, f := range []string{"manager.yaml", "registry.yaml"} {
+		dst := filepath.Join(to, "configs", f)
+		if fileExists(dst) {
+			kept = append(kept, dst)
+			continue
+		}
+		if err := copyFile(filepath.Join("configs", f), dst); err != nil {
+			return fail(err.Error())
+		}
+	}
+	return out(map[string]any{
+		"installed": to, "simctl": filepath.Join(to, "bin", "simctl"+exeExt()), "configs_kept": kept,
+	})
+}
+
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		return copyFile(p, filepath.Join(dst, rel))
+	})
+}
+
+func copyFile(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o644)
 }
 
 func cmdDown(listen string, args []string) int {
@@ -1526,6 +1638,9 @@ func cmdAudio(listen string, args []string) int {
 	}
 	if code >= 400 {
 		return fail(decodeErr(raw, code))
+	}
+	if callerWD != "" && !filepath.IsAbs(outFile) {
+		outFile = filepath.Join(callerWD, outFile)
 	}
 	if err := os.MkdirAll(filepath.Dir(outFile), 0o755); err != nil && filepath.Dir(outFile) != "." {
 		return fail(err.Error())

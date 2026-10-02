@@ -9,9 +9,13 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 
 ## 定位与前提
 
-先从用户提供的路径或当前工作区定位模拟器仓库，确认 `toy-device-simulator/go.mod` 和 `cmd/simctl` 存在，再进入 `toy-device-simulator/`。全局安装的 skill 目录不是项目目录；没有可确认的仓库路径时向用户询问，不从 skill 安装位置推算。
+本 skill 目录自带程序和数据，不用进模拟器仓库：
 
-下文 `simctl` 均指在上述目录执行 `go run ./cmd/simctl`，无需预装同名命令。先读 `go run ./cmd/simctl --help`，动词和参数以它为准。运行需要可用的 Go 工具链；Manager 地址沿用用户指定值，否则使用帮助中的默认值。
+- 下文 `simctl` 指本 skill 目录下的 `bin/simctl`（Windows 是 `bin/simctl.exe`），用绝对路径调用，从哪个目录调都一样。
+- 它以本 skill 目录为家：`configs/`（配置树等）、`data/`（素材库、设备册、manager 日志）、`recordings/`（录音）都在这里，都是本机自己的。
+- 没有 `bin/` 说明还没安装，按 [references/setup.md](references/setup.md) 装一次。
+
+先读 `simctl --help`，动词和参数以它为准。Manager 地址沿用用户指定值，否则使用帮助中的默认值。
 
 ## 首次接入
 
@@ -23,22 +27,22 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 已有 Manager、设备和素材时的最短路径（占位符必须替换为查询所得 ID）：
 
 ```text
-go run ./cmd/simctl context
-go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --asset <asset_id>
+simctl context
+simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --asset <asset_id>
 # 或按内容标签挑素材（--asset / --tag / --audio-set / --compose 四选一）：
-go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --tag 对话
+simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --tag 对话
 # 或几段拼成一条连续音频、一轮送出（一句话问几件事；asset_id 或标签，逗号分隔）：
-go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --compose <asset_id>,<asset_id>,故事
+simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --compose <asset_id>,<asset_id>,故事
 # 或整组送一个音频集（上线验收、定期回归；输出每条音频一个元素）：
-go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --audio-set <音频集 id 或名称>
+simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --audio-set <音频集 id 或名称>
 # 拍照识别（服务端下发拍照指令 → 设备传图 → 识图回复；完整参数与判读见 references/photo.md）：
-go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --product default --tag 识图 --set audio.format=amr --set behavior.downlink_idle_timeout_sec=6 --set features.photo.enabled=true --set features.photo.image=<图片资产 id>
-go run ./cmd/simctl turn <device_id> --instance <instance_id> --turn <turn_id>
+simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --product default --tag 识图 --set audio.format=amr --set behavior.downlink_idle_timeout_sec=6 --set features.photo.enabled=true --set features.photo.image=<图片资产 id>
+simctl turn <device_id> --instance <instance_id> --turn <turn_id>
 ```
 
 ## 共享环境与完成条件
 
-`up` 编译并后台启动 Manager，幂等且不自动关；探活用 `GET /devices`，没有 `/healthz`。pid 和日志在项目的 `data/manager.pid`、`data/manager.log`。真实服务地址使用本地配置树（`up --registry`，见帮助），不写入受跟踪配置。
+`up` 编译并后台启动 Manager，幂等且不自动关；探活用 `GET /devices`，没有 `/healthz`。pid 和日志在本 skill 目录的 `data/manager.pid`、`data/manager.log`。配置树是本 skill 目录的 `configs/registry.yaml`，本机自己的。
 
 Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
 - `POST /registry/environments`，body 为 `name`、`url`，url 可带 `{enterprise}` 占位。
@@ -50,7 +54,7 @@ Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
 
 **测试中新建的东西要留下，不要用完就删**，它们是后续测试的素材：
 - 新导入的音频、图片，以及 `--compose` 拼出来的组合素材，都留在素材库里。导入时打好内容标签，名字写清楚内容，下次能用 `--tag` 选中或在 `context` 里认出来。
-- 为测试加进配置树（`registry.local.yaml`）的环境、厂商、设备类型留着，文件头注释补回。
+- 为测试加进配置树（本 skill 目录的 `configs/registry.yaml`）的环境、厂商、设备类型留着，文件头注释补回。
 - 新建的音频集、产品也留着。
 - 用户明确要求时才删。报告里列出这次新增了哪些素材 id 和配置树条目。
 

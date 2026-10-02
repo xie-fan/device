@@ -20,15 +20,15 @@ Manager 默认监听 `127.0.0.1:8090`，浏览器访问 `http://127.0.0.1:8090/`
 
 ## Agent 接入入口
 
-操作已有设备、送话或排查轮次时，先读 [simctl skill](.claude/skills/simctl/SKILL.md)，再在 `toy-device-simulator/` 执行：
+agent 通过 simctl skill 操作已有设备、送话或排查轮次。skill 源文件在 [`toy-device-simulator/skill/`](toy-device-simulator/skill/SKILL.md)，在 `toy-device-simulator/` 下安装一次：
 
 ```text
-go run ./cmd/simctl --help
+go run ./cmd/simctl install
 ```
 
-skill 给出首次接入流程、共享环境操作边界与结果判断规则；参数以 CLI 帮助为准。`cmd/speak` 是独立单设备 CLI，不是 Manager 的 agent 操作入口。
+装到 `~/.claude/skills/simctl/`：程序在 `bin/`，配置、素材库、录音也都在这个目录里（本机自己的，不入库），之后从任何目录都能用，不用进仓库。仓库更新后重跑一次，程序和文档覆盖成新版本，本机配置和数据不动。安装与本机准备见 [setup.md](toy-device-simulator/skill/references/setup.md)。
 
-当前 skill 位于 `.claude/skills/simctl`，仅用于 Claude 测试，尚未全局安装；后续计划安装到 `~/.agent` 下。安装位置与模拟器项目位置独立，运行命令前仍需定位项目目录。
+skill 给出首次接入流程、共享环境操作边界与结果判断规则；参数以 `simctl --help` 为准。`cmd/speak` 是独立单设备 CLI，不是 Manager 的 agent 操作入口。
 
 ## 契约入口
 
