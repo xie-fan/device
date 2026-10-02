@@ -52,16 +52,27 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
                              跟踪版只许 loopback。
   down      按 pid 文件停 manager
   status    manager 是否活着，几台设备
+  context   送话前一次查齐：设备（id/状态/挂靠/租约）、挂靠三级树
+            （环境名 → 厂商简称 → 类型简称 → 默认产品，空串 = 要带 --product）、
+            产品 id、音频标签计数、音频集、图片资产
   devices   列设备。过滤：--env 环境名；--enterprise / --device-type 简称（不是名称）
-  assets    列素材库
+  assets    列素材库（默认精简字段）。--tag X 按内容标签（对话/联网/唱歌…）；
+            --kind audio|image；--full 原样输出全部字段
+  audio-sets 列音频集（有序的一组音频，run --audio-set 整组送）
   products  列产品
   run       挑设备 → 挂靠 → 送话 → 读判语（核心）
             设备册条目只有 device_id，三级是「这次挂成什么」，必须给全：
             --env / --enterprise / --device-type 缺一个就报错。
               给了 device_id → 就那一台
               没给           → 从设备册随机挑（--count 决定几台）
-            输出始终是数组
-            --asset ID           必填，素材库里的音频资产
+            输出始终是数组：每台 × 每条音频一个元素
+            --asset ID           素材库里的音频资产（--asset / --tag / --audio-set 三选一）
+            --tag X              按内容标签挑第一条匹配的音频资产
+            --audio-set S        音频集 id 或名称：每台按集内顺序逐条送完整组
+                                 单条 400/404（素材本身的问题）记错接着送；其它错误
+                                 这台停下，剩下的条目记「未跑」
+            --image ID           图片资产：每轮先用本轮 UUID 传这张图再说话（带图送话），
+                                 音频集的每条都带；服务端设备类型要开 imageChat
             --env NAME           环境名（挂靠，不是筛选）
             --enterprise SHORT   厂商简称（挂靠）
             --device-type SHORT  设备类型简称（挂靠）
@@ -73,12 +84,16 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
             --dirty              在跑且覆盖≠这次 --set 时放行，否则报错不动它
             --force              抢占别的 run 的租约（确认那个 run 已经死了再用）
             跑之前先 POST /devices/{id}/lease 占住，跑完还——两个并发 run 不会
-            撞同一台。随机档撞上被占的会换下一台；跑失败不换台，故障照报。
+            撞同一台。音频集每条之前续租。随机档撞上被占的会换下一台；
+            跑失败不换台，故障照报。
             租约不挡人在调试台上的操作，只在 run 之间生效。
             Created/Stopped 且有覆盖时自动 POST /config/reset 再 start（无声）
             没启动就 start + wait_ready
             在跑：覆盖与这次 --set 不同才报脏；挂靠/产品/--set 静默不生效
             换产品或改 ICCID 会让真实服务端重新校验这台设备
+            结果多两项判读：hint_only=true 是 replied 但只收到断句提示音（没回答）；
+            photo.result = ok / no_reply / not_uploaded / image_sent /
+            no_command / skipped:原因，空 = 这轮与拍照无关
   turn      一轮的事件流与帧统计
             位置参数 device_id；--turn ID --instance ID 必填
   audio     把上行或下行音频落到文件（stdout 仍是 JSON 指针）
@@ -120,6 +135,8 @@ type deviceRow struct {
 
 type runResult struct {
 	DeviceID        string         `json:"device_id"`
+	AssetID         string         `json:"asset_id"`
+	ImageAssetID    string         `json:"image_asset_id"`
 	InstanceID      string         `json:"instance_id"`
 	TurnID          string         `json:"turn_id"`
 	Verdict         string         `json:"verdict"`
@@ -132,6 +149,7 @@ type runResult struct {
 	Overridden      bool           `json:"overridden"`
 	Product         string         `json:"product"`
 	Overrides       map[string]any `json:"overrides"`
+	HintOnly        bool           `json:"hint_only,omitempty"`
 	Photo           photoSummary   `json:"photo"`
 }
 
@@ -139,6 +157,7 @@ type photoSummary struct {
 	Command  bool   `json:"command"`
 	Uploaded bool   `json:"uploaded"`
 	Skipped  string `json:"skipped"`
+	Result   string `json:"result,omitempty"`
 }
 
 func main() { os.Exit(simctl(os.Args[1:])) }
@@ -162,8 +181,12 @@ func simctl(args []string) int {
 		return cmdStatus(listen, rest)
 	case "devices":
 		return cmdDevices(listen, rest)
+	case "context":
+		return cmdContext(listen, rest)
 	case "assets":
 		return cmdAssets(listen, rest)
+	case "audio-sets":
+		return cmdAudioSets(listen, rest)
 	case "products":
 		return cmdProducts(listen, rest)
 	case "run":
@@ -218,7 +241,7 @@ func parseFS(fs *flag.FlagSet, args []string) (code int, ok bool) {
 // flagsFirst 把位置参数挪到后面。stdlib flag 碰到第一个非 flag 就停，
 // 但规格写法是 `simctl run sim_1 --asset ast_xxx`。
 func flagsFirst(args []string) []string {
-	boolFlag := map[string]bool{"parallel": true, "dirty": true, "force": true, "help": true, "h": true}
+	boolFlag := map[string]bool{"parallel": true, "dirty": true, "force": true, "full": true, "help": true, "h": true}
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -501,12 +524,159 @@ func cmdDevices(listen string, args []string) int {
 
 func cmdAssets(listen string, args []string) int {
 	fs := newFS("assets")
+	var tag, kind string
+	var full bool
+	fs.StringVar(&tag, "tag", "", "按内容标签过滤")
+	fs.StringVar(&kind, "kind", "", "audio 或 image")
+	fs.BoolVar(&full, "full", false, "原样输出全部字段")
 	addListen(fs, &listen)
 	if code, ok := parseFS(fs, args); !ok {
 		return code
 	}
+	q := url.Values{}
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	if kind != "" {
+		q.Set("kind", kind)
+	}
+	u := "/assets"
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	if full {
+		return printGet(listen, u)
+	}
+	// 默认只给挑素材用得上的字段：码率、声道、epoch 这些占了大半体积，agent 用不着。
+	var raw struct {
+		Assets []briefAsset `json:"assets"`
+	}
+	if err := httpGet(listen, u, &raw); err != nil {
+		return fail(err.Error())
+	}
+	return out(raw)
+}
+
+type briefAsset struct {
+	AssetID    string   `json:"asset_id"`
+	Name       string   `json:"name"`
+	Kind       string   `json:"kind"`
+	Tags       []string `json:"tags,omitempty"`
+	DurationMs int      `json:"duration_ms,omitempty"`
+}
+
+// cmdContext 一次给齐送话前要查的东西：manager、设备、挂靠三级、产品、素材标签、
+// 音频集、图片。替代 status + devices + products + assets + audio-sets + GET /registry。
+func cmdContext(listen string, args []string) int {
+	fs := newFS("context")
+	addListen(fs, &listen)
+	if code, ok := parseFS(fs, args); !ok {
+		return code
+	}
+	pid, _ := readPID()
+	if !alive(listen) {
+		return out(map[string]any{"alive": false, "listen": listen, "pid": pid})
+	}
+	devs, err := listDevices(listen)
+	if err != nil {
+		return fail(err.Error())
+	}
+	type briefDev struct {
+		DeviceID   string `json:"device_id"`
+		State      string `json:"state"`
+		Env        string `json:"env,omitempty"`
+		Enterprise string `json:"enterprise,omitempty"`
+		DeviceType string `json:"device_type,omitempty"`
+		Product    string `json:"product,omitempty"`
+		Overridden bool   `json:"overridden,omitempty"`
+		LeaseOwner string `json:"lease_owner,omitempty"`
+	}
+	bd := make([]briefDev, 0, len(devs))
+	for _, d := range devs {
+		bd = append(bd, briefDev{d.DeviceID, d.InstanceState, d.Environment, d.Enterprise,
+			d.DeviceType, d.Product, d.Overridden, d.LeaseOwner})
+	}
+	// 环境名 → 厂商简称 → 类型简称 → 默认产品（空串 = 没配，run 要带 --product）。
+	var reg struct {
+		Environments []struct {
+			Name        string `json:"name"`
+			Enterprises []struct {
+				ShortName   string `json:"short_name"`
+				DeviceTypes []struct {
+					ShortName      string `json:"short_name"`
+					DefaultProduct string `json:"default_product"`
+				} `json:"device_types"`
+			} `json:"enterprises"`
+		} `json:"environments"`
+	}
+	tree := map[string]map[string]map[string]string{}
+	if httpGet(listen, "/registry", &reg) == nil {
+		for _, e := range reg.Environments {
+			ents := map[string]map[string]string{}
+			for _, ent := range e.Enterprises {
+				types := map[string]string{}
+				for _, t := range ent.DeviceTypes {
+					types[t.ShortName] = t.DefaultProduct
+				}
+				ents[ent.ShortName] = types
+			}
+			tree[e.Name] = ents
+		}
+	}
+	var prods struct {
+		Products []struct {
+			ID string `json:"id"`
+		} `json:"products"`
+	}
+	_ = httpGet(listen, "/products", &prods)
+	pids := []string{}
+	for _, p := range prods.Products {
+		pids = append(pids, p.ID)
+	}
+	var assets struct {
+		Assets []briefAsset `json:"assets"`
+	}
+	if err := httpGet(listen, "/assets", &assets); err != nil {
+		return fail(err.Error())
+	}
+	tags, untagged := map[string]int{}, 0
+	images := []map[string]string{}
+	for _, a := range assets.Assets {
+		if a.Kind == "image" {
+			images = append(images, map[string]string{"asset_id": a.AssetID, "name": a.Name})
+			continue
+		}
+		if len(a.Tags) == 0 {
+			untagged++
+		}
+		for _, t := range a.Tags {
+			tags[t]++
+		}
+	}
+	var sets struct {
+		AudioSets []struct {
+			ID       string   `json:"id"`
+			Name     string   `json:"name"`
+			AssetIDs []string `json:"asset_ids"`
+		} `json:"audio_sets"`
+	}
+	_ = httpGet(listen, "/audio_sets", &sets)
+	bs := []map[string]any{}
+	for _, s := range sets.AudioSets {
+		bs = append(bs, map[string]any{"id": s.ID, "name": s.Name, "count": len(s.AssetIDs)})
+	}
+	return out(map[string]any{
+		"alive": true, "listen": listen, "pid": pid,
+		"devices": bd, "registry": tree, "products": pids,
+		"audio_tags": tags, "audio_untagged": untagged,
+		"audio_sets": bs, "images": images,
+	})
+}
+
+// printGet 原样转发一个 GET 的 JSON 到 stdout。
+func printGet(listen, path string) int {
 	var raw json.RawMessage
-	if err := httpGet(listen, "/assets", &raw); err != nil {
+	if err := httpGet(listen, path, &raw); err != nil {
 		return fail(err.Error())
 	}
 	_, _ = stdout.Write(raw)
@@ -516,21 +686,65 @@ func cmdAssets(listen string, args []string) int {
 	return 0
 }
 
+func cmdAudioSets(listen string, args []string) int {
+	fs := newFS("audio-sets")
+	addListen(fs, &listen)
+	if code, ok := parseFS(fs, args); !ok {
+		return code
+	}
+	return printGet(listen, "/audio_sets")
+}
+
+// resolveAudioSet 把音频集 id 或名称解析成集内的 asset_id 列表（保持集内顺序）。
+// 名称在服务端唯一，id 带 set_ 前缀，两者不会撞。
+func resolveAudioSet(listen, key string) ([]string, error) {
+	var raw struct {
+		AudioSets []struct {
+			ID       string   `json:"id"`
+			Name     string   `json:"name"`
+			AssetIDs []string `json:"asset_ids"`
+		} `json:"audio_sets"`
+	}
+	if err := httpGet(listen, "/audio_sets", &raw); err != nil {
+		return nil, err
+	}
+	for _, set := range raw.AudioSets {
+		if set.ID != key && set.Name != key {
+			continue
+		}
+		if len(set.AssetIDs) == 0 {
+			return nil, fmt.Errorf("音频集 %q 是空的", key)
+		}
+		return set.AssetIDs, nil
+	}
+	return nil, fmt.Errorf("没有音频集 %q（audio-sets 可核对）", key)
+}
+
+// resolveAssetByTag 把内容标签解析成 asset_id：GET /assets?tag=&kind=audio，
+// 取列表第一条（按 createdAt 排序，结果可复现）。
+func resolveAssetByTag(listen, tag string) (string, error) {
+	var raw struct {
+		Assets []struct {
+			AssetID string `json:"asset_id"`
+		} `json:"assets"`
+	}
+	u := "/assets?kind=audio&tag=" + url.QueryEscape(tag)
+	if err := httpGet(listen, u, &raw); err != nil {
+		return "", err
+	}
+	if len(raw.Assets) == 0 {
+		return "", fmt.Errorf("素材库里没有 tag=%q 的音频（assets --tag %s 可核对）", tag, tag)
+	}
+	return raw.Assets[0].AssetID, nil
+}
+
 func cmdProducts(listen string, args []string) int {
 	fs := newFS("products")
 	addListen(fs, &listen)
 	if code, ok := parseFS(fs, args); !ok {
 		return code
 	}
-	var raw json.RawMessage
-	if err := httpGet(listen, "/products", &raw); err != nil {
-		return fail(err.Error())
-	}
-	_, _ = stdout.Write(raw)
-	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
-		fmt.Fprintln(stdout)
-	}
-	return 0
+	return printGet(listen, "/products")
 }
 
 // setFlag 收集可重复的 --set。
@@ -561,14 +775,17 @@ func parseSets(vals []string) (map[string]any, error) {
 
 func cmdRun(listen string, args []string) int {
 	fs := newFS("run")
-	var env, ent, dtype, asset, product string
+	var env, ent, dtype, asset, product, tag, audioSet, image string
 	var sets setFlag
 	var count int
 	var parallel, dirty, force bool
 	addListen(fs, &listen)
 	addFilter(fs, &env, &ent, &dtype)
 	fs.StringVar(&asset, "asset", "", "音频库资产 id")
+	fs.StringVar(&tag, "tag", "", "按内容标签挑第一条匹配的音频资产")
+	fs.StringVar(&audioSet, "audio-set", "", "音频集 id 或名称：按集内顺序逐条送")
 	fs.StringVar(&product, "product", "", "产品 id")
+	fs.StringVar(&image, "image", "", "图片资产 id：每轮先传这张图再说话（带图送话）")
 	fs.Var(&sets, "set", "临时覆盖 路径=值，可重复")
 	fs.IntVar(&count, "count", 1, "随机挑几台（0=全部）")
 	fs.BoolVar(&parallel, "parallel", false, "N 台并行")
@@ -577,8 +794,29 @@ func cmdRun(listen string, args []string) int {
 	if code, ok := parseFS(fs, args); !ok {
 		return code
 	}
-	if asset == "" {
-		return fail("run 需要 --asset")
+	picked := 0
+	for _, v := range []string{asset, tag, audioSet} {
+		if v != "" {
+			picked++
+		}
+	}
+	if picked != 1 {
+		return fail("run 需要 --asset / --tag / --audio-set 三选一")
+	}
+	assets := []string{asset}
+	switch {
+	case tag != "":
+		id, err := resolveAssetByTag(listen, tag)
+		if err != nil {
+			return fail(err.Error())
+		}
+		assets = []string{id}
+	case audioSet != "":
+		ids, err := resolveAudioSet(listen, audioSet)
+		if err != nil {
+			return fail(err.Error())
+		}
+		assets = ids
 	}
 	// Phase 11：三级不再是筛设备的条件，而是「这次挂成什么」，必须给全。
 	if env == "" || ent == "" || dtype == "" {
@@ -588,7 +826,7 @@ func cmdRun(listen string, args []string) int {
 	if err != nil {
 		return fail(err.Error())
 	}
-	b := bind{Env: env, Ent: ent, Typ: dtype, Product: product, Overrides: overrides}
+	b := bind{Env: env, Ent: ent, Typ: dtype, Product: product, Overrides: overrides, Image: image}
 	devs, err := listDevices(listen)
 	if err != nil {
 		return fail(err.Error())
@@ -609,53 +847,45 @@ func cmdRun(listen string, args []string) int {
 			return fail("设备册是空的，先建一台设备")
 		}
 		if count == 1 {
-			return runRandomOne(listen, shuffled(devs), b, asset, dirty, force)
+			return runRandomOne(listen, shuffled(devs), b, assets, dirty, force)
 		}
 		selected = shuffled(devs)
 		if count > 0 && count < len(selected) {
 			selected = selected[:count]
 		}
 	}
-	results := make([]any, len(selected))
-	var failed int
-	runOne := func(i int, d deviceRow) {
-		r, busy, err := runOneLeased(listen, d, b, asset, dirty, force)
-		if busy || err != nil {
-			// 被占的不跳过：数组要和选中集一一对应，否则读的人分不清
-			// 「这台没跑」和「这台跑了没回话」。
-			results[i] = map[string]any{"device_id": d.DeviceID, "error": err.Error()}
-			return
-		}
-		results[i] = r
-	}
+	// 被占的不跳过：它的每一条都是带 error 的元素。数组要和「选中集 × 条目」一一对应，
+	// 否则读的人分不清「这台没跑」和「这台跑了没回话」。
+	results := make([][]any, len(selected))
 	if parallel && len(selected) > 1 {
 		var wg sync.WaitGroup
-		var mu sync.Mutex
-		wg.Add(len(selected))
 		for i, d := range selected {
-			i, d := i, d
+			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				runOne(i, d)
-				if _, ok := results[i].(map[string]any); ok {
-					mu.Lock()
-					failed++
-					mu.Unlock()
-				}
+				results[i], _ = runOneLeased(listen, d, b, assets, dirty, force)
 			}()
 		}
 		wg.Wait()
 	} else {
 		for i, d := range selected {
-			runOne(i, d)
-			if _, ok := results[i].(map[string]any); ok {
-				failed++
-			}
+			results[i], _ = runOneLeased(listen, d, b, assets, dirty, force)
 		}
 	}
-	_ = json.NewEncoder(stdout).Encode(results)
-	if failed > 0 {
-		return 1
+	var flat []any
+	for _, r := range results {
+		flat = append(flat, r...)
+	}
+	return emit(flat)
+}
+
+// emit 打印结果数组。退出码只说调用链：有 error 元素就是 1，判语不参与。
+func emit(res []any) int {
+	_ = json.NewEncoder(stdout).Encode(res)
+	for _, r := range res {
+		if _, ok := r.(map[string]any); ok {
+			return 1
+		}
 	}
 	return 0
 }
@@ -664,20 +894,13 @@ func cmdRun(listen string, args []string) int {
 //
 // 纪律：只对争用跳台，绝不对失败跳台。一台设备真起不来就该把那个错报出来——
 // 安静换一台跑成功会把故障藏起来，--dirty 门禁和 last_error 那两个诊断全白费。
-func runRandomOne(listen string, order []deviceRow, b bind, asset string, dirty, force bool) int {
+func runRandomOne(listen string, order []deviceRow, b bind, assets []string, dirty, force bool) int {
 	for _, d := range order {
-		r, busy, err := runOneLeased(listen, d, b, asset, dirty, force)
+		res, busy := runOneLeased(listen, d, b, assets, dirty, force)
 		if busy {
 			continue
 		}
-		if err != nil {
-			_ = json.NewEncoder(stdout).Encode([]any{
-				map[string]any{"device_id": d.DeviceID, "error": err.Error()},
-			})
-			return 1
-		}
-		_ = json.NewEncoder(stdout).Encode([]any{r})
-		return 0
+		return emit(res)
 	}
 	return fail(fmt.Sprintf("命中 %d 台，全部被别的 run 占着（lease_held）；确认那些 run 已经死了可加 --force 抢占", len(order)))
 }
@@ -695,22 +918,87 @@ type leaseHandle struct {
 	Device deviceRow `json:"device"`
 }
 
-// runOneLeased 先租再跑，跑完必还。busy=true 表示被别的 run 占着——随机档据此换台，
-// 批量档把它当成这一台的 error 元素。
-func runOneLeased(listen string, d deviceRow, b bind, asset string, dirty, force bool) (runResult, bool, error) {
+// runOneLeased 先租再跑，跑完必还。assets 按顺序逐条送（单条 --asset 就是长度 1）。
+// 返回的切片与 assets 一一对应：跑了的是 runResult，出错或没跑到的是带 error 的 map。
+// busy=true 表示被别的 run 占着——随机档据此换台，批量档照单收下那些 error 元素。
+func runOneLeased(listen string, d deviceRow, b bind, assets []string, dirty, force bool) ([]any, bool) {
 	l, busy, err := tryLease(listen, d.DeviceID, force)
 	if busy || err != nil {
-		return runResult{}, busy, err
+		return notRun(d.DeviceID, assets, err), busy
 	}
+	leaseID := l.ID
 	// 释放失败不看：manager 挂了、网断了都有 TTL 兜底，多写一个分支是纯负债。
-	defer releaseLease(listen, d.DeviceID, l.ID)
+	// 闭包读最新的 id：续租碰上已过期会换新 id，defer 时就把 id 定死会还错。
+	defer func() { releaseLease(listen, d.DeviceID, leaseID) }()
 	// 用租约回的新鲜行，不用列表里那份——列表到 start 之间设备状态可能已经变了。
 	row := l.Device
 	if row.DeviceID == "" {
 		row = d
 	}
-	r, err := runDevice(listen, row, b, asset, dirty)
-	return r, false, err
+	ins, over, err := ensureReady(listen, row, b, dirty)
+	if err != nil {
+		return notRun(d.DeviceID, assets, annotateNotReady(listen, d.DeviceID, err)), false
+	}
+	// 产品与覆盖一台读一次：一组送话之间不会变。失败保持零值，不让 run 失败——既有桩没有这个路由。
+	// overridden 也取设备当前值，和 overrides 对得上；读不到才退回 start 前的状态。
+	var snap struct {
+		Product    string         `json:"product"`
+		Overrides  map[string]any `json:"overrides"`
+		Overridden bool           `json:"overridden"`
+	}
+	if httpGet(listen, "/devices/"+url.PathEscape(d.DeviceID), &snap) == nil {
+		over = snap.Overridden
+	}
+	var cfg struct {
+		Features struct {
+			Photo struct {
+				Enabled bool `json:"enabled"`
+			} `json:"photo"`
+		} `json:"features"`
+	}
+	_ = httpGet(listen, "/devices/"+url.PathEscape(d.DeviceID)+"/config", &cfg)
+	out := make([]any, 0, len(assets))
+	for i, asset := range assets {
+		if i > 0 {
+			id, err := renewLease(listen, d.DeviceID, leaseID)
+			if err != nil {
+				return append(out, notRun(d.DeviceID, assets[i:], err)...), false
+			}
+			leaseID = id
+		}
+		r, fatal, err := speakOnce(listen, d.DeviceID, ins, asset, b.Image)
+		if err != nil {
+			out = append(out, map[string]any{"device_id": d.DeviceID, "asset_id": asset, "error": err.Error()})
+			if fatal {
+				return append(out, notRun(d.DeviceID, assets[i+1:], err)...), false
+			}
+			continue
+		}
+		r.Overridden, r.Product, r.Overrides = over, snap.Product, snap.Overrides
+		r.Photo.Result = photoResult(r.Photo, r.ReplyKind, r.Verdict, r.HintOnly, cfg.Features.Photo.Enabled)
+		out = append(out, r)
+	}
+	return out, false
+}
+
+// notRun 给没跑到的条目占位，数组长度才能恒等于「设备 × 条目」。
+func notRun(dev string, assets []string, cause error) []any {
+	out := make([]any, 0, len(assets))
+	for _, a := range assets {
+		out = append(out, map[string]any{"device_id": dev, "asset_id": a, "error": "未跑：" + cause.Error()})
+	}
+	return out
+}
+
+// renewLease 续租：带上现任 lease_id 再 POST 一次。绝不带 steal——那是抢，不是续。
+// 已过期的服务端会发新 id，以返回值为准。
+func renewLease(listen, dev, leaseID string) (string, error) {
+	var l leaseHandle
+	if err := httpPost(listen, "/devices/"+dev+"/lease",
+		map[string]any{"owner": leaseOwner(), "lease_id": leaseID}, &l); err != nil {
+		return "", fmt.Errorf("续租失败（租约被别的 run 拿走了？）：%w", err)
+	}
+	return l.ID, nil
 }
 
 func tryLease(listen, id string, steal bool) (leaseHandle, bool, error) {
@@ -721,7 +1009,15 @@ func tryLease(listen, id string, steal bool) (leaseHandle, bool, error) {
 		return l, false, err
 	}
 	if code == http.StatusConflict {
-		return l, true, errors.New(decodeErr(b, code))
+		msg := decodeErr(b, code)
+		var h struct {
+			Owner   string `json:"owner"`
+			Expires string `json:"expires_at"`
+		}
+		if json.Unmarshal(b, &h) == nil && h.Owner != "" {
+			msg += fmt.Sprintf("（%s 占着，到期 %s）", h.Owner, h.Expires)
+		}
+		return l, true, errors.New(msg)
 	}
 	if code >= 400 {
 		return l, false, errors.New(decodeErr(b, code))
@@ -775,10 +1071,17 @@ func selectDevices(all []deviceRow, id, env, ent, dtype string) []deviceRow {
 	return out
 }
 
-func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (runResult, error) {
-	ins, over, err := ensureReady(listen, d, b, dirty)
+// speakOnce 送一条、读判语。fatal=true 表示这台已经送不动了（没连着、槽被占、
+// 等不到终态……），后面的条目不必再试；400/404 是这条音频自己的问题（库里没有、
+// 是图片、转不了码），接着送下一条。
+func speakOnce(listen, dev, ins, asset, image string) (runResult, bool, error) {
+	body := map[string]any{"asset_id": asset}
+	if image != "" {
+		body["image_asset_id"] = image
+	}
+	code, raw, _, err := httpRaw("POST", listen, "/devices/"+url.PathEscape(dev)+"/speak_and_wait", body)
 	if err != nil {
-		return runResult{}, annotateNotReady(listen, d.DeviceID, err)
+		return runResult{}, true, err
 	}
 	var speak struct {
 		TurnID          string `json:"turn_id"`
@@ -787,9 +1090,14 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 		UplinkEndReason string `json:"uplink_end_reason"`
 		ReplyKind       string `json:"reply_kind"`
 	}
-	if err := httpPost(listen, "/devices/"+url.PathEscape(d.DeviceID)+"/speak_and_wait",
-		map[string]any{"asset_id": asset}, &speak); err != nil {
-		return runResult{}, err
+	_ = json.Unmarshal(raw, &speak)
+	if code >= 400 {
+		msg := decodeErr(raw, code)
+		if speak.TurnID != "" {
+			// 504 等不到终态不等于没送出：带上这一轮，好直接下钻。
+			msg += fmt.Sprintf("（turn_id %s，instance_id %s）", speak.TurnID, speak.InstanceID)
+		}
+		return runResult{}, code != http.StatusBadRequest && code != http.StatusNotFound, errors.New(msg)
 	}
 	if speak.InstanceID != "" {
 		ins = speak.InstanceID
@@ -804,10 +1112,10 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 		DownFormat      string `json:"down_format"`
 		DownBytes       int    `json:"down_bytes"`
 	}
-	q := "/devices/" + url.PathEscape(d.DeviceID) + "/turns/" + url.PathEscape(speak.TurnID) +
+	q := "/devices/" + url.PathEscape(dev) + "/turns/" + url.PathEscape(speak.TurnID) +
 		"?instance_id=" + url.QueryEscape(ins)
 	if err := httpGet(listen, q, &turn); err != nil {
-		return runResult{}, err
+		return runResult{}, false, err // 这条送出去了，只是读回失败；设备本身没坏
 	}
 	end, kind := turn.TurnEndReason, turn.ReplyKind
 	if end == "" {
@@ -821,7 +1129,9 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 		upEnd = speak.UplinkEndReason
 	}
 	r := runResult{
-		DeviceID:        d.DeviceID,
+		DeviceID:        dev,
+		AssetID:         asset,
+		ImageAssetID:    image,
 		InstanceID:      ins,
 		TurnID:          speak.TurnID,
 		Verdict:         Verdict(end, kind, turn.DownFormat, turn.DownBytes),
@@ -831,26 +1141,21 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 		UpFormat:        turn.UpFormat,
 		DownFormat:      turn.DownFormat,
 		DownBytes:       turn.DownBytes,
-		Overridden:      over,
 	}
-	// 失败保持零值，不让 run 失败。既有桩没有这两个路由。
-	var snap struct {
-		Product   string         `json:"product"`
-		Overrides map[string]any `json:"overrides"`
-	}
-	if httpGet(listen, "/devices/"+url.PathEscape(d.DeviceID), &snap) == nil {
-		r.Product, r.Overrides = snap.Product, snap.Overrides
-	}
+	// 失败保持零值，不让 run 失败。既有桩没有这个路由。
 	var evWrap struct {
 		Events []map[string]any `json:"events"`
 	}
-	eq := "/devices/" + url.PathEscape(d.DeviceID) + "/events?instance_id=" + url.QueryEscape(ins)
+	eq := "/devices/" + url.PathEscape(dev) + "/events?instance_id=" + url.QueryEscape(ins)
+	chunks := 0
 	if httpGet(listen, eq, &evWrap) == nil {
 		for _, e := range evWrap.Events {
 			if s, _ := e["turn_id"].(string); s != speak.TurnID {
 				continue
 			}
 			switch e["event_type"] {
+			case "tts_chunk":
+				chunks++
 			case "photo_command":
 				r.Photo.Command = true
 			case "photo_uploaded":
@@ -860,7 +1165,8 @@ func runDevice(listen string, d deviceRow, b bind, asset string, dirty bool) (ru
 			}
 		}
 	}
-	return r, nil
+	r.HintOnly = hintOnly(r.Verdict, chunks, r.DownBytes)
+	return r, false, nil
 }
 
 // annotateNotReady 给起不来的错误补上原因。`generation_gone` 这类错误自己说不出
@@ -884,6 +1190,7 @@ type bind struct {
 	Env, Ent, Typ string
 	Product       string
 	Overrides     map[string]any
+	Image         string // --image：每轮都带的图（phase14），不参与 start
 }
 
 // overridesEqual：nil 与空 map 相等。JSON 数字是 float64，与 parseSets 一致。
@@ -1117,13 +1424,5 @@ func cmdHistory(listen string, args []string) int {
 	if dev == "" {
 		return fail("history 需要 device_id")
 	}
-	var raw json.RawMessage
-	if err := httpGet(listen, "/devices/"+url.PathEscape(dev)+"/instances", &raw); err != nil {
-		return fail(err.Error())
-	}
-	_, _ = stdout.Write(raw)
-	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
-		fmt.Fprintln(stdout)
-	}
-	return 0
+	return printGet(listen, "/devices/"+url.PathEscape(dev)+"/instances")
 }

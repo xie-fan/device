@@ -1,6 +1,6 @@
 ---
 name: simctl
-description: "Drive toy-device-simulator via simctl: start the local manager, pick existing devices, send library audio, interpret turn results, or inspect events/frames/audio/history. Use for simulated-device testing and silent/no_reply diagnosis, not simulator source-code development."
+description: "Drive toy-device-simulator via simctl: start the local manager, pick existing devices, send library audio, a whole audio set (音频集) or a photo-recognition turn (拍照识别), interpret turn results, or inspect events/frames/audio/history. Use for simulated-device testing and silent/no_reply diagnosis, not simulator source-code development."
 ---
 
 # simctl
@@ -15,18 +15,22 @@ description: "Drive toy-device-simulator via simctl: start the local manager, pi
 
 ## 首次接入
 
-1. 用 `status` 检查 Manager。已运行就复用；未运行且任务需要启动时用 `up`，再确认状态。仅查看状态的请求不启动进程。自定义地址在后续调用中保持一致。
-2. 用 `devices`、`products` 和 `assets` 获取真实 ID，确认目标设备、产品和素材。不猜 ID；列表为空时说明缺少什么，引导用户在调试 UI 准备设备、产品或导入素材，再重新查询。这些准备工作不在此 CLI 的范围内。
-3. 需要送话时，先读 [references/run.md](references/run.md)，确认选择范围、产品与覆盖、配置副作用，再对选定设备执行 `run`。只读排障直接查历史或轮次，不为获得结果额外送话。
+1. 用 `context` 一次查齐：Manager 是否活着、设备（id/状态/当前挂靠/租约）、挂靠三级树（环境名 → 厂商简称 → 类型简称 → 默认产品，空串表示 run 要带 `--product`）、产品、音频标签计数、音频集、图片资产。`alive=false` 且任务需要时用 `up`，再 `context`；仅查看状态的请求不启动进程。自定义地址在后续调用中保持一致。
+2. 从 `context` 里取真实 ID；要看具体素材再用 `assets --tag X`（默认精简字段，`--full` 才全量）。不猜 ID；列表为空时说明缺少什么，引导用户在调试 UI 准备设备、产品或导入素材，再重新查询。这些准备工作不在此 CLI 的范围内。**新增音频素材时必须写 `tags` 内容标签**（`POST /assets` 的 `tags` 字段，`对话`/`联网`/`唱歌` 等）——没标签的素材 `run --tag` 选不中。
+3. 需要送话时，先读 [references/run.md](references/run.md)，确认选择范围、产品与覆盖、配置副作用，再对选定设备执行 `run`。测拍照识别时再读 [references/photo.md](references/photo.md)（备料、开拍照功能、判读）。只读排障直接查历史或轮次，不为获得结果额外送话。
 4. 读取每台设备的结果，依据本次测试目标判断；需要证据时读 [references/inspect.md](references/inspect.md)，用返回的 `instance_id` / `turn_id` 下钻。
 
 已有 Manager、设备和素材时的最短路径（占位符必须替换为查询所得 ID）：
 
 ```text
-go run ./cmd/simctl status
-go run ./cmd/simctl devices
-go run ./cmd/simctl assets
+go run ./cmd/simctl context
 go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --asset <asset_id>
+# 或按内容标签挑素材（--asset / --tag / --audio-set 三选一）：
+go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --tag 对话
+# 或整组送一个音频集（上线验收、定期回归；输出每条音频一个元素）：
+go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --audio-set <音频集 id 或名称>
+# 拍照识别（服务端下发拍照指令 → 设备传图 → 识图回复；完整参数与判读见 references/photo.md）：
+go run ./cmd/simctl run <device_id> --env <环境名> --enterprise <厂商简称> --device-type <类型简称> --product default --tag 识图 --set audio.format=amr --set behavior.downlink_idle_timeout_sec=6 --set features.photo.enabled=true --set features.photo.image=<图片资产 id>
 go run ./cmd/simctl turn <device_id> --instance <instance_id> --turn <turn_id>
 ```
 

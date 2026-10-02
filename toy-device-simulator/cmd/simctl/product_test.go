@@ -26,6 +26,7 @@ type productStub struct {
 	starts     int
 	resets     int
 	speaks     int
+	speakBody  map[string]any // 最后一次 speak_and_wait 的请求体
 }
 
 func (s *productStub) rowLocked() map[string]any {
@@ -89,9 +90,12 @@ func (s *productStub) handler() http.Handler {
 	mux.HandleFunc("POST /devices/{id}/wait_ready", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"device_id":"sim_1","instance_id":"ins_1"}`))
 	})
-	mux.HandleFunc("POST /devices/{id}/speak_and_wait", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /devices/{id}/speak_and_wait", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		s.mu.Lock()
 		s.speaks++
+		s.speakBody = body
 		s.mu.Unlock()
 		_, _ = w.Write([]byte(`{"turn_id":"turn_1","instance_id":"ins_1","turn_end_reason":"idle","uplink_end_reason":"complete","reply_kind":"tts"}`))
 	})
@@ -220,6 +224,10 @@ func TestRunStoppedWithOverridesResetsThenStarts(t *testing.T) {
 	if ov, _ := stub.startBody["overrides"].(map[string]any); ov["audio.format"] != "mp3" {
 		t.Fatalf("start 应带这次的 --set: %v", stub.startBody)
 	}
+	// overridden 报设备当前值：reset 后又带 --set 起来，现在就是有覆盖。
+	if !bytes.Contains(out.Bytes(), []byte(`"overridden":true`)) {
+		t.Fatalf("结果的 overridden 应和 overrides 对得上: %s", out.Bytes())
+	}
 }
 
 // 在跑、覆盖与这次 --set 相同：就是上一次 run 留下的，复用，不算脏。
@@ -292,6 +300,41 @@ func TestRunResultCarriesProductOverridesAndPhoto(t *testing.T) {
 	photo, _ := r["photo"].(map[string]any)
 	if photo["command"] != true || photo["uploaded"] != true || photo["skipped"] != "" {
 		t.Fatalf("photo 摘要应取自本轮事件: %s", out.Bytes())
+	}
+}
+
+// --image 随每次送话带上 image_asset_id，结果回显（phase14 §6）。
+func TestRunImagePassesImageAssetID(t *testing.T) {
+	stub := &productStub{state: "stopped", events: []map[string]any{
+		{"event_type": "photo_uploaded", "turn_id": "turn_1", "reason": "source=speak asset=img_1 uuid=7 bytes=10 slices=1"},
+	}}
+	host := stub.serve(t)
+	out := withIO(t)
+	if code := simctl(runArgs(host, "--image", "img_1")); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	r := decodeRows(t, out)[0]
+	photo, _ := r["photo"].(map[string]any)
+	if r["image_asset_id"] != "img_1" || photo["command"] != false || photo["uploaded"] != true {
+		t.Fatalf("结果应带 image_asset_id，photo 为 command=false、uploaded=true: %s", out.Bytes())
+	}
+	if stub.speakBody["image_asset_id"] != "img_1" {
+		t.Fatalf("speak_and_wait 应带 image_asset_id: %v", stub.speakBody)
+	}
+}
+
+func TestRunWithoutImageOmitsImageAssetID(t *testing.T) {
+	stub := &productStub{state: "stopped"}
+	host := stub.serve(t)
+	out := withIO(t)
+	if code := simctl(runArgs(host)); code != 0 {
+		t.Fatalf("code=%d out=%s", code, out.Bytes())
+	}
+	if _, has := stub.speakBody["image_asset_id"]; has {
+		t.Fatalf("不带 --image 时请求体不该有 image_asset_id: %v", stub.speakBody)
+	}
+	if r := decodeRows(t, out)[0]; r["image_asset_id"] != "" {
+		t.Fatalf("没带图时结果的 image_asset_id 应为空串: %s", out.Bytes())
 	}
 }
 

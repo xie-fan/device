@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +32,8 @@ func TestHelpListsVerbs(t *testing.T) {
 	}
 	s := errb.String()
 	for _, v := range []string{
-		"up", "down", "status", "devices", "assets", "run", "turn", "audio", "history",
+		"up", "down", "status", "devices", "assets", "audio-sets", "run", "turn", "audio", "history",
+		"--audio-set",
 		"--asset", "--parallel", "--dirty", "--force", "--env", "--enterprise", "--device-type",
 		"--side", "--instance", "--listen", "--config",
 	} {
@@ -106,6 +108,12 @@ type runStub struct {
 	lastError                     string          // GET /devices/{id} 的 last_error
 	devices                       []deviceRow     // 空 = 只有 sim_1 那台（老用法）
 	busy                          map[string]bool // 这些 device_id 的租约回 409
+	// 音频集（Phase 13）
+	setAssets  []string       // GET /audio_sets 里「冒烟」的条目
+	speakCode  map[string]int // 这些 asset_id 的 speak_and_wait 回这个状态码
+	spoken     []string       // 每次送话的 asset_id，按顺序
+	renews     int            // 带 lease_id 的续租次数
+	renewSteal bool           // 续租带了 steal（不该发生）
 }
 
 // rows 空 devices 时合成老的单台 sim_1，保住既有用例不用改。
@@ -126,7 +134,17 @@ func (s *runStub) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"devices": s.rows()})
 	})
 	mux.HandleFunc("POST /devices/{id}/lease", func(w http.ResponseWriter, r *http.Request) {
-		s.leaseTries++
+		var body struct {
+			LeaseID string `json:"lease_id"`
+			Steal   bool   `json:"steal"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.LeaseID != "" {
+			s.renews++
+			s.renewSteal = s.renewSteal || body.Steal
+		} else {
+			s.leaseTries++
+		}
 		id := r.PathValue("id")
 		if s.busy[id] {
 			http.Error(w, `{"error":"lease_held","owner":"other"}`, 409)
@@ -169,13 +187,27 @@ func (s *runStub) handler() http.Handler {
 	mux.HandleFunc("GET /devices/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"device_id": "sim_1", "last_error": s.lastError})
 	})
-	mux.HandleFunc("POST /devices/{id}/speak_and_wait", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /devices/{id}/speak_and_wait", func(w http.ResponseWriter, r *http.Request) {
 		s.speaks++
+		var body struct {
+			AssetID string `json:"asset_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		s.spoken = append(s.spoken, body.AssetID)
 		if s.speakFails {
 			http.Error(w, `{"error":"speak 炸了"}`, 500)
 			return
 		}
-		_, _ = w.Write([]byte(`{"turn_id":"turn_1","instance_id":"ins_1","turn_end_reason":"idle","uplink_end_reason":"complete","reply_kind":"tts"}`))
+		if c := s.speakCode[body.AssetID]; c != 0 {
+			http.Error(w, `{"error":"stub 让它失败"}`, c)
+			return
+		}
+		fmt.Fprintf(w, `{"turn_id":"turn_%d","instance_id":"ins_1","turn_end_reason":"idle","uplink_end_reason":"complete","reply_kind":"tts"}`, s.speaks)
+	})
+	mux.HandleFunc("GET /audio_sets", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"audio_sets": []any{
+			map[string]any{"id": "set_1", "name": "冒烟", "asset_ids": s.setAssets},
+		}})
 	})
 	mux.HandleFunc("GET /devices/{id}/turns/{turn_id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("instance_id") == "" {
@@ -490,6 +522,10 @@ func TestRunSingleDeviceLeaseHeld(t *testing.T) {
 	if stub.leaseTries != 1 || stub.speaks != 0 {
 		t.Fatalf("不该换台：leaseTries=%d speaks=%d", stub.leaseTries, stub.speaks)
 	}
+	// 409 体里的 owner 要带出来，否则答不了「被谁占着」。
+	if !bytes.Contains(out.Bytes(), []byte("other 占着")) {
+		t.Fatalf("报错应带占用者: %s", out.Bytes())
+	}
 }
 
 // --force 漏进 boolFlag 白名单的话，sim_1 会被当成它的值吞掉，静默跑错设备。
@@ -497,5 +533,62 @@ func TestFlagsFirstForceIsBool(t *testing.T) {
 	got := flagsFirst([]string{"sim_1", "--force", "--asset", "ast_x"})
 	if got[len(got)-1] != "sim_1" {
 		t.Fatalf("--force 后的位置参数被吞了: %v", got)
+	}
+}
+
+// 音频集（Phase 13）：按集内顺序逐条送；400/404 是这条素材自己的问题，记错接着送；
+// 其它错误这台停下、剩下的记「未跑」。数组恒为「设备 × 条目」，每条之前续租且绝不带 steal。
+func TestRunAudioSet(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		code   int      // 让第二条 ast_b 回这个状态码；0 = 正常
+		spoken []string // 实际送了哪几条
+		errs   []string // 每个元素的 error 子串，"" = 没错
+	}{
+		{"全部正常", 0, []string{"ast_a", "ast_b", "ast_c"}, []string{"", "", ""}},
+		{"404 接着送", 404, []string{"ast_a", "ast_b", "ast_c"}, []string{"", "stub", ""}},
+		{"409 停下补未跑", 409, []string{"ast_a", "ast_b"}, []string{"", "stub", "未跑"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			stub := &runStub{state: "running", setAssets: []string{"ast_a", "ast_b", "ast_c"}}
+			if c.code != 0 {
+				stub.speakCode = map[string]int{"ast_b": c.code}
+			}
+			srv := httptest.NewServer(stub.handler())
+			t.Cleanup(srv.Close)
+			out := withIO(t)
+			code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "sim_1",
+				"--env", "local", "--enterprise", "vp", "--device-type", "A3", "--audio-set", "冒烟"})
+			if (code == 0) != (c.code == 0) {
+				t.Fatalf("退出码 %d 与有无 error 元素对不上: %s", code, out.Bytes())
+			}
+			if strings.Join(stub.spoken, ",") != strings.Join(c.spoken, ",") {
+				t.Fatalf("送话顺序 %v，想要 %v", stub.spoken, c.spoken)
+			}
+			rows := decodeRows(t, out)
+			if len(rows) != 3 {
+				t.Fatalf("数组应恒为 1 台 × 3 条: %s", out.Bytes())
+			}
+			for i, r := range rows {
+				e, _ := r["error"].(string)
+				if r["asset_id"] != stub.setAssets[i] || (c.errs[i] == "") != (e == "") || !strings.Contains(e, c.errs[i]) {
+					t.Fatalf("第 %d 个元素 %v，想要 asset_id=%s、error 含 %q", i, r, stub.setAssets[i], c.errs[i])
+				}
+			}
+			if stub.renews != len(c.spoken)-1 || stub.renewSteal || stub.releases != 1 {
+				t.Fatalf("应从第 2 条起每条前续租、不带 steal、跑完还租约: renews=%d steal=%v releases=%d",
+					stub.renews, stub.renewSteal, stub.releases)
+			}
+		})
+	}
+
+	stub := &runStub{state: "running"}
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+	out := withIO(t)
+	if code := simctl([]string{"--listen", strings.TrimPrefix(srv.URL, "http://"), "run", "sim_1",
+		"--env", "local", "--enterprise", "vp", "--device-type", "A3", "--audio-set", "没这个集"}); code == 0 ||
+		!bytes.Contains(out.Bytes(), []byte("没有音频集")) || stub.speaks != 0 {
+		t.Fatalf("不存在的音频集应报错且一条都不送: code=%d speaks=%d out=%s", code, stub.speaks, out.Bytes())
 	}
 }

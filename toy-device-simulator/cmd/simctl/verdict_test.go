@@ -35,3 +35,48 @@ func TestVerdictTerminationTable(t *testing.T) {
 		}
 	}
 }
+
+func TestHintOnly(t *testing.T) {
+	cases := []struct {
+		verdict string
+		chunks  int
+		bytes   int
+		want    bool
+	}{
+		{"replied", 1, 1900, true},    // 只有提示音
+		{"replied", 12, 64000, false}, // 真回复
+		{"replied", 1, 64000, false},  // 一大包，是真回复
+		{"replied", 0, 1900, false},   // 读不到事件不判
+		{"no_reply", 1, 1900, false},
+	}
+	for _, c := range cases {
+		if got := hintOnly(c.verdict, c.chunks, c.bytes); got != c.want {
+			t.Errorf("hintOnly(%+v)=%v", c, got)
+		}
+	}
+}
+
+func TestPhotoResult(t *testing.T) {
+	cases := []struct {
+		p       photoSummary
+		kind    string
+		verdict string
+		hint    bool
+		on      bool
+		want    string
+	}{
+		{photoSummary{Command: true, Uploaded: true}, "command+tts", "replied", false, true, "ok"},
+		{photoSummary{Command: true, Uploaded: true}, "command+tts", "replied", true, true, "no_reply"},
+		{photoSummary{Command: true, Uploaded: true}, "command", "replied_no_audio", false, true, "no_reply"},
+		{photoSummary{Command: true, Skipped: "没配图"}, "command", "replied_no_audio", false, true, "skipped:没配图"},
+		{photoSummary{Command: true}, "command", "replied_no_audio", false, true, "not_uploaded"},
+		{photoSummary{Uploaded: true}, "tts", "replied", false, false, "image_sent"},
+		{photoSummary{}, "tts", "replied", false, true, "no_command"},
+		{photoSummary{}, "tts", "replied", false, false, ""},
+	}
+	for _, c := range cases {
+		if got := photoResult(c.p, c.kind, c.verdict, c.hint, c.on); got != c.want {
+			t.Errorf("photoResult(%+v)=%q want %q", c, got, c.want)
+		}
+	}
+}
