@@ -203,3 +203,27 @@ func TestWavUplinkHeaderFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestBindDownlinkRepliesBindServer(t *testing.T) {
+	cfg := testDeviceCfg(t)
+	d, conn := newTestDevice(t, cfg, FaultNone, autoOpts{})
+	if err := d.Start(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := protocol.EncodeManage("demo/A3/sim_001/bind/client", json.RawMessage(`{"sequence_number":0,"device_id":"sim_001"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Push(raw)
+	waitEventType(t, d, "bind_received", time.Second)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, w := range conn.Writes() {
+			if strings.Contains(string(w), `"topic":"demo/A3/sim_001/bind/server"`) && strings.Contains(string(w), `"code":0`) {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("没写出 bind/server 应答")
+}

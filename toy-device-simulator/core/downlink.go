@@ -198,6 +198,15 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 		n, _ := d.handleReportEchoLocked(rep.SequenceNumber)
 		acc = append(acc, n...)
 		speak, speakCode, speakState = d.maybeTakeSpeakableLocked()
+	case topicEnds(env.Topic, "/bind/client"):
+		// App 调 user/device/Bind 后服务端下发；10s 内回 bind/server 才算绑上，
+		// 不回服务端给 App 2004。按真实设备直接同意（不模拟按键确认）。
+		_, n := d.appendEventLocked("bind_received", "", "", "", "", "")
+		acc = append(acc, n)
+		topic := protocol.Topic(d.cfg.Enterprise, d.cfg.DeviceType, d.cfg.DeviceID, "bind", "server")
+		if reply, err := protocol.EncodeManage(topic, protocol.BindReply{Code: 0, Message: "success"}); err == nil {
+			d.enqueueOrFinalize(Frame{Kind: KindManage, Raw: reply, Topic: topic})
+		}
 	case topicEnds(env.Topic, "/command/client"):
 		cmd, _ := protocol.DecodeCommandData(env.Data)
 		turnID := ""
@@ -220,6 +229,10 @@ func (d *DeviceInstance) handleManageDownlink(raw []byte) {
 			d.turn.hasCmd = true
 			d.routeRelatedLocked(raw, &acc, &tn)
 		}
+	default:
+		// 不认识的管理帧也留个痕，否则「服务端发了没」无从查起。
+		_, n := d.appendEventLocked("manage_unknown", "", env.Topic, "", "", "")
+		acc = append(acc, n)
 	}
 }
 

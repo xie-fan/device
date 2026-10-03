@@ -146,7 +146,7 @@ func TestRegistryDefaultProduct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.AddEnvironment("测试", "ws://h/{enterprise}"); err != nil {
+	if _, err := r.AddEnvironment("测试", "ws://h/{enterprise}", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.AddEnterprise("测试", "威普爱", "vp"); err != nil {

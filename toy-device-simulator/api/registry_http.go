@@ -30,34 +30,39 @@ func (s *Server) handleGetRegistry(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePostEnvironment(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
+		Name    string `json:"name"`
+		URL     string `json:"url"`
+		HTTPURL string `json:"http_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if err := s.reg.AddEnvironment(body.Name, body.URL); err != nil {
+	httpURL, err := s.reg.AddEnvironment(body.Name, body.URL, body.HTTPURL)
+	if err != nil {
 		writeErr(w, regErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"name": body.Name, "url": body.URL})
+	writeJSON(w, http.StatusCreated, map[string]any{"name": body.Name, "url": body.URL, "http_url": httpURL})
 }
 
 func (s *Server) handlePutEnvironment(w http.ResponseWriter, r *http.Request) {
 	env := r.PathValue("env")
+	// PUT 整体替换：http_url 不传 = 按 url 重新推导。
 	var body struct {
-		URL string `json:"url"`
+		URL     string `json:"url"`
+		HTTPURL string `json:"http_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "JSON 非法")
 		return
 	}
-	if err := s.reg.UpdateEnvironmentURL(env, body.URL); err != nil {
+	httpURL, err := s.reg.UpdateEnvironmentURL(env, body.URL, body.HTTPURL)
+	if err != nil {
 		writeErr(w, regErrStatus(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": env, "url": body.URL})
+	writeJSON(w, http.StatusOK, map[string]any{"name": env, "url": body.URL, "http_url": httpURL})
 }
 
 func (s *Server) handleDeleteEnvironment(w http.ResponseWriter, r *http.Request) {

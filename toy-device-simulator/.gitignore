@@ -6,3 +6,4 @@ testdata/audio/test_audio_list.txt
 testdata/fixtures/fresh_ids.jsonl
 *.exe
 .DS_Store
+data/app_tokens.json

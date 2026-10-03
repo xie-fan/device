@@ -9,6 +9,7 @@ environments:
               short_name: A3
     - name: 新加坡
       url: ws://aichatbotws-sgp.eye4.cn/{enterprise}
+      http_url: https://aichatbotwx-sgp.eye4.cn/
       enterprises:
         - name: 欧堡
           short_name: GDOBZND
@@ -17,6 +18,7 @@ environments:
               short_name: MH8W-GDOBZND-EN
     - name: 杭州
       url: ws://aichatbotws.eye4.cn/{enterprise}
+      http_url: https://aichatbotwx.eye4.cn/
       enterprises:
         - name: 乐智创展
           short_name: STSCHQL
@@ -25,6 +27,7 @@ environments:
               short_name: MH3W-STSCHQL
     - name: 测试
       url: ws://aichatbotws.eye4.cn/veepai-test
+      http_url: https://aichatbotwx.eye4.cn/veepai-test/
       enterprises:
         - name: 测试
           short_name: veepai-test

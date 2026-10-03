@@ -32,7 +32,7 @@ func TestHelpListsVerbs(t *testing.T) {
 	}
 	s := errb.String()
 	for _, v := range []string{
-		"up", "down", "status", "devices", "assets", "audio-sets", "run", "turn", "audio", "history",
+		"up", "down", "status", "devices", "assets", "audio-sets", "run", "turn", "audio", "history", "bind", "unbind", "--token", "register", "login",
 		"--audio-set",
 		"--asset", "--parallel", "--dirty", "--force", "--env", "--enterprise", "--device-type",
 		"--side", "--instance", "--listen", "--config",

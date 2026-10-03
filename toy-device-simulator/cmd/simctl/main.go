@@ -117,6 +117,23 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
             --turn ID --instance ID --side uplink|downlink --out FILE
   history   列这台设备的每一次运行（含跨重启）
             位置参数 device_id
+  register  注册 App 账号（auth/otp + auth/account/Register），两步：
+            第一步 --env E --account 邮箱或手机号 [--country CN]：发验证码，输出 request_id
+                   测试邮箱 <任意>@test1.mail.anyonstack.com，验证码向用户要
+            第二步再加 --code 验证码 --request-id R --password P：校验 + 注册，存 token
+                   密码 8-16 位、至少两类字符
+  login     --env E --account A --password P（或 SIMCTL_APP_PASSWORD）：密码登录，
+            token 按环境存到 data/app_tokens.json，bind / unbind 不带 --token 时用它
+  bind      扮演手机 App 绑定：对设备所挂环境的 http_url 调 user/device/Bind，
+            http_url 要和环境 url 同集群（ws://aichatbotws… → https://aichatbotwx…，路径照留）；
+            设备 ready 却 2004、bind_received=false 多半是集群不对
+            设备在线时模拟器自动回 bind/server code=0。位置参数 device_id
+            --token T     App 登录态 Authorization，默认取 SIMCTL_APP_TOKEN，再退到 login 存的
+            --identity ID 服务端要求身份时带 IdentityID
+            --env / --enterprise / --device-type [--product]  设备没在跑时按这三级拉起来
+            输出 code（0 成功；2004 设备没应答；14013 设备不存在；14014 厂商不一致；3101 token 无效）、
+            bind_received（设备端收到下发没有）、in_list（Lists 里有没有它）
+  unbind    同 bind 参数，调 user/device/UnBind
 `
 
 var (
@@ -258,6 +275,14 @@ func simctl(args []string) int {
 		return cmdAudio(listen, rest)
 	case "history":
 		return cmdHistory(listen, rest)
+	case "register":
+		return cmdRegister(listen, rest)
+	case "login":
+		return cmdLogin(listen, rest)
+	case "bind":
+		return cmdBind(listen, rest, false)
+	case "unbind":
+		return cmdBind(listen, rest, true)
 	default:
 		return fail("未知动词 " + verb + "（simctl --help）")
 	}

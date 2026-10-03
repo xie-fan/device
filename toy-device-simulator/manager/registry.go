@@ -39,6 +39,7 @@ type Enterprise struct {
 type Environment struct {
 	Name        string       `yaml:"name" json:"name"`
 	URL         string       `yaml:"url" json:"url"`
+	HTTPURL     string       `yaml:"http_url,omitempty" json:"http_url"` // App 侧 HTTP 接口基址，可空
 	Enterprises []Enterprise `yaml:"enterprises" json:"enterprises"`
 }
 
@@ -82,6 +83,9 @@ func validateTree(envs []Environment) error {
 			return err
 		}
 		if err := ValidateEnvURL(env.URL); err != nil {
+			return fmt.Errorf("环境 %s: %w", env.Name, err)
+		}
+		if err := ValidateEnvHTTPURL(env.HTTPURL); err != nil {
 			return fmt.Errorf("环境 %s: %w", env.Name, err)
 		}
 		if seenEnv[env.Name] {
@@ -170,6 +174,53 @@ func ValidateEnvURL(raw string) error {
 	return nil
 }
 
+// ValidateEnvHTTPURL 校验环境的 http_url：可空；非空须是 http(s):// 且带 host。
+func ValidateEnvHTTPURL(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("http_url 非法: %v", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("http_url 必须是 http:// 或 https://，得到 %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("http_url 缺 host")
+	}
+	return nil
+}
+
+// DeriveHTTPURL 由 ws 地址推出 App 侧 HTTP 基址，规则来自线上：
+// aichatbotws → aichatbotwx 且一律 https；其它主机 ws→http、wss→https。
+// 路径照留（测试集群 /veepai-test 靠路径区分），但从第一个占位符段起截掉——
+// {enterprise} 是 WS 网关的路由，App 的 HTTP 走根路径。推不出返回空串。
+func DeriveHTTPURL(wsURL string) string {
+	u, err := url.Parse(wsURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	switch u.Scheme {
+	case "wss":
+		u.Scheme = "https"
+	case "ws":
+		u.Scheme = "http"
+	default:
+		return ""
+	}
+	if strings.Contains(u.Host, "aichatbotws") {
+		u.Host = strings.Replace(u.Host, "aichatbotws", "aichatbotwx", 1)
+		u.Scheme = "https"
+	}
+	path := u.Path
+	if i := strings.Index(path, "{"); i >= 0 {
+		path = path[:strings.LastIndex(path[:i], "/")+1]
+	}
+	u.Path, u.RawPath, u.RawQuery, u.Fragment = strings.TrimRight(path, "/")+"/", "", "", ""
+	return u.String()
+}
+
 // SubstituteURL 把环境 url 里的占位符代入厂商简称 / 类型简称 / 设备名。
 func SubstituteURL(raw, entShort, typeShort, deviceID string) string {
 	return strings.NewReplacer(
@@ -242,34 +293,49 @@ func findTypeLocked(ent *Enterprise, short string) *DeviceType {
 	return nil
 }
 
-func (r *Registry) AddEnvironment(name, rawURL string) error {
+// AddEnvironment 的 httpURL 留空时按 url 推导（DeriveHTTPURL）；返回实际存下的 http_url。
+func (r *Registry) AddEnvironment(name, rawURL, httpURL string) (string, error) {
 	if err := validateEnvName(name); err != nil {
-		return err
+		return "", err
 	}
 	if err := ValidateEnvURL(rawURL); err != nil {
-		return err
+		return "", err
+	}
+	if httpURL == "" {
+		httpURL = DeriveHTTPURL(rawURL)
+	}
+	if err := ValidateEnvHTTPURL(httpURL); err != nil {
+		return "", err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.findEnvLocked(name) != nil {
-		return fmt.Errorf("%w: 环境 %s 已存在", ErrRegistryConflict, name)
+		return "", fmt.Errorf("%w: 环境 %s 已存在", ErrRegistryConflict, name)
 	}
-	r.envs = append(r.envs, Environment{Name: name, URL: rawURL})
-	return r.saveLocked()
+	r.envs = append(r.envs, Environment{Name: name, URL: rawURL, HTTPURL: httpURL})
+	return httpURL, r.saveLocked()
 }
 
-func (r *Registry) UpdateEnvironmentURL(name, rawURL string) error {
+// UpdateEnvironmentURL 同 AddEnvironment：httpURL 留空按 url 推导。
+func (r *Registry) UpdateEnvironmentURL(name, rawURL, httpURL string) (string, error) {
 	if err := ValidateEnvURL(rawURL); err != nil {
-		return err
+		return "", err
+	}
+	if httpURL == "" {
+		httpURL = DeriveHTTPURL(rawURL)
+	}
+	if err := ValidateEnvHTTPURL(httpURL); err != nil {
+		return "", err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	env := r.findEnvLocked(name)
 	if env == nil {
-		return fmt.Errorf("%w: 环境 %s", ErrRegistryNotFound, name)
+		return "", fmt.Errorf("%w: 环境 %s", ErrRegistryNotFound, name)
 	}
 	env.URL = rawURL
-	return r.saveLocked()
+	env.HTTPURL = httpURL
+	return httpURL, r.saveLocked()
 }
 
 func (r *Registry) DeleteEnvironment(name string) error {

@@ -20,6 +20,12 @@ type RegisterAck struct {
 	Expiration     int    `json:"expiration"`
 }
 
+// BindReply 是设备对 bind/client 的应答（服务端 types.BaseResponse）。
+type BindReply struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
 type ReportData struct {
 	SequenceNumber int `json:"sequence_number"`
 	Code           int `json:"code"`

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 )
 
@@ -54,7 +55,7 @@ func TestRegistryTreeCRUD(t *testing.T) {
 	}
 
 	// 展示名与环境 url 可改；键不可改（无该端点，改键 = 删掉重建）。
-	if code, body := e.put(t, "/registry/environments/local", map[string]any{"url": "ws://127.0.0.1:2/"}); code != http.StatusOK {
+	if code, body := e.put(t, "/registry/environments/local", map[string]any{"url": "ws://127.0.0.1:2/", "http_url": "https://api.example.com/"}); code != http.StatusOK {
 		t.Fatalf("PUT 环境 url 应 200，得到 %d %s", code, body)
 	}
 	if code, body := e.put(t, "/registry/environments/local/enterprises/demo", map[string]any{"name": "改名厂商"}); code != http.StatusOK {
@@ -64,7 +65,7 @@ func TestRegistryTreeCRUD(t *testing.T) {
 		t.Fatalf("PUT 类型名称应 200，得到 %d %s", code, body)
 	}
 	_, body, _ = e.get(t, "/registry")
-	if !containsBytes(body, "改名厂商") || !containsBytes(body, "A3 二代") || !containsBytes(body, "ws://127.0.0.1:2/") {
+	if !containsBytes(body, "改名厂商") || !containsBytes(body, "A3 二代") || !containsBytes(body, "ws://127.0.0.1:2/") || !containsBytes(body, "https://api.example.com/") {
 		t.Fatalf("PUT 后 GET /registry 未反映: %s", body)
 	}
 }
@@ -79,6 +80,8 @@ func TestRegistryValidation(t *testing.T) {
 		{"非 ws scheme", map[string]any{"name": "e2", "url": "http://h/"}},
 		{"缺 host", map[string]any{"name": "e3", "url": "ws:///path"}},
 		{"环境名带斜杠", map[string]any{"name": "a/b", "url": "ws://h/"}},
+		{"http_url 非 http scheme", map[string]any{"name": "e4", "url": "ws://h/", "http_url": "ws://h/"}},
+		{"http_url 缺 host", map[string]any{"name": "e5", "url": "ws://h/", "http_url": "https:///x"}},
 	}
 	for _, c := range cases {
 		if code, body := e.post(t, "/registry/environments", c.body); code != http.StatusBadRequest {
@@ -353,5 +356,17 @@ func TestBadSeqRejectedOnMHDeviceType(t *testing.T) {
 	e.createDevice(t, "sim_a3")
 	if code, body := e.post(t, "/devices/sim_a3/faults", map[string]any{"fault": "bad_seq"}); code != http.StatusOK {
 		t.Fatalf("非 MH 机型 bad_seq 应 200，得到 %d %s", code, body)
+	}
+}
+
+func TestRegistryHTTPURLDerivedWhenEmpty(t *testing.T) {
+	e := newEnv(t)
+	code, body := e.post(t, "/registry/environments", map[string]any{"name": "派生", "url": "ws://aichatbotws.eye4.cn/veepai-test"})
+	if code != http.StatusCreated || !containsBytes(body, "https://aichatbotwx.eye4.cn/veepai-test/") {
+		t.Fatalf("POST 不带 http_url 应推导，得到 %d %s", code, body)
+	}
+	code, body = e.put(t, "/registry/environments/"+url.PathEscape("派生"), map[string]any{"url": "ws://aichatbotws-sgp.eye4.cn/{enterprise}"})
+	if code != http.StatusOK || !containsBytes(body, "https://aichatbotwx-sgp.eye4.cn/") {
+		t.Fatalf("PUT 不带 http_url 应按新 url 推导，得到 %d %s", code, body)
 	}
 }

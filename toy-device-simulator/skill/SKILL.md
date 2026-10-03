@@ -45,7 +45,7 @@ simctl turn <device_id> --instance <instance_id> --turn <turn_id>
 `up` 编译并后台启动 Manager，幂等且不自动关；探活用 `GET /devices`，没有 `/healthz`。pid 和日志在本 skill 目录的 `data/manager.pid`、`data/manager.log`。配置树是本 skill 目录的 `configs/registry.yaml`，本机自己的。
 
 Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
-- `POST /registry/environments`，body 为 `name`、`url`，url 可带 `{enterprise}` 占位。
+- `POST /registry/environments`，body 为 `name`、`url`，url 可带 `{enterprise}` 占位；可选 `http_url`（App 侧 HTTP 接口基址，http(s)://），不传就按 url 推导：`aichatbotws` 换 `aichatbotwx` 并用 https，路径照留，从 `{占位符}` 段起截掉。`PUT /registry/environments/{env}` 整体替换 `url` 与 `http_url`，同样不传就推导。
 - `POST /registry/environments/{env}/enterprises` 和 `POST /registry/environments/{env}/enterprises/{short}/device_types`，body 为 `name`、`short_name`；设备类型还可带 `default_product`（start 不指定产品时用它）。
 
 路径里的环境名要 URL 编码。这组接口会整份重写 `--registry` 指向的文件，文件头注释会丢，改完补回。
@@ -63,3 +63,21 @@ Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
 测完要把设备复原（停机并清掉临时覆盖）时用 `simctl stop <device_id> --reset`，它先拿租约，别的 run 正用着就报错不停。挂靠三级不会复原，它在下次 start 时由 `run` 重新指定。
 
 完成后报告实际执行范围、结果及关键 ID；区分调用失败、协议结果和业务是否符合预期。无法继续时说明缺失前提或原始错误；未连真实服务端时明确只验证了本地模拟链路。
+
+## 账号与绑定
+
+这几个动词扮演手机 App，打设备所挂环境的 `http_url`（配置树环境上的字段）。`http_url` 必须和该环境 `url` 指向同一个集群：把 `ws://aichatbotws…` 换成 `https://aichatbotwx…`，路径照留。例如测试环境 `ws://aichatbotws.eye4.cn/veepai-test` 对应 `https://aichatbotwx.eye4.cn/veepai-test/`，根路径 `https://aichatbotwx.eye4.cn/` 是生产集群，用户库不通。
+
+1. 先看本 skill 目录的 `data/app_tokens.json` 里有没有该环境的 token。有就直接跳到第 4 步。
+2. 有账号就登录：`simctl login --env 测试 --account <邮箱或手机号> --password <密码>`（密码也可放 `SIMCTL_APP_PASSWORD`）。token 按环境存进 `data/app_tokens.json`，输出不回显 token。
+3. 没账号先注册，两步。第一步 `simctl register --env 测试 --account <邮箱>` 发验证码，输出 `request_id`。测试邮箱用 `<任意字符串>@test1.mail.anyonstack.com`，收件箱在 Cloud Mail 上，有人机验证，验证码向用户要。第二步原命令加 `--code <验证码> --request-id <request_id> --password <密码>`，校验 + 注册，同样存 token。验证码 10 分钟有效，重发间隔 60 秒。密码 8-16 位、至少两类字符，超长也报 `4000 weak password`。手机号加 `--country CN`。
+4. 绑定：`simctl bind <device_id>`，设备没在跑时加 `--env / --enterprise / --device-type [--product]` 拉起来。token 依次取 `--token`、`SIMCTL_APP_TOKEN`、该环境存下的。`unbind` 同参数。
+
+服务端收到 Bind 会下发 `bind/client`，模拟器自动回 `bind/server` code=0。判结果看三项：
+- `code`：0 成功；2004 设备 10s 没应答；14013 设备不存在；14014 用户与设备厂商不一致；3101 token 无效。
+- `bind_received`：设备端收到下发没有。
+- `in_list`：`user/device/Lists` 里有没有它。
+
+2004 按 `connection_state` 分两种。设备不在线（`disconnected`）时 2004 是预期结果。设备 `ready` 却 2004、`bind_received:false`，说明下发没到设备：先查 `http_url` 和 `url` 是不是同一集群，再看设备事件里有没有 `manage_unknown`（收到不认识的管理帧时记下 topic）。
+
+BLE/WiFi 配网走手机本地插件，不在范围内。账号密码和 token 不要写进报告或仓库文件。

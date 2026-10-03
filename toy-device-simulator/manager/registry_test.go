@@ -80,7 +80,7 @@ func TestRegistrySaveAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.AddEnvironment("测试", "ws://h/{enterprise}"); err != nil {
+	if _, err := r.AddEnvironment("测试", "ws://h/{enterprise}", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.AddEnterprise("测试", "威普爱", "vp"); err != nil {
@@ -108,5 +108,20 @@ func TestRegistrySaveAndReload(t *testing.T) {
 	}
 	if url != "ws://h/vp" {
 		t.Fatalf("Resolve 代入不符: %s", url)
+	}
+}
+
+func TestDeriveHTTPURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"ws://aichatbotws.eye4.cn/veepai-test":      "https://aichatbotwx.eye4.cn/veepai-test/",
+		"ws://aichatbotws-sgp.eye4.cn/{enterprise}": "https://aichatbotwx-sgp.eye4.cn/",
+		"ws://aichatbotws-usa.eye4.cn/XYMH":         "https://aichatbotwx-usa.eye4.cn/XYMH/",
+		"ws://aichatbotws.eye4.cn/a/{enterprise}/x": "https://aichatbotwx.eye4.cn/a/",
+		"ws://127.0.0.1:8089/":                      "http://127.0.0.1:8089/",
+		"wss://h.example.com/{device_type}":         "https://h.example.com/",
+	} {
+		if got := DeriveHTTPURL(in); got != want {
+			t.Errorf("DeriveHTTPURL(%q) = %q，要 %q", in, got, want)
+		}
 	}
 }

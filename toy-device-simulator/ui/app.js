@@ -2733,7 +2733,7 @@
     const cols = [
       {
         cfg: TREE_LEVELS[0], cur: s.env, blocked: "",
-        rows: state.registry.map((r) => ({ v: r.name, t: r.name, sub: r.url })),
+        rows: state.registry.map((r) => ({ v: r.name, t: r.name, sub: r.url, http: r.http_url || "" })),
       },
       {
         cfg: TREE_LEVELS[1], cur: s.ent, blocked: s.env ? "" : "先选一个环境",
@@ -2756,6 +2756,7 @@
                 <button type="button" class="tnode__pick" data-tree-pick="${k}" data-v="${esc(r.v)}" aria-pressed="${on}">
                   <span class="tnode__t">${esc(r.t)}</span>
                   ${r.sub ? `<span class="tnode__sub">${esc(r.sub)}${r.def ? " · 默认 " + esc(r.def) : ""}</span>` : ""}
+                  ${r.http ? `<span class="tnode__sub">${esc(r.http)}</span>` : ""}
                 </button>
                 ${on ? `<span class="tnode__ops">
                   <button type="button" class="btn btn--ghost" data-tree-rename="${k}">编辑</button>
@@ -2767,7 +2768,11 @@
                   <span class="fld__name">${esc(k === "env" ? c.cfg.l2 : c.cfg.l1)}</span>
                   <input data-edit="1" value="${esc(k === "env" ? (r.sub || "") : r.t)}">
                 </label>
-                ${k === "env" ? "" : `<label class="fld">
+                ${k === "env" ? `<label class="fld">
+                  <span class="fld__name">http_url</span>
+                  <span class="fld__zh">App 侧 HTTP 接口</span>
+                  <input data-edit="http" value="${esc(r.http)}" placeholder="留空则按 url 推导">
+                </label>` : `<label class="fld">
                   <span class="fld__name">${esc(c.cfg.l2)}</span>
                   <input data-edit="2" value="${esc(r.sub || "")}">
                 </label>`}
@@ -2781,7 +2786,7 @@
                   <button type="button" class="btn btn--ghost" data-tree-cancel="1">取消</button>
                   <span class="grow"></span>
                   <span class="api">${esc(k === "env"
-                    ? "环境名是主键，改不了；这里改的是 url"
+                    ? "环境名是主键，改不了；这里改的是 url 与 http_url"
                     : "简称是 wire 值，改了下次 start 生效")}</span>
                 </div>
               </div>` : ""}
@@ -2800,6 +2805,7 @@
             <label class="fld"><span class="fld__name">${esc(c.cfg.l1)}</span><input data-add="1" placeholder="${esc(c.cfg.p1)}"></label>
             <label class="fld"><span class="fld__name">${esc(c.cfg.l2)}</span><input data-add="2" placeholder="${esc(c.cfg.p2)}" value="${k === "env" ? esc(c.cfg.p2) : ""}"></label>
           </div>
+          ${k === "env" ? `<label class="fld"><span class="fld__name">http_url</span><span class="fld__zh">App 侧 HTTP 接口</span><input data-add="http" placeholder="留空则按 url 推导"></label>` : ""}
           ${k === "typ" ? `<label class="fld"><span class="fld__name">default_product</span><span class="fld__zh">默认产品</span><select data-add="product">${productOpts("", "无默认产品")}</select></label>` : ""}
           <div class="lvl__foot">
             <button type="button" class="btn btn--primary btn--sm" data-tree-ok="${k}">确认新增</button>
@@ -3404,7 +3410,8 @@
     }
     try {
       if (k === "env") {
-        await api("POST", TREE_PATH.env(), { name: a, url: b || "ws://127.0.0.1:8089/{enterprise}" });
+        const http = ((body.querySelector('[data-add="http"]') || {}).value || "").trim();
+        await api("POST", TREE_PATH.env(), { name: a, url: b || "ws://127.0.0.1:8089/{enterprise}", http_url: http });
         state.regSel = { env: a, ent: "", typ: "" };
       } else if (k === "ent") {
         await api("POST", TREE_PATH.ent(), { name: a, short_name: b });
@@ -3437,7 +3444,7 @@
       flash(k === "env" ? "url 不能空" : "名称不能空", "err");
       return;
     }
-    let payload = { url: v };
+    let payload = { url: v, http_url: ((body.querySelector('[data-edit="http"]') || {}).value || "").trim() };
     let okMsg = "已改 url " + v;
     if (k !== "env") {
       const short = ((body.querySelector('[data-edit="2"]') || {}).value || "").trim();
