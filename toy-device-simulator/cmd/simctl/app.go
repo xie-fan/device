@@ -138,6 +138,21 @@ func cmdRegister(listen string, args []string) int {
 		return fail(err.Error())
 	}
 	ch := otpChannel(account)
+	// 配了 Cloud Mail 且带了密码：发码、取码、注册一步走完。
+	var mail *cloudMail
+	mailAfter := 0
+	if otp == "" && ch == "email" && password != "" {
+		if mail, err = newCloudMail(); err != nil {
+			return fail(err.Error())
+		}
+		if mail != nil {
+			last, err := mail.latest(account)
+			if err != nil {
+				return fail(err.Error())
+			}
+			mailAfter = last.EmailID
+		}
+	}
 	if otp == "" {
 		body := map[string]string{"Channel": ch, "Contact": account, "Purpose": "register"}
 		if country != "" {
@@ -148,13 +163,22 @@ func cmdRegister(listen string, args []string) int {
 			return fail(err.Error())
 		}
 		r := map[string]any{"step": "send", "code": res.Code, "message": res.Message, "request_id": res.RequestId}
-		if res.Code == 0 {
-			var d struct{ CooldownSec, ExpireInSeconds int }
-			_ = json.Unmarshal(res.Data, &d)
-			r["cooldown_sec"], r["expire_in_seconds"] = d.CooldownSec, d.ExpireInSeconds
-			r["next"] = "simctl register --env " + env + " --account " + account + " --code <验证码> --request-id " + res.RequestId + " --password <密码>"
+		if res.Code != 0 {
+			return out(r)
 		}
-		return out(r)
+		var d struct{ CooldownSec, ExpireInSeconds int }
+		_ = json.Unmarshal(res.Data, &d)
+		r["cooldown_sec"], r["expire_in_seconds"] = d.CooldownSec, d.ExpireInSeconds
+		r["next"] = "simctl register --env " + env + " --account " + account + " --code <验证码> --request-id " + res.RequestId + " --password <密码>"
+		if mail == nil {
+			return out(r)
+		}
+		c, _, err := mail.waitCode(account, mailAfter, 90*time.Second)
+		if err != nil {
+			r["step"], r["mail_error"] = "mail", err.Error()
+			return out(r)
+		}
+		otp, reqID = c, res.RequestId
 	}
 	if reqID == "" || password == "" {
 		return fail("带 --code 时还要 --request-id 和 --password")

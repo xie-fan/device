@@ -122,6 +122,8 @@ const usage = `simctl — 对着本仓 manager 的任务级 CLI。一律 JSON �
                    测试邮箱 <任意>@test1.mail.anyonstack.com，验证码向用户要
             第二步再加 --code 验证码 --request-id R --password P：校验 + 注册，存 token
                    密码 8-16 位、至少两类字符
+            配了 Cloud Mail 时邮箱一步走完：第一步带上 --password，自己去收件箱取码（等 90s）
+                   SIMCTL_MAIL_URL 站点根；SIMCTL_MAIL_TOKEN，或 SIMCTL_MAIL_ADMIN + SIMCTL_MAIL_PASSWORD
   login     --env E --account A --password P（或 SIMCTL_APP_PASSWORD）：密码登录，
             token 按环境存到 data/app_tokens.json，bind / unbind 不带 --token 时用它
   bind      扮演手机 App 绑定：对设备所挂环境的 http_url 调 user/device/Bind，

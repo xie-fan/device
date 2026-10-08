@@ -70,7 +70,7 @@ Manager 已在运行、要加环境/厂商/设备类型时，用这组接口：
 
 1. 先看本 skill 目录的 `data/app_tokens.json` 里有没有该环境的 token。有就直接跳到第 4 步。
 2. 有账号就登录：`simctl login --env 测试 --account <邮箱或手机号> --password <密码>`（密码也可放 `SIMCTL_APP_PASSWORD`）。token 按环境存进 `data/app_tokens.json`，输出不回显 token。
-3. 没账号先注册，两步。第一步 `simctl register --env 测试 --account <邮箱>` 发验证码，输出 `request_id`。测试邮箱用 `<任意字符串>@test1.mail.anyonstack.com`，收件箱在 Cloud Mail 上，有人机验证，验证码向用户要。第二步原命令加 `--code <验证码> --request-id <request_id> --password <密码>`，校验 + 注册，同样存 token。验证码 10 分钟有效，重发间隔 60 秒。密码 8-16 位、至少两类字符，超长也报 `4000 weak password`。手机号加 `--country CN`。
+3. 没账号先注册，两步。第一步 `simctl register --env 测试 --account <邮箱>` 发验证码，输出 `request_id`。测试邮箱用 `<任意字符串>@test1.mail.anyonstack.com`，收件箱在 Cloud Mail 上。环境变量配了 `SIMCTL_MAIL_URL`（站点根）和 `SIMCTL_MAIL_TOKEN`（或管理员 `SIMCTL_MAIL_ADMIN` + `SIMCTL_MAIL_PASSWORD`）时，第一步带上 `--password` 就一步走完：发码后自己走 Cloud Mail 开放 API 取信、校验、注册；90 秒没收到信输出 `step: mail` 和 `mail_error`，`request_id` 照给，可退回手动第二步。没配就向用户要验证码。第二步原命令加 `--code <验证码> --request-id <request_id> --password <密码>`，校验 + 注册，同样存 token。验证码 10 分钟有效，重发间隔 60 秒。密码 8-16 位、至少两类字符，超长也报 `4000 weak password`。手机号加 `--country CN`。
 4. 绑定：`simctl bind <device_id>`，设备没在跑时加 `--env / --enterprise / --device-type [--product]` 拉起来。token 依次取 `--token`、`SIMCTL_APP_TOKEN`、该环境存下的。`unbind` 同参数。
 
 服务端收到 Bind 会下发 `bind/client`，模拟器自动回 `bind/server` code=0。判结果看三项：
