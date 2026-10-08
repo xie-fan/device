@@ -35,3 +35,7 @@ skill 给出首次接入流程、共享环境操作边界与结果判断规则�
 实现与阅读以 [`docs/toy-device-simulator/`](docs/toy-device-simulator/) 为准；领域术语见 [`CONTEXT.md`](CONTEXT.md)。
 
 `docs/toy-device-simulator-docs-v*` 与 `docs/toy-device-simulator-docs/` 是冻结历史，不作为当前实现依据。
+
+## TODO
+
+- [ ] ack：开启后设备按内存大小向服务端上报 ack，服务端下发音频时据此暂停一段时间，防止下发的音频撑爆设备内存
